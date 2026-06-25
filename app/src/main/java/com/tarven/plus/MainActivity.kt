@@ -38,7 +38,7 @@ class MainActivity : Activity() {
         private const val TAG = "Tarven++"
         // Release URL for server-source.zip (with pre-installed node_modules)
         private const val SERVER_SOURCE_URL =
-            "https://github.com/YOUR_USER/TarvenPlus/releases/latest/download/server-source.zip"
+            "https://github.com/CAPTCHAAAAA/TarvenPlus/releases/download/v0.1/server-source.zip"
         private val MATCH_PARENT = ViewGroup.LayoutParams.MATCH_PARENT
         private val WRAP_CONTENT = ViewGroup.LayoutParams.WRAP_CONTENT
     }

@@ -27,4 +27,4 @@ builder/cache/
 
 # Temp files
 *.log
-*.tmp
+*.tmp.ssh/
