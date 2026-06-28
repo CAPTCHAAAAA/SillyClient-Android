@@ -1,83 +1,57 @@
-# Tarven++
+# SillyClient
 
-One-click SillyTavern launcher for Android. No Termux, no command lines — install the APK, open the app, and your tavern is ready.
+> **SillyClient 是我们唯一的品牌名。** 跨所有框架、所有平台、所有 UI，统一叫 SillyClient。
+> 不再有 `Tarven++` / `TarvenPlus` 等别名。
 
-> **技术路线（转向 Capacitor）**
-> 本仓为 **当前安卓实现基线**（package `com.sillyclient`，自撸混合壳）。我们正转向
-> **Capacitor 多端**（以前端 UI 开发为主，仅适配已做好的 webUI 前端），目标工程见
-> [`TarvenIonicApp`](../TarvenIonicApp)（`com.tarven.plus`，Ionic React + Capacitor 8）。
-> 平台相关、已锁定的部分不再动：**Node.js 本地启服**、**变色龙顶框取色**（见下）。
-> 后续：把 `web/console`、`web/launch` 等 webUI 经 Capacitor 框架接入，替代当前自撸 `TarvenN` 桥。
+一键把 SillyTavern 在设备上本地化运行的壳应用。SillyTavern 服务端随 App 打包，本地启动后前端套壳提供 UI。当前安卓端已可运行，正转向 **Capacitor 插件化多端架构**。
 
-## How it works
+📖 **完整架构计划必读**：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 
-1. Install the APK
-2. Open Tarven++
-3. First launch downloads SillyTavern (~130 MB, one-time)
-4. Tavern starts automatically, WebView loads `http://127.0.0.1:8000`
+---
 
-## 当下安卓端实现
+## 它是什么
 
-- **Node.js 本地运行时**：`libtarven-node.so`（Node v24 Bionic）+ `rootfs-libs.zip` 打包进 APK，
-  运行时解压并以 `ProcessBuilder` 起本地服务，监听 `127.0.0.1:8000`，WebView 再加载之。
-  实现在 `runtime/*` + `MainActivity` 的 `provisionAndStart/extractNativeLibs/startServer/pollUntilReady`。**锁定不改。**
-- **变色龙顶框（顶条带自适应取色）**：`MainActivity.sampleTopColor` 用 `PixelCopy` 读酒馆页顶部
-  3px×全宽条带 → 平均色 → `TopScrimBar`（`TopColor` 折算三段渐变 45/80/100%）做 scrim + 点击白色光波 +
-  自下而上色波。**锁定不改（`DO NOT CHANGE`）。** 取色层读远端页真实像素、无可移植 API，
-  转 Capacitor 后以原生插件补回。
-- **SillyTavern 承载**：酒馆 WebView 加载 `http://127.0.0.1:8000`（远端页，非自有内容）。
-- **启动页**：`web/launch`（React + Vite 单文件 `index.html`，`assets/ui/launch/`）。
-- **JS↔原生桥**：自撸单入口 JSON 桥——`window.TarvenN.invoke(action, payloadJson)`（JS→原生）
-  与 `window.__tarvenDispatch(event, payloadJson)`（原生→JS）。契约见 `web/launch/src/bridge.ts`。
-  **待 Capacitor 插件替代**（不拆，当前在用）。
+在安卓上，SillyClient 内嵌一个 Node.js 运行时（`libtarven-node.so`），启动后在本地 `127.0.0.1:8000` 跑起 SillyTavern 服务，再用一个**原生 WebView** 承载酒馆，并叠加沉浸式阅读环境（刘海/状态栏适配、变色龙顶框取色等）。
 
-## Architecture
+启动器本体（环境检测 / 下载 / 配置 / 启动 / 打开阅读环境）**已完善且能跑**，不重写。
 
-```
-APK assets (bundled)
-├── jniLibs/arm64-v8a/
-│   ├── libtarven-node.so    # Node.js v24 Bionic runtime
-│   └── libc++_shared.so
-├── bootstrap/rootfs/
-│   └── rootfs-libs.zip      # Runtime shared libraries
-├── bootstrap/scripts/
-│   └── start-server.sh      # Server launcher
-└── assets/ui/launch/
-    └── index.html           # 启动页（Vite 单文件 React 产物）
+## 为什么是插件化（核心理念）
 
-First launch (downloaded)
-└── server-source.zip        # SillyTavern + node_modules
-    └── → files/tarven/bootstrap/server/
-```
+不同平台的"底座"不一样：安卓靠打包 Node 虚拟机，PC 上 SillyTavern 直接跑在系统 Node、不走虚拟机。如果每个平台从零适配，极其痛苦。
 
-## Build
+解法：**把"一整个原生阅读环境"封装成 Capacitor 插件。**
+
+- 一份 webUI（控制台）只调**统一的插件接口**，不认平台。
+- 每个平台写一份插件实现去填接口，复用各平台已做好的原生能力。
+- 一个系统上还能配多个环境（ComfyUI 式），可切换。
+
+详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+
+## 当下状态（安卓）
+
+- ✅ Node.js 本地运行时（下载/检测/解压/启动 `127.0.0.1:8000`）—— 锁定，不重写
+- ✅ 原生 WebView 承载酒馆 + 沉浸式 + 刘海/状态栏适配 —— 锁定
+- ✅ 变色龙顶框：`PixelCopy` 条带取色 → `TopScrimBar`（scrim 渐变 + 点击光波 + 色波）—— 锁定（`DO NOT CHANGE`）
+- 🔧 正在：现有 `com.sillyclient` 工程 Capacitor 化，把上述能力封装成 `TavernEnvPlugin`
+
+## 快速构建（安卓，当前实现）
 
 ```bash
 ./gradlew :app:assembleDebug
-# Output: app/build/outputs/apk/debug/app-debug.apk
+# APK: app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Web 模块（启动页）单独构建后拷入 assets：
+启动页 web 模块单独构建后拷入 assets：
 
 ```bash
-cd web/launch && pnpm build   # 产 dist/index.html（vite-plugin-singlefile）
+cd web/launch && pnpm build   # vite-plugin-singlefile → dist/index.html
 cp dist/index.html ../../app/src/main/assets/ui/launch/index.html
 ```
 
-### Pre-built server source
+## 相关
 
-`server-source.zip` 由单独流水线生成并托管在 GitHub Releases。
-
-```bash
-bash scripts/build-server-source.sh
-```
-
-## Requirements
-
-- Android 8.0+ (API 26)
-- arm64-v8a device
-- ~200 MB free storage (runtime + tavern)
-- Internet connection for first launch
+- 仓库：`CAPTCHAAAAA/SillyClient`
+- Capacitor 转型探索工程（已作废，仅留参考）：`CAPTCHAAAAA/SillyClient-Capacitor`
 
 ## License
 
