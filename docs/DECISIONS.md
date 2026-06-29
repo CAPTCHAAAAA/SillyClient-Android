@@ -42,7 +42,7 @@
 
 **后果**
 - 插件内部高内聚，平台移植时整块替换，边界清晰。
-- 明确了"酒馆由插件内原生 WebView 承载，Capacitor 不渲染酒馆"（铁律 B2）。
+- 明确了"酒馆由插件内原生 WebView 承载，Capacitor 不渲染酒馆"（约定 B2）。
 
 ---
 
@@ -54,7 +54,7 @@
 - 曾新建 `TarvenIonicApp`（`com.tarven.plus`）试图把整个安卓壳用 Capacitor + Ionic 重写。
 - 在其中重写了 `TarvenServerPlugin`（provisionAndStart/enterImmersive…），等于把已完善的启动器本体又做了一遍。
 - 踩了一堆工具链坑：kotlin 插件未配置导致 `ClassNotFoundException`、pnpm deps 校验拦截构建、jvmTarget 不匹配。
-- 包名 `com.tarven.plus` 与品牌 `SillyClient` 不一致，违背铁律 B1。
+- 包名 `com.tarven.plus` 与品牌 `SillyClient` 不一致，违背约定 B1。
 
 **决策**
 - `TarvenIonicApp` 整条线作废，不再投入。

@@ -14,37 +14,52 @@
 
 `gradlew` wrapper 已在仓库根，无需全局 Gradle。
 
-## 第一次构建（安卓）
+## 完整首次构建到运行
+
+### 1. 构建启动页 webUI（如改动过 web/launch）
 
 ```bash
-# 1. 原生壳（含已完善的启动器本体）
-./gradlew :app:assembleDebug
-# 产物：app/build/outputs/apk/debug/app-debug.apk
-
-# 2. 启动页 webUI（如改动过 web/launch）
 cd web/launch
-pnpm install        # 首次
-pnpm build          # vite-plugin-singlefile → dist/index.html（自包含单文件）
+pnpm install                       # 首次
+pnpm build                         # vite-plugin-singlefile → dist/index.html（自包含单文件）
 cp dist/index.html ../../app/src/main/assets/ui/launch/index.html
-# 再跑步骤 1 重新打 APK
 ```
 
-## 装机运行（adb）
+> 注意：web 产物需手动拷入 `app/src/main/assets/ui/launch/`，无自动 Gradle 任务。改完 web 必须重新拷贝并重打 APK，否则设备上跑的是旧产物。
+
+### 2. 构建原生 APK
+
+```bash
+cd <仓库根>
+./gradlew :app:assembleDebug
+# 产物：app/build/outputs/apk/debug/app-debug.apk
+```
+
+### 3. 装机运行
 
 ```bash
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-# 保留数据用 -r（避免首启重下 136MB）。干净安装去掉 -r。
+# -r 保留数据（避免首启重下 136MB）；干净安装去掉 -r
 adb shell monkey -p com.sillyclient -c android.intent.category.LAUNCHER 1
 ```
 
-首启流程：App 启动 → 下载解压 server-source → 启 Node → 轮询 `127.0.0.1:8000` 就绪 → WebView 加载酒馆。
+### 4. 首启验证
+
+App 启动后流程：下载解压 server-source → 启 Node → 轮询 `127.0.0.1:8000` 就绪 → WebView 加载酒馆。
+
+验证服务是否起来：
+
+```bash
+adb shell "cat /proc/net/tcp | grep ':1F40'"        # 8000=0x1F40，有输出即 LISTEN
+adb shell "ps -A | grep -i tarven"                  # libtarven-node.so 进程
+```
 
 ## 调试
 
-- WebView 远程调试：`chrome://inspect`（已开 `setWebContentsDebuggingEnabled`）。
-- 原生日志：`adb logcat -s SillyClient:* HybridUiHost:* AndroidRuntime:E`
-- 服务端日志：`adb shell run-as com.sillyclient cat files/tarven/logs/server.log | tail -50`
-- 端口检查：`adb shell "cat /proc/net/tcp | grep ':1F40'"`（8000 = 0x1F40）
+- **WebView 远程调试**：`chrome://inspect`（已开 `setWebContentsDebuggingEnabled`）
+- **原生日志**：`adb logcat -s SillyClient:* HybridUiHost:* AndroidRuntime:E`
+- **服务端日志**：`adb shell run-as com.sillyclient cat files/tarven/logs/server.log | tail -50`
+- **端口检查**：`adb shell "cat /proc/net/tcp | grep ':1F40'"`（8000 = 0x1F40）
 
 ## 关键路径速查
 
@@ -56,6 +71,32 @@ adb shell monkey -p com.sillyclient -c android.intent.category.LAUNCHER 1
 | 改沉浸式 | `enterImmersive`/`showSystemBars`/`statusBarFixedPx` |
 | 改启动页 UI | `web/launch/src/`（React + Vite） |
 | 改桥接 | `ui/HybridUiHost.kt`（自撸桥，待退役为插件） + `web/*/src/bridge.ts` |
+
+## 常见问题排查
+
+### 8000 端口没起来
+1. 看 Node 进程：`adb shell "ps -A | grep -i tarven"` —— 没有则 Node 没拉起，看 logcat SillyClient tag。
+2. 看服务日志：`adb shell run-as com.sillyclient cat files/tarven/logs/server.log | tail -50` —— SillyTavern webpack 编译较慢，可能还在编译中，多等 30s 复查端口。
+3. 看 server-source 是否下载解压完整：`adb shell run-as com.sillyclient ls files/tarven/bootstrap/server/`。
+
+### 启动即崩溃 ClassNotFoundException
+典型是 Kotlin 没编译进 dex（曾发生在 Capacitor 工程 kotlin 插件未配置）。
+- 确认 `app/build.gradle.kts` 应用了 Kotlin 插件。
+- 确认 `assembleDebug` 日志里有 `compileDebugKotlin` 任务执行。
+- 看 logcat AndroidRuntime:E 的 Caused by 行定位缺哪个类。
+
+### 顶框 scrim 不显示 / 颜色不对
+- 顶框只在**酒馆模式**显现（root 可见时）。启动页不显示是正常的。
+- 取色需 WebView 已绘制：`sampleTopColor` 有 `isShown` 守卫，恢复态无 surface 时跳过，轮询稍后重试。
+- 看是否报 `Window doesn't have a backing surface`（已 try/catch，不崩，但说明取色被跳过）。
+
+### Capacitor 工程 web 构建被 pnpm deps 校验拦截
+`pnpm run build` 触发 `verify-deps-before-run` 失败时，绕开 pnpm 直接跑：
+```bash
+node node_modules/typescript/bin/tsc
+node node_modules/vite/bin/vite.js build
+node_modules/.bin/cap sync android
+```
 
 ## ⚠️ 不要踩的坑
 
