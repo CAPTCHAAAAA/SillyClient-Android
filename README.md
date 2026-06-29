@@ -1,83 +1,76 @@
-# Tarven++
+# SillyClient
 
-One-click SillyTavern launcher for Android. No Termux, no command lines — install the APK, open the app, and your tavern is ready.
+**SillyClient** 是唯一品牌名，跨所有框架与平台统一使用，不接受别名。
 
-> **技术路线（转向 Capacitor）**
-> 本仓为 **当前安卓实现基线**（package `com.sillyclient`，自撸混合壳）。我们正转向
-> **Capacitor 多端**（以前端 UI 开发为主，仅适配已做好的 webUI 前端），目标工程见
-> [`TarvenIonicApp`](../TarvenIonicApp)（`com.tarven.plus`，Ionic React + Capacitor 8）。
-> 平台相关、已锁定的部分不再动：**Node.js 本地启服**、**变色龙顶框取色**（见下）。
-> 后续：把 `web/console`、`web/launch` 等 webUI 经 Capacitor 框架接入，替代当前自撸 `TarvenN` 桥。
+在设备上一键本地化运行 [SillyTavern](https://github.com/SillyTavern/SillyTavern) 的壳应用：把服务端随 App 打包，本地启动后用原生 WebView 承载酒馆，前端控制台通过插件接口控制整套阅读环境。当前安卓端可用，正转向 Capacitor 插件化多端架构。
 
-## How it works
+---
 
-1. Install the APK
-2. Open Tarven++
-3. First launch downloads SillyTavern (~130 MB, one-time)
-4. Tavern starts automatically, WebView loads `http://127.0.0.1:8000`
+## 它是什么
 
-## 当下安卓端实现
+1. **打包 Node 起本地服务**：Node.js 以原生库打包进 App，启动后在 `127.0.0.1:8000` 跑起 SillyTavern。
+2. **原生 WebView 承载酒馆**：用一个原生 WebView 加载酒馆，叠加沉浸式阅读环境（刘海适配、变色龙顶框取色）。
+3. **控制台 webUI 控制**：webUI 通过插件接口控制阅读环境（进/出/取色/启停），不直接碰原生。
 
-- **Node.js 本地运行时**：`libtarven-node.so`（Node v24 Bionic）+ `rootfs-libs.zip` 打包进 APK，
-  运行时解压并以 `ProcessBuilder` 起本地服务，监听 `127.0.0.1:8000`，WebView 再加载之。
-  实现在 `runtime/*` + `MainActivity` 的 `provisionAndStart/extractNativeLibs/startServer/pollUntilReady`。**锁定不改。**
-- **变色龙顶框（顶条带自适应取色）**：`MainActivity.sampleTopColor` 用 `PixelCopy` 读酒馆页顶部
-  3px×全宽条带 → 平均色 → `TopScrimBar`（`TopColor` 折算三段渐变 45/80/100%）做 scrim + 点击白色光波 +
-  自下而上色波。**锁定不改（`DO NOT CHANGE`）。** 取色层读远端页真实像素、无可移植 API，
-  转 Capacitor 后以原生插件补回。
-- **SillyTavern 承载**：酒馆 WebView 加载 `http://127.0.0.1:8000`（远端页，非自有内容）。
-- **启动页**：`web/launch`（React + Vite 单文件 `index.html`，`assets/ui/launch/`）。
-- **JS↔原生桥**：自撸单入口 JSON 桥——`window.TarvenN.invoke(action, payloadJson)`（JS→原生）
-  与 `window.__tarvenDispatch(event, payloadJson)`（原生→JS）。契约见 `web/launch/src/bridge.ts`。
-  **待 Capacitor 插件替代**（不拆，当前在用）。
+> 启动器本体（环境检测 / 下载 / 配置 / 启动 / 打开阅读环境）已完善，不重写，只封装成插件。
 
-## Architecture
+## 架构速览
 
-```
-APK assets (bundled)
-├── jniLibs/arm64-v8a/
-│   ├── libtarven-node.so    # Node.js v24 Bionic runtime
-│   └── libc++_shared.so
-├── bootstrap/rootfs/
-│   └── rootfs-libs.zip      # Runtime shared libraries
-├── bootstrap/scripts/
-│   └── start-server.sh      # Server launcher
-└── assets/ui/launch/
-    └── index.html           # 启动页（Vite 单文件 React 产物）
+三层 + 双 WebView（职责正交）：
 
-First launch (downloaded)
-└── server-source.zip        # SillyTavern + node_modules
-    └── → files/tarven/bootstrap/server/
-```
+| 层 | 内容 |
+|---|---|
+| 控制台 webUI | React/Ionic，由 Capacitor WebView 承载，只调统一插件接口 |
+| 接口契约 | Capacitor plugin TS 接口，全平台共享，写一次 |
+| 平台实现 | 各平台一份 `@CapacitorPlugin` 实现，复用各端已做好的原生能力 |
 
-## Build
+| WebView | 承载 | 归属 |
+|---|---|---|
+| Capacitor WebView | 控制台 webUI | 控制层 |
+| 插件内原生 WebView | 酒馆 SillyTavern | 阅读环境层（**Capacitor 不渲染酒馆**） |
+
+完整说明见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+
+## 快速开始（安卓）
 
 ```bash
+# 原生壳（含已完善的启动器本体）
 ./gradlew :app:assembleDebug
-# Output: app/build/outputs/apk/debug/app-debug.apk
-```
+# → app/build/outputs/apk/debug/app-debug.apk
 
-Web 模块（启动页）单独构建后拷入 assets：
-
-```bash
-cd web/launch && pnpm build   # 产 dist/index.html（vite-plugin-singlefile）
+# 启动页 webUI（改动 web/launch 后需重新构建并拷入 assets）
+cd web/launch && pnpm build
 cp dist/index.html ../../app/src/main/assets/ui/launch/index.html
 ```
 
-### Pre-built server source
-
-`server-source.zip` 由单独流水线生成并托管在 GitHub Releases。
+装机运行：
 
 ```bash
-bash scripts/build-server-source.sh
+adb install -r app/build/outputs/apk/debug/app-debug.apk   # -r 保留数据，免首启重下 136MB
+adb shell monkey -p com.sillyclient -c android.intent.category.LAUNCHER 1
 ```
 
-## Requirements
+首启：下载解压 server-source → 启 Node → 轮询 `127.0.0.1:8000` 就绪 → WebView 加载酒馆。
 
-- Android 8.0+ (API 26)
-- arm64-v8a device
-- ~200 MB free storage (runtime + tavern)
-- Internet connection for first launch
+## 文档导航
+
+| 文档 | 说明 |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构总览：三层架构、双 WebView 分工、架构约定、锁定项、路线 |
+| [docs/ONBOARDING.md](docs/ONBOARDING.md) | 新人上手：环境要求、构建装机、调试、路径速查、常见排查 |
+| [docs/DECISIONS.md](docs/DECISIONS.md) | 决策记录（ADR）：关键架构决策的背景与被否方案 |
+
+## 当前状态
+
+- ✅ 安卓端可用：Node 本地运行时、原生 WebView 承酒馆、沉浸式、变色龙顶框（锁定）
+- 🔧 进行中：现有 `com.sillyclient` 工程 Capacitor 化，把上述能力封装成 `TavernEnvPlugin`
+- ⛔ 已作废：`SillyClient-Capacitor` 仓（Capacitor 重写探索，仅留参考）
+
+## 相关
+
+- 仓库：https://github.com/CAPTCHAAAAA/SillyClient
+- 当前基线分支：`sillyclient-baseline` ｜ 架构文档分支：`capacitor-plugin-architecture`
+- 作废参考仓：https://github.com/CAPTCHAAAAA/SillyClient-Capacitor
 
 ## License
 
