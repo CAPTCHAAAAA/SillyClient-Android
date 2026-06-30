@@ -9,23 +9,23 @@
 | JDK | 17+ | 当前实测 25 亦可，源码兼容 17 |
 | Android SDK | compileSdk 37 / minSdk 26 / targetSdk 37 | |
 | Node.js | 18+（建议 20+） | 构建 web 模块用 |
-| pnpm | 8+ | web 模块依赖管理 |
+| pnpm | 8+ | web 模块依赖管理（launch / console / capacitor-ui） |
 | 设备 | arm64-v8a，Android 8.0+ | 首启需联网下 ~136MB server-source |
 
 `gradlew` wrapper 已在仓库根，无需全局 Gradle。
 
 ## 完整首次构建到运行
 
-### 1. 构建启动页 webUI（如改动过 web/launch）
+### 1. 构建 Capacitor 控制台 webUI
 
 ```bash
-cd web/launch
+cd web/capacitor-ui
 pnpm install                       # 首次
-pnpm build                         # vite-plugin-singlefile → dist/index.html（自包含单文件）
-cp dist/index.html ../../app/src/main/assets/ui/launch/index.html
+pnpm build                         # vite-plugin-singlefile → dist/index.html
+cp dist/index.html ../../app/src/main/assets/public/index.html
 ```
 
-> 注意：web 产物需手动拷入 `app/src/main/assets/ui/launch/`，无自动 Gradle 任务。改完 web 必须重新拷贝并重打 APK，否则设备上跑的是旧产物。
+> 产物拷入 `app/src/main/assets/public/`，由 `BridgeActivity.load()` 加载为 Capacitor 主 WebView。改完 web 必须重新拷贝并重打 APK。
 
 ### 2. 构建原生 APK
 
@@ -65,12 +65,12 @@ adb shell "ps -A | grep -i tarven"                  # libtarven-node.so 进程
 
 | 想做的事 | 看哪里 |
 |---|---|
-| 理解启动流程 | `MainActivity.kt` onCreate → 恢复/初始化分支 |
-| 改 Node 启动 | `runtime/*`（锁定，谨慎） + MainActivity 供水链路 |
+| 理解启动流程 | `MainActivity.kt` onCreate + `plugin/TarvenEnvPlugin.kt` |
+| 改 Node 启动 | `runtime/*`（锁定，谨慎） + MainActivity provisionAndStart |
 | 改顶框取色/渲染 | `MainActivity.sampleTopColor` / `ui/TopScrimBar.kt` / `ui/TopColor.kt`（DO NOT CHANGE） |
 | 改沉浸式 | `enterImmersive`/`showSystemBars`/`statusBarFixedPx` |
-| 改启动页 UI | `web/launch/src/`（React + Vite） |
-| 改桥接 | `ui/HybridUiHost.kt`（自撸桥，待退役为插件） + `web/*/src/bridge.ts` |
+| 改控制台 UI | `web/capacitor-ui/src/main.tsx`（React + Vite + @capacitor/core） |
+| 改插件接口 | `plugin/TarvenEnvPlugin.kt` + `web/capacitor-ui/src/capacitor-plugin.ts` |
 
 ## 常见问题排查
 
@@ -106,13 +106,25 @@ node_modules/.bin/cap sync android
 4. **品牌名只用 SillyClient。** 见约定 B1。
 5. **别用强推 main。** 远程 `main` 是旧 `com.tarven.plus` + ChameleonController 历史；当前基线在 `sillyclient-baseline` 分支。
 
-## Capacitor 化进行中（当前阶段）
+## Capacitor 化 ✅ 已完成（2026-06-30）
 
-工程正从"自撸桥"迁移到"Capacitor 插件化"。期间两套机制并存：
-- 自撸 `TarvenN` 桥（`HybridUiHost` + `web/bridge.ts`）：当前在用。
-- Capacitor 插件接口：逐步接管，最终替代自撸桥。
+工程已从自撸桥迁移到 Capacitor 插件框架：
+- 自撸 `TarvenN` 桥（`HybridUiHost` + `web/bridge.ts`）：**已退役**，代码保留供参考。
+- Capacitor 插件接口（`TarvenEnvPlugin` + `@capacitor/core`）：**已接管**全部酒馆启动/进出/状态功能。
+- 控制台 webUI：`web/capacitor-ui/`（React + Vite + @capacitor/core），产物 → `assets/public/index.html`。
+- 进度/日志/就绪事件通过 `notifyListeners` 推送到 Capacitor JS 侧。
 
-迁移目标见 ARCHITECTURE.md §6。**迁移期间不要删除自撸桥**，待插件接口完整覆盖后再退役。
+详见 ARCHITECTURE.md §4.2、§6。
+
+### 关键路径速查（更新后）
+
+| 想做的事 | 看哪里 |
+|---|---|
+| 理解启动流程 | `MainActivity.kt` + `plugin/TarvenEnvPlugin.kt` |
+| 改控制台 UI | `web/capacitor-ui/src/main.tsx` |
+| 改插件接口 | `web/capacitor-ui/src/capacitor-plugin.ts` (TS) + `plugin/TarvenEnvPlugin.kt` (Kotlin) |
+| 改 Node 启动 | `runtime/*`（锁定，谨慎） + MainActivity provisionAndStart |
+| 改顶框取色/渲染 | `MainActivity.sampleTopColor` / `ui/TopScrimBar.kt` / `ui/TopColor.kt`（DO NOT CHANGE） |
 
 ## 提交规范
 
@@ -122,5 +134,5 @@ node_modules/.bin/cap sync android
 
 ## 找不到答案？
 
-读 `ARCHITECTURE.md` 全文 → 读 `MainActivity.kt` 与 `ui/HybridUiHost.kt` 全文 → 读 `web/launch/src/bridge.ts`。
+读 `ARCHITECTURE.md` 全文 → 读 `MainActivity.kt` 与 `plugin/TarvenEnvPlugin.kt` 全文 → 读 `web/capacitor-ui/src/main.tsx`。
 这三处基本能解释整个系统。

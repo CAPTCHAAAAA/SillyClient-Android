@@ -2,13 +2,14 @@
 
 > 项目架构总览文档。动手前先读，改动方向请对照下述架构约定。
 
-最后更新：2026-06-29
+最后更新：2026-06-30
 
 ---
 
 ## 0. 一句话定位
 
 **SillyClient** 把 SillyTavern 在设备上本地化运行：随 App 打包服务端，本地启动，前端套壳。
+**基于 Capacitor 插件框架**（2026-06-30 完成电容化），控制台 webUI 经 `@capacitor/core` 调 `TarvenEnvPlugin`，酒馆仍由插件内原生 WebView 承载。
 品牌名 **SillyClient 唯一**，跨所有框架 / 平台 / UI 统一，不接受 `Tarven++` / `TarvenPlus` 等别名。
 
 ---
@@ -147,79 +148,28 @@ webUI 提供"环境管理器"：增删环境 / 切换当前环境 / 启停。
 | 变色龙顶框 | `sampleTopColor`(PixelCopy) + `TopScrimBar` + `TopColor`（`DO NOT CHANGE`） | 锁定 |
 | 自撸桥（待替代） | `TarvenN.invoke` / `__tarvenDispatch`（HybridUiHost + web/bridge.ts） | 渐进替代为插件接口 |
 
-### 4.2 封装做法
+### 4.2 封装做法 ✅ 已完成（2026-06-30）
 
 **不是在另一个工程重写，是在现有 `com.sillyclient` 上加 Capacitor 插件层。**
 
-#### 改动点 1：MainActivity 改继承 BridgeActivity
+#### 已落地的改动
 
-```kotlin
-// 改动最小：父类 ComponentActivity → BridgeActivity
-// onStart 调 super（BridgeActivity 在此初始化桥），其余逻辑全保留
-class MainActivity : BridgeActivity() {
-    override fun onCreate(savedInstanceState: Bundle?) {
-        // 在 super.onCreate 前注册自定义插件
-        registerPlugin(TavernEnvPlugin::class.java)
-        super.onCreate(savedInstanceState)
-        // ……现有全部逻辑原样保留（provision/start/enter/顶框探针…）
-    }
-}
-```
+| # | 改动 | 状态 |
+|---|------|------|
+| 1 | `app/build.gradle.kts` + `libs.versions.toml`：添加 `capacitor-android` + `appcompat` | ✅ |
+| 2 | `MainActivity` 继承 `BridgeActivity`（原 `ComponentActivity`），`onCreate` 前 `registerPlugin(TarvenEnvPlugin)` | ✅ |
+| 3 | 新建 `plugin/TarvenEnvPlugin.kt`：`@CapacitorPlugin(name="TarvenEnv")`，封装 `provisionAndStart` / `enterImmersive` / `exitImmersive` / `getStatus` | ✅ |
+| 4 | 插件 `companion.notify()` 推送进度/日志/就绪/模式事件 → JS `addListener` 接收 | ✅ |
+| 5 | `MainActivity` 进度推送从 `hybridHost.pushXxx` 改为 `TarvenEnvPlugin.notify` | ✅ |
+| 6 | `BridgeActivity.load()` 加载 Capacitor 主 WebView（`assets/public/index.html`），原 `HybridUiHost` setContentView 已注释，自撸 `TarvenN` 桥退役 | ✅ |
+| 7 | 新建 `web/capacitor-ui/`：React + Vite + `@capacitor/core` + `vite-plugin-singlefile`，产物 → `assets/public/index.html` | ✅ |
+| 8 | `AndroidManifest.xml` label 改为 `SillyClient`，`capacitor.config.json` 配置 appId | ✅ |
 
-#### 改动点 2：新建 TavernEnvPlugin（包装现有方法，不动原逻辑）
+#### 关键实现细节
 
-```kotlin
-@CapacitorPlugin(name = "TarvenEnv")
-class TavernEnvPlugin : Plugin() {
-
-    @PluginMethod
-    fun provisionAndStart(call: PluginCall) {
-        val act = activity as MainActivity
-        act.runOnUiThread { act.provisionAndStart() }   // 复用现有方法
-        call.resolve()
-    }
-
-    @PluginMethod
-    fun enterImmersive(call: PluginCall) {
-        val act = activity as MainActivity
-        act.runOnUiThread { act.enterTavern() }          // 复用：沉浸式+WebView+顶框
-        call.resolve()
-    }
-
-    @PluginMethod
-    fun exitImmersive(call: PluginCall) {
-        val act = activity as MainActivity
-        act.runOnUiThread { act.exitTavern() }
-        call.resolve()
-    }
-
-    @PluginMethod
-    fun getStatus(call: PluginCall) {
-        val ret = JSObject()
-        ret.put("ready", (activity as MainActivity).isServerReady)
-        call.resolve(ret)
-    }
-
-    // 原生→JS 事件推送示例：顶框色变化时
-    // notifyListeners("color", JSObject().put("hex", hex))
-}
-```
-
-#### 改动点 3：控制台 webUI 调插件
-
-```ts
-import { registerPlugin } from '@capacitor/core'
-interface TarvenEnvPlugin {
-  provisionAndStart(): Promise<void>
-  enterImmersive(): Promise<void>
-  exitImmersive(): Promise<void>
-  getStatus(): Promise<{ ready: boolean }>
-}
-const TarvenEnv = registerPlugin<TarvenEnvPlugin>('TarvenEnv')
-
-// 控制台里：
-await TarvenEnv.enterImmersive()
-```
+- MainActivity 原有逻辑（provisionAndStart / enterTavern / exitTavern / 沉浸式 / 顶框 / Node 运行时）一行未动，仅从 `private` 改为 `public` 供插件调用。
+- 原生酒馆 WebView（`root` FrameLayout + `webViewScreen`）仍通过 `addContentView` 叠加在 Capacitor WebView 之上。
+- 自撸 `TarvenN` 桥（HybridUiHost + `web/bridge.ts`）已退役但代码保留供参考。
 
 ### 4.3 插件接口草案（控制台 → 阅读环境）
 
@@ -269,12 +219,13 @@ interface TarvenEnvPlugin {
 
 ## 6. 路线与阶段
 
-### 当前阶段：工程 Capacitor 化 + 封装 TarvenEnvPlugin
-- [ ] 现有 `com.sillyclient` 加 `@capacitor/android`
-- [ ] MainActivity → `BridgeActivity`，保留全逻辑
-- [ ] 封装 `TarvenEnvPlugin`，复用现有 Node 启动 / WebView / 沉浸式 / 顶框
-- [ ] 控制台 webUI 经 `@capacitor/core` 调插件
-- [ ] 自撸 `TarvenN` 桥渐进退役
+### ✅ 已完成：工程 Capacitor 化 + 封装 TarvenEnvPlugin（2026-06-30）
+- [x] 现有 `com.sillyclient` 加 `@capacitor/android`（`capacitor-android:7.2.0`）
+- [x] MainActivity → `BridgeActivity`，保留全逻辑
+- [x] 封装 `TarvenEnvPlugin`，复用现有 Node 启动 / WebView / 沉浸式 / 顶框
+- [x] 控制台 webUI（`web/capacitor-ui/`）经 `@capacitor/core` 调插件
+- [x] 自撸 `TarvenN` 桥退役（HybridUiHost + `web/bridge.ts`，代码保留供参考）
+- [x] 真机验证通过（Xiaomi 14 / HyperOS）：provisioning → 进度事件推送 → Enter Tavern → 酒馆 WebView 显示 SillyTavern 1.18.0
 
 ### 后续阶段
 - PC 端插件实现（系统 Node，不走虚拟机）
@@ -299,29 +250,38 @@ interface TarvenEnvPlugin {
 
 5. **多端复用的是 webUI 和接口契约，不是原生重活。** Node 启动、取色、沉浸式这些重活仍要各端原生重写，Capacitor 只省下 UI 壳和控制接口那一层。
 
+6. **2026-06-30 Capacitor 化完成。** MainActivity 成功继承 BridgeActivity，TarvenEnvPlugin 封装酒馆启动/进出，进度/日志/状态事件经 notifyListeners 推送到 capacitor-ui 前端。真机（Xiaomi 14 / HyperOS）端到端验证通过：Provision → Start → Enter → SillyTavern 1.18.0 正常运行 + 变色龙顶框在位。自撸 TarvenN 桥退役。
+
 ---
 
-## 8. 目录与关键文件（当前 `com.sillyclient`）
+## 8. 目录与关键文件（当前 `com.sillyclient`，已 Capacitor 化）
 
 ```
 app/src/main/java/com/sillyclient/
-├── MainActivity.kt              # 宿主：环境搭建 + 阅读环境（待包成插件）
+├── MainActivity.kt              # 宿主：BridgeActivity，环境搭建 + 阅读环境
 ├── runtime/                     # Node 运行时（锁定）
 │   ├── AssetExtractor.kt
 │   ├── RuntimeFileUtils.kt
 │   ├── RuntimePaths.kt
 │   ├── TarvenProcessRunner.kt
 │   └── TarvenRuntimeManager.kt
+├── plugin/                      # Capacitor 插件层 ✅
+│   └── TarvenEnvPlugin.kt       # 封装 provision/enter/exit/status + notifyListeners 事件推送
 └── ui/
-    ├── HybridUiHost.kt          # 自撸桥（待退役），承载启动页 webUI
+    ├── HybridUiHost.kt          # 自撸桥（退役，代码保留供参考）
     ├── TopScrimBar.kt           # 变色龙顶框渲染（锁定，DO NOT CHANGE）
     └── TopColor.kt              # 取色纯数学（锁定）
 
 web/
-├── launch/                      # 启动页 webUI（Vite 单文件 React）
-└── console/                     # 控制台 webUI（待经 @capacitor/core 接入）
+├── capacitor-ui/                # Capacitor 控制台 webUI ✅（React + @capacitor/core）
+│   ├── src/main.tsx             # 主页面：按钮 + 进度条 + 日志面板 + addListener 事件监听
+│   └── src/capacitor-plugin.ts  # TarvenEnv 插件 TS 接口定义
+├── launch/                      # 旧启动页（自撸桥时期，代码保留）
+└── console/                     # 旧控制台（代码保留，供移植参考）
 
-app/src/main/assets/ui/launch/   # 启动页构建产物
+app/src/main/assets/
+├── capacitor.config.json        # Capacitor 配置
+└── public/index.html            # capacitor-ui 构建产物（BridgeActivity.load() 加载）
 ```
 
 ---

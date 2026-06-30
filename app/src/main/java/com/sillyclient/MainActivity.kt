@@ -21,11 +21,13 @@ import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
-import androidx.activity.ComponentActivity
+import com.getcapacitor.BridgeActivity
+import com.sillyclient.plugin.TarvenEnvPlugin
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.getcapacitor.JSObject
 import com.sillyclient.runtime.RuntimePaths
 import com.sillyclient.runtime.RuntimeFileUtils
 import com.sillyclient.runtime.TarvenProcessRunner
@@ -37,7 +39,7 @@ import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
-class MainActivity : ComponentActivity() {
+class MainActivity : BridgeActivity() {
 
     private val handler = Handler(Looper.getMainLooper())
     private val topColorPoll: Runnable = Runnable {
@@ -79,6 +81,8 @@ class MainActivity : ComponentActivity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
+        // ---- Capacitor: register plugin BEFORE super so BridgeActivity picks it up ----
+        registerPlugin(TarvenEnvPlugin::class.java)
         super.onCreate(savedInstanceState)
 
         // ╔══════════════════════════════════════════════════════════════╗
@@ -135,8 +139,10 @@ class MainActivity : ComponentActivity() {
             override fun onSetTheme(t: String) = hybridHost.setTheme(t)
         }
         hybridHost.onPageReady = { pushCurrentStateToWeb() }
-        setContentView(hybridHost.webView, FrameLayout.LayoutParams(MATCH, MATCH))
-        hybridHost.loadDashboard()
+        // ponytail: Capacitor WebView is now primary (loaded by BridgeActivity.load()). 
+        // HybridUiHost is kept for provisionAndStart status dispatch (no-ops until wired).
+        // setContentView(hybridHost.webView, FrameLayout.LayoutParams(MATCH, MATCH))
+        // hybridHost.loadDashboard()
 
         // ---- Native overlay for WebView + FCC (hidden until entering tavern) ----
         root = FrameLayout(this).apply {
@@ -216,7 +222,7 @@ class MainActivity : ComponentActivity() {
                 enterImmersive()
             }
             setStatus("Ready")
-            hybridHost.pushCanEnter(true)
+            pushReady(true)
         } else if (wasServerReady) {
             serverReady = true
             updateHomeReady()
@@ -224,6 +230,9 @@ class MainActivity : ComponentActivity() {
             provisionAndStart(wasServerReady)
         }
     }
+
+    // ponytail: BridgeActivity.load() now loads assets/public/index.html (Capacitor console).
+    // Capacitor WebView is the primary content; native overlay sits on top via addContentView.
 
     override fun onResume() {
         super.onResume()
@@ -236,7 +245,10 @@ class MainActivity : ComponentActivity() {
         outState.putBoolean(STATE_WEBVIEW_VISIBLE, isWebViewVisible)
     }
 
-    private fun provisionAndStart(skipIfExists: Boolean) {
+    /** Exposed for TarvenEnvPlugin. */
+    fun isServerReady(): Boolean = serverReady
+
+    fun provisionAndStart(skipIfExists: Boolean = true) {
         Thread {
             val paths = RuntimePaths.from(this)
             paths.ensureDirs()
@@ -280,13 +292,8 @@ class MainActivity : ComponentActivity() {
 
     private fun updateHomeReady() {
         post {
-            hybridHost.pushProgress(100f, "Ready")
-            hybridHost.pushCanEnter(true)
-            hybridHost.pushStatus(
-                HybridUiHost.Status(true, "Node v24.17.0 ready"),
-                HybridUiHost.Status(true, "Loaded"),
-                HybridUiHost.Status(true, "Ready")
-            )
+            pushProgress(100f, "Ready")
+            pushReady(true)
         }
     }
 
@@ -302,28 +309,22 @@ class MainActivity : ComponentActivity() {
      */
     private fun runDiagnostics() {
         appendLog("→ Diagnostics...")
-        hybridHost.pushProgress(0f)
+        pushProgress(0f)
         Thread {
             val paths = RuntimePaths.from(this)
-            var nodeS = HybridUiHost.Status(false, "")
-            var libsS = HybridUiHost.Status(false, "")
-            var srvS = HybridUiHost.Status(false, "")
             // 1. Node binary
             val nodeOk = paths.nodeBin.exists()
-            nodeS = HybridUiHost.Status(nodeOk, if (nodeOk) "Node v24.17.0 ready" else "Binary missing!")
-            hybridHost.pushStatus(nodeS, libsS, srvS)
-            hybridHost.pushProgress(30f)
+            pushLog(if (nodeOk) "  Node v24.17.0 ready" else "  Node binary missing!")
+            pushProgress(30f)
             // 2. Bionic libs
             val libCount = paths.usrLibDir.listFiles()?.size ?: 0
-            libsS = HybridUiHost.Status(libCount > 50, if (libCount > 50) "$libCount libs loaded" else "$libCount libs — need rootfs")
-            hybridHost.pushStatus(nodeS, libsS, srvS)
-            hybridHost.pushProgress(60f)
+            pushLog(if (libCount > 50) "  $libCount libs loaded" else "  $libCount libs — need rootfs")
+            pushProgress(60f)
             // 3. Server source
             val serverJs = File(paths.serverDir, "server.js")
             val serverOk = serverJs.exists() && File(paths.serverDir, "node_modules").isDirectory
-            srvS = HybridUiHost.Status(serverOk, if (serverOk) "Server source ready" else "Server source missing!")
-            hybridHost.pushStatus(nodeS, libsS, srvS)
-            hybridHost.pushProgress(80f)
+            pushLog(if (serverOk) "  Server source ready" else "  Server source missing!")
+            pushProgress(80f)
             // 4. Fix if needed
             if (!nodeOk || libCount < 50 || !serverOk) {
                 appendLog("→ Issues found — fixing...")
@@ -331,28 +332,25 @@ class MainActivity : ComponentActivity() {
                     paths.usrDir.mkdirs()
                     assets.open("bootstrap/rootfs/rootfs-libs.zip").use { RuntimeFileUtils.unzipStream(it, paths.usrDir) }
                     val n = paths.usrLibDir.listFiles()?.size ?: 0
-                    libsS = HybridUiHost.Status(n > 50, "$n libs (re-extracted)")
-                    hybridHost.pushStatus(nodeS, libsS, srvS)
+                    pushLog("  $n libs (re-extracted)")
                 } catch (_: Exception) {
-                    libsS = HybridUiHost.Status(false, "Extraction failed")
-                    hybridHost.pushStatus(nodeS, libsS, srvS)
+                    pushLog("  Extraction failed")
                 }
             }
             // 5. HTTP check
             val httpOk = tryConnect(TAVERN_URL)
             if (httpOk) {
-                srvS = HybridUiHost.Status(true, "127.0.0.1:8000 — online")
-                hybridHost.pushStatus(nodeS, libsS, srvS)
-                hybridHost.pushCanEnter(true)
-                hybridHost.pushProgress(100f, "All systems ready")
+                pushLog("  127.0.0.1:8000 — online")
+                pushReady(true)
+                pushProgress(100f, "All systems ready")
                 serverReady = true
             } else {
-                hybridHost.pushProgress(100f, "Check complete — tap ENTER to start")
+                pushProgress(100f, "Check complete — tap ENTER to start")
             }
         }.start()
     }
 
-    private fun enterTavern() {
+    fun enterTavern() {
         if (!serverReady || isWebViewVisible) return
         if (webView.url == null || webView.url.isNullOrBlank()) {
             webView.loadUrl(TAVERN_URL)
@@ -369,7 +367,7 @@ class MainActivity : ComponentActivity() {
         handler.postDelayed(topColorPoll, 350)
     }
 
-    private fun exitTavern() {
+    fun exitTavern() {
         if (!isWebViewVisible) return
         handler.removeCallbacks(topColorPoll)
         topScrimBar.reset()
@@ -402,15 +400,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun pushMode(mode: String) {
+        TarvenEnvPlugin.notify("mode", JSObject().put("mode", mode))
+    }
+
     private fun switchToWebView(animate: Boolean) {
         isWebViewVisible = true
-        // Show native overlay (tavernWebView + FCC), hide web dashboard underneath
+        // Show native overlay (tavernWebView + FCC) — Capacitor console stays behind it.
         root.visibility = View.VISIBLE
-        // webViewScreen starts GONE in onCreate and is hidden again on exit — it must
-        // be flipped to VISIBLE here or the WebView area stays invisible (black screen).
         webViewScreen.visibility = View.VISIBLE
-        hybridHost.webView.visibility = View.INVISIBLE  // stop painting dashboard while in tavern
-        hybridHost.pushMode("tavern")
+        pushMode("tavern")
         if (animate) {
             webViewScreen.alpha = 0f
             webViewScreen.animate().alpha(1f).setDuration(220).start()
@@ -421,12 +420,11 @@ class MainActivity : ComponentActivity() {
 
     private fun switchToHome(animate: Boolean) {
         isWebViewVisible = false
-        // Immediately hide native overlay — web dashboard shows underneath
+        // Hide native overlay — Capacitor console shows underneath.
         webViewScreen.visibility = View.GONE
         root.visibility = View.GONE
-        hybridHost.webView.visibility = View.VISIBLE
-        hybridHost.pushMode("dashboard")
-        hybridHost.pushCanEnter(true)   // re-enable ENTER for next entry
+        pushMode("dashboard")
+        pushReady(true)
     }
 
     // ╔══════════════════════════════════════════════════════════════════╗
@@ -734,39 +732,44 @@ class MainActivity : ComponentActivity() {
     } catch (_: Exception) { false }
 
     // ============================================
-    // HELPERS
+    // HELPERS — push to Capacitor JS via TarvenEnvPlugin.notify
     // ============================================
 
-    private fun setStatus(t: String) { appendLog(t) }  // status text → 日志行（web 无独立状态文本槽）
-    private fun setProgressValue(pct: Int) { hybridHost.pushProgress(pct.toFloat()) }
-    private fun updateProgress(pct: Int) { hybridHost.pushProgress(pct.toFloat()) }
-
-    /** Append a log line to the web dashboard's log panel. */
-    private fun appendLog(line: String) {
-        hybridHost.pushLog(line)
+    private fun pushLog(line: String) {
+        TarvenEnvPlugin.notify("log", JSObject().put("line", line))
     }
 
-    /** Read server.log and push its tail to the web dashboard. */
+    private fun pushProgress(pct: Float, text: String? = null) {
+        val d = JSObject().put("pct", pct.toInt())
+        if (text != null) d.put("text", text)
+        TarvenEnvPlugin.notify("progress", d)
+    }
+
+    private fun pushReady(ready: Boolean) {
+        TarvenEnvPlugin.notify("ready", JSObject().put("ready", ready))
+    }
+
+    private fun setStatus(t: String) { pushLog(t) }
+    private fun setProgressValue(pct: Int) { pushProgress(pct.toFloat()) }
+    private fun updateProgress(pct: Int) { pushProgress(pct.toFloat()) }
+    private fun appendLog(line: String) { pushLog(line) }
+
+    /** Read server.log and push its tail to Capacitor JS. */
     private fun refreshLogToCompose() {
         Thread {
             val paths = RuntimePaths.from(this)
             val logFile = File(paths.logsDir, "server.log")
             if (!logFile.exists()) return@Thread
             val lines = logFile.readLines().takeLast(30)
-            for (l in lines) hybridHost.pushLog(l)
+            for (l in lines) pushLog(l)
         }.start()
     }
 
-    /** Push current boot state to the web dashboard (page finished loading). */
+    /** Push current boot state to Capacitor JS. */
     private fun pushCurrentStateToWeb() {
         if (serverReady) {
-            hybridHost.pushProgress(100f, "Ready")
-            hybridHost.pushCanEnter(true)
-            hybridHost.pushStatus(
-                HybridUiHost.Status(true, "Node v24.17.0 ready"),
-                HybridUiHost.Status(true, "Loaded"),
-                HybridUiHost.Status(true, "Ready")
-            )
+            pushProgress(100f, "Ready")
+            pushReady(true)
         }
         refreshLogToCompose()
     }

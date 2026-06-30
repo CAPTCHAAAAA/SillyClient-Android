@@ -1,0 +1,20 @@
+{
+  "name": "sillyclient-capacitor-ui",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@capacitor/core": "^7.2.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.4",
+    "typescript": "^5.8.3",
+    "vite": "^7.3.1",
+    "vite-plugin-singlefile": "^2.3.3"
+  }
+}

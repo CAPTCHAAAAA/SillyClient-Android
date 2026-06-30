@@ -5,7 +5,7 @@
     <application
         android:allowBackup="true"
         android:usesCleartextTraffic="true"
-        android:label="Tarven++"
+        android:label="SillyClient"
         android:supportsRtl="true"
         android:theme="@style/Theme.TarvenPlus">
 

@@ -1,0 +1,9 @@
+{
+  "appId": "com.sillyclient",
+  "appName": "SillyClient",
+  "server": {
+    "android": {
+      "path": "public"
+    }
+  }
+}
