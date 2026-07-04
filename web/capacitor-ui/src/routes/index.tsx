@@ -290,14 +290,22 @@ function SillyClientLauncher() {
   }, []);
 
   // 安全 insets(挖孔避让) — 原生返回物理像素,需除以 devicePixelRatio 转为 CSS 像素
+  // 用 useLayoutEffect + 轮询确保 insets 就绪(首次 mount 时可能返回 0)
   useEffect(() => {
-    (async () => {
+    let cancelled = false;
+    const fetchInsets = async () => {
       try {
         const insets = await TarvenEnv.getSafeInsets();
+        if (cancelled) return;
         const dpr = window.devicePixelRatio || 1;
-        setSafeInsetTop(Math.round(insets.top / dpr));
+        const top = Math.round(insets.top / dpr);
+        if (top > 0) { setSafeInsetTop(top); return; }
+        // 还没就绪,500ms 后重试
+        setTimeout(fetchInsets, 500);
       } catch { /* 非 Capacitor 环境 */ }
-    })();
+    };
+    fetchInsets();
+    return () => { cancelled = true; };
   }, []);
 
   // 管理面板打开且切到关于页时,拉取真实实例数据
@@ -676,7 +684,7 @@ function SillyClientLauncher() {
       )}
 
       {/* 顶部导航 */}
-      <header className="fixed left-0 right-0 z-50 px-4" style={{ top: `${safeInsetTop + 4}px` }}>
+      <header className="fixed left-0 right-0 z-50 px-4" style={{ top: `max(env(safe-area-inset-top), ${safeInsetTop + 4}px)` }}>
         <div className={cn("h-12 flex items-center px-3 rounded-[var(--radius-3xl)] border backdrop-blur-[40px] saturate-180 transition-colors", isLight ? "bg-white/60 border-black/5 shadow-[0_4px_16px_rgba(0,0,0,0.06)]" : "glass-panel")}>
           <div className="flex items-center gap-3 flex-shrink-0">
             <button
@@ -926,7 +934,7 @@ function SillyClientLauncher() {
       )}
 
       {/* 主内容 */}
-      <main className="pb-12 px-6 min-h-screen flex flex-col items-center" style={{ paddingTop: `${safeInsetTop + 68}px` }}>
+      <main className="pb-12 px-6 min-h-screen flex flex-col items-center" style={{ paddingTop: `calc(env(safe-area-inset-top) + 68px)` }}>
         {/* Logo */}
         <div className="mb-4 text-center select-none cursor-pointer group" onClick={() => setLogoFontIndex(prev => (prev + 1) % logoFonts.length)} title={`点击切换字体 (${logoFonts[logoFontIndex].name})`}>
           <span

@@ -963,6 +963,7 @@ class MainActivity : BridgeActivity() {
 
     /** 安全 insets(挖孔/状态栏避让),单位 px。
      *  top = 仅挖孔摄像头高度(非整个状态栏),前端顶栏用此值避让。
+     *  若 cutout 尚未就绪(返回 0),fallback 到 statusBarFixedPx 的挖孔部分。
      */
     fun getSafeInsets(): Quartet<Int, Int, Int, Int> {
         var cutoutTop = 0
@@ -970,6 +971,8 @@ class MainActivity : BridgeActivity() {
             val cutout = window.decorView.rootWindowInsets?.displayCutout
             if (cutout != null) cutoutTop = cutout.safeInsetTop
         }
+        // Fallback: 若运行时 cutout 未就绪,用 onCreate 时测量的 statusBarFixedPx
+        if (cutoutTop <= 0) cutoutTop = statusBarFixedPx
         return Quartet(cutoutTop, 0, 0, 0)
     }
 
