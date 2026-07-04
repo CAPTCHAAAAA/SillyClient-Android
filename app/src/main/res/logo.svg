@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" width="100%" height="100%">
+  <defs>
+    <linearGradient id="iconBg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#2C2C2E" />
+      <stop offset="100%" stop-color="#1C1C1E" />
+    </linearGradient>
+
+    <linearGradient id="solidLineGrad" x1="106" y1="0" x2="694" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#E599AD" />
+      <stop offset="100%" stop-color="#D12A4F" />
+    </linearGradient>
+
+    <linearGradient id="solidLiquid" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#A82341" />
+      <stop offset="100%" stop-color="#611325" />
+    </linearGradient>
+  </defs>
+
+  <rect width="800" height="800" rx="180" fill="url(#iconBg)" />
+
+  <g>
+    
+    <path d="M 106 547 
+             Q 400 463 694 547 
+             L 694 603 
+             A 98 98 0 0 1 596 701 
+             L 204 701 
+             A 98 98 0 0 1 106 603 
+             Z" 
+          fill="url(#solidLiquid)" />
+
+    <g stroke="url(#solidLineGrad)" stroke-width="54" stroke-linecap="round" stroke-linejoin="round" fill="none">
+      
+      <path d="M 694 99 
+               L 204 99 
+               A 98 98 0 0 0 106 197 
+               C 106 281, 326 253, 326 337 
+               C 326 421, 106 393, 106 477 
+               L 106 603 
+               A 98 98 0 0 0 204 701 
+               L 596 701 
+               A 98 98 0 0 0 694 603 
+               L 694 470 
+               A 220 133 0 0 1 694 204" />
+
+      <path d="M 400 99 L 400 701" />
+               
+    </g>
+  </g>
+</svg>

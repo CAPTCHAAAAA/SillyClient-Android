@@ -58,11 +58,31 @@ class MainActivity : BridgeActivity() {
     // ---- Hybrid UI host (web dashboard / console / bridge) ----
     private lateinit var hybridHost: HybridUiHost
 
+    /** 本地实例运行配置(对应前端管理面板设置项)。 */
+    data class InstanceConfig(
+        val listen: Boolean = false,
+        val ipv4: Boolean = true,
+        val ipv6: Boolean = false,
+        val dnsIpv6: Boolean = false,
+        val heartbeat: Int = 0,
+        val keepAlive: Boolean = false
+    )
+
     // ---- State ----
     private lateinit var runner: TarvenProcessRunner
     private var serverReady = false
     private var isWebViewVisible = false
     private var statusBarFixedPx = 0  // fixed physical pixels, never changes
+    // 启动器支持多实例:目标 URL 与端口由前端实例数据决定,不再硬编码 8000
+    private var tavernUrl = "http://127.0.0.1:8000/"
+    private var tavernPort = 8000
+    /** 当前 Node 服务进程(用于终端 stdin 输入)。 */
+    private var serverProcess: Process? = null
+    /** 酒馆 WebView 下拉刷新开关。 */
+    private var pullToRefreshEnabled = false
+    /** 下拉刷新手势状态。 */
+    private var pullStartY = 0f
+    private var pullReadyToReload = false
 
     private var fullscreenView: View? = null
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
@@ -71,7 +91,6 @@ class MainActivity : BridgeActivity() {
         private const val TAG = "SillyClient"
         private const val SERVER_SOURCE_URL =
             "https://github.com/CAPTCHAAAAA/TarvenPlus/releases/download/v0.2/server-source.zip"
-        private const val TAVERN_URL = "http://127.0.0.1:8000/"
         private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 
         private const val BG = 0xFF070408.toInt()
@@ -208,7 +227,7 @@ class MainActivity : BridgeActivity() {
 
         // ---- Hybrid UI host owns the web dashboard + console + bridge ----
 
-        // Restore or init
+        // Restore or init —— 启动器语义:不自动 provision,由前端选择实例后通过插件触发。
         if (wasWebViewVisible && wasServerReady) {
             serverReady = true
             // 镜像 enterTavern 的布局：WebView 下移 statusBarFixedPx，露出顶条带
@@ -216,7 +235,7 @@ class MainActivity : BridgeActivity() {
             val lp = webViewScreen.layoutParams as FrameLayout.LayoutParams
             lp.topMargin = h
             webViewScreen.layoutParams = lp
-            webView.loadUrl(TAVERN_URL)
+            webView.loadUrl(tavernUrl)
             handler.post {
                 switchToWebView(false)
                 enterImmersive()
@@ -226,9 +245,11 @@ class MainActivity : BridgeActivity() {
         } else if (wasServerReady) {
             serverReady = true
             updateHomeReady()
-        } else {
-            provisionAndStart(wasServerReady)
         }
+        // else: 首启或服务未就绪 —— 等待前端实例选择后调用 provisionAndStart(port) / enterTavern(url)
+
+        // 启动器与酒馆统一全屏沉浸式 —— 状态栏不遮挡内容
+        enterImmersive()
     }
 
     // ponytail: BridgeActivity.load() now loads assets/public/index.html (Capacitor console).
@@ -236,7 +257,8 @@ class MainActivity : BridgeActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (!isWebViewVisible) showSystemBars()
+        // 启动器与酒馆统一全屏沉浸式 —— 始终隐藏系统栏
+        enterImmersive()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -247,23 +269,46 @@ class MainActivity : BridgeActivity() {
 
     /** Exposed for TarvenEnvPlugin. */
     fun isServerReady(): Boolean = serverReady
+    fun isTavernVisible(): Boolean = isWebViewVisible
+    fun getTavernUrl(): String = tavernUrl
 
-    fun provisionAndStart(skipIfExists: Boolean = true) {
+    fun provisionAndStart(port: Int = 8000, instanceId: String = "default", version: String = "stable", config: InstanceConfig = InstanceConfig(), zipballUrl: String? = null, skipIfExists: Boolean = true) {
+        tavernPort = port
+        tavernUrl = "http://127.0.0.1:$port/"
         Thread {
             val paths = RuntimePaths.from(this)
             paths.ensureDirs()
+            // 多实例:每个本地实例独立 server 目录
+            val targetServerDir = paths.serverDirFor(instanceId)
 
-            val serverJs = File(paths.serverDir, "server.js")
+            val serverJs = File(targetServerDir, "server.js")
             val hasServer = serverJs.exists()
 
             if (!hasServer) {
-                appendLog("→ Provisioning...")
+                appendLog("→ Provisioning [$instanceId]...")
                 updateProgress(5)
                 appendLog("→ Extracting rootfs-libs.zip...")
                 extractNativeLibs(paths)
                 updateProgress(15)
-                appendLog("→ Downloading server-source.zip (136MB)...")
-                val ok = downloadAndExtractServer(paths)
+                // 优先:按用户选择的 GitHub release 下载源码 + npm install
+                var ok = false
+                if (zipballUrl != null) {
+                    appendLog("→ Downloading $version source from GitHub...")
+                    ok = downloadAndExtractGithubRelease(zipballUrl, paths, targetServerDir)
+                    if (ok) {
+                        appendLog("→ Installing dependencies (npm install --production)...")
+                        val npmOk = runNpmInstall(paths, targetServerDir)
+                        if (!npmOk) {
+                            appendLog("⚠ npm install 不可用,回退到预打包 server-source.zip")
+                            ok = false
+                        }
+                    }
+                }
+                // 回退:预打包 server-source.zip(含 node_modules)
+                if (!ok) {
+                    appendLog("→ Downloading pre-bundled server-source.zip (136MB)...")
+                    ok = downloadAndExtractServer(paths, targetServerDir)
+                }
                 updateProgress(100)
                 if (!ok) {
                     appendLog("✗ Download failed")
@@ -272,19 +317,22 @@ class MainActivity : BridgeActivity() {
                 }
                 appendLog("✓ Server source extracted")
             } else {
-                appendLog("✓ Server source already exists")
+                appendLog("✓ Server source already exists [$instanceId]")
             }
+
+            // 写入实例运行配置(管理面板设置 → config.yaml)
+            writeInstanceConfig(targetServerDir, config)
 
             appendLog("→ Starting Node.js server...")
             setStatus("Starting server...")
-            val started = startServer(paths)
+            val started = startServer(paths, targetServerDir)
             if (!started) {
                 appendLog("✗ Server start failed")
                 setStatus("Start failed")
                 return@Thread
             }
             appendLog("✓ Node.js process launched")
-            appendLog("→ Polling 127.0.0.1:8000...")
+            appendLog("→ Polling $tavernUrl...")
 
             pollUntilReady()
         }.start()
@@ -338,9 +386,9 @@ class MainActivity : BridgeActivity() {
                 }
             }
             // 5. HTTP check
-            val httpOk = tryConnect(TAVERN_URL)
+            val httpOk = tryConnect(tavernUrl)
             if (httpOk) {
-                pushLog("  127.0.0.1:8000 — online")
+                pushLog("  $tavernUrl — online")
                 pushReady(true)
                 pushProgress(100f, "All systems ready")
                 serverReady = true
@@ -350,10 +398,15 @@ class MainActivity : BridgeActivity() {
         }.start()
     }
 
-    fun enterTavern() {
+    fun enterTavern(targetUrl: String? = null) {
+        // 远程实例:直接进入(无需 serverReady);本地实例:需 serverReady
+        if (targetUrl != null) {
+            tavernUrl = targetUrl
+            if (!isLocalUrl(targetUrl)) serverReady = true
+        }
         if (!serverReady || isWebViewVisible) return
-        if (webView.url == null || webView.url.isNullOrBlank()) {
-            webView.loadUrl(TAVERN_URL)
+        if (targetUrl != null || webView.url == null || webView.url.isNullOrBlank()) {
+            webView.loadUrl(tavernUrl)
         }
         val h = statusBarFixedPx
         val lp = webViewScreen.layoutParams as FrameLayout.LayoutParams
@@ -367,11 +420,15 @@ class MainActivity : BridgeActivity() {
         handler.postDelayed(topColorPoll, 350)
     }
 
+    /** 判断是否本地回环地址(127.0.0.1 / localhost)。 */
+    private fun isLocalUrl(url: String): Boolean =
+        url.startsWith("http://127.0.0.1") || url.startsWith("http://localhost")
+
     fun exitTavern() {
         if (!isWebViewVisible) return
         handler.removeCallbacks(topColorPoll)
         topScrimBar.reset()
-        showSystemBars()
+        // 启动器也保持沉浸式,不显示系统栏
         // Restore system gesture handling
         clearSystemGestureExclusions()
         val lp = webViewScreen.layoutParams as FrameLayout.LayoutParams
@@ -423,7 +480,7 @@ class MainActivity : BridgeActivity() {
         // Hide native overlay — Capacitor console shows underneath.
         webViewScreen.visibility = View.GONE
         root.visibility = View.GONE
-        pushMode("dashboard")
+        pushMode("launcher")
         pushReady(true)
     }
 
@@ -470,7 +527,8 @@ class MainActivity : BridgeActivity() {
     // ╚══════════════════════════════════════════════════════════════════╝
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus && isWebViewVisible) {
+        // 启动器与酒馆统一:有焦点就保持沉浸式(MIUI 会在通知栏/最近任务后强制显示系统栏)
+        if (hasFocus) {
             enterImmersive()
         }
     }
@@ -534,11 +592,23 @@ class MainActivity : BridgeActivity() {
         handler.removeCallbacks(topColorPoll)
         handler.postDelayed(topColorPoll, 0)
         webView.setOnTouchListener { _, event ->
-            if (event.action == MotionEvent.ACTION_UP) {
-                topScrimBar.sweepGloss()   // 点击白色光波
-                handler.postDelayed({
-                    if (isWebViewVisible) sampleTopColor { c -> if (c != null) applyTopColor(c) }
-                }, 200)
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    pullStartY = event.rawY
+                    pullReadyToReload = pullToRefreshEnabled && webView.scrollY == 0
+                }
+                MotionEvent.ACTION_UP -> {
+                    // 下拉刷新:从顶部向下拉超过 120px 时刷新
+                    if (pullReadyToReload && (event.rawY - pullStartY) > 120) {
+                        webView.reload()
+                        pushLog("↓ 下拉刷新酒馆界面")
+                    }
+                    pullReadyToReload = false
+                    topScrimBar.sweepGloss()   // 点击白色光波
+                    handler.postDelayed({
+                        if (isWebViewVisible) sampleTopColor { c -> if (c != null) applyTopColor(c) }
+                    }, 200)
+                }
             }
             false
         }
@@ -591,9 +661,9 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    private fun downloadAndExtractServer(paths: RuntimePaths): Boolean {
+    private fun downloadAndExtractServer(paths: RuntimePaths, targetServerDir: File): Boolean {
         val destZip = File(paths.tarvenHome, "server-source.zip")
-        val serverDir = paths.serverDir
+        val serverDir = targetServerDir
         serverDir.mkdirs()
 
         if (!downloadFile(SERVER_SOURCE_URL, destZip)) return false
@@ -652,10 +722,10 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    private fun startServer(paths: RuntimePaths): Boolean {
+    private fun startServer(paths: RuntimePaths, targetServerDir: File): Boolean {
         paths.logsDir.mkdirs()
         // Ensure local xdg-open from open package is executable
-        val localXdgOpen = File(paths.serverDir, "node_modules/open/xdg-open")
+        val localXdgOpen = File(targetServerDir, "node_modules/open/xdg-open")
         if (localXdgOpen.exists()) RuntimeFileUtils.chmodExecutable(localXdgOpen)
         // Create fake xdg-open that exits cleanly — open npm pkg forces system xdg-open on Android
         val fakeXdgDir = File(paths.tmpDir, "bin")
@@ -666,7 +736,7 @@ class MainActivity : BridgeActivity() {
             RuntimeFileUtils.chmodExecutable(fakeXdg)
         }
         // Patch open package: on Android, use /system/bin/true instead of xdg-open
-        val openIndex = File(paths.serverDir, "node_modules/open/index.js")
+        val openIndex = File(targetServerDir, "node_modules/open/index.js")
         if (openIndex.exists()) {
             var patched = openIndex.readText()
             patched = patched.replace(
@@ -681,13 +751,13 @@ class MainActivity : BridgeActivity() {
         try {
             // Launch directly: node server.js (skip npm install — node_modules is pre-bundled)
             val pb = ProcessBuilder(paths.nodeBin.absolutePath, "server.js")
-            pb.directory(paths.serverDir)
+            pb.directory(targetServerDir)
             pb.redirectErrorStream(true)
             pb.redirectOutput(ProcessBuilder.Redirect.appendTo(File(paths.logsDir, "server.log")))
             val env = pb.environment()
             env["TARVEN_HOME"] = paths.tarvenHome.absolutePath
             env["TARVEN_USR"] = paths.usrDir.absolutePath
-            env["TARVEN_SERVER_DIR"] = paths.serverDir.absolutePath
+            env["TARVEN_SERVER_DIR"] = targetServerDir.absolutePath
             env["TARVEN_NODE"] = paths.nodeBin.absolutePath
             env["TARVEN_NATIVE_LIB_DIR"] = paths.nativeLibDir.absolutePath
             env["TARVEN_TMP"] = paths.tmpDir.absolutePath
@@ -698,19 +768,237 @@ class MainActivity : BridgeActivity() {
             env["BROWSER"] = "/system/bin/true"
             env["PATH"] = "${paths.tmpDir.absolutePath}/bin:/system/bin:${System.getenv("PATH") ?: ""}"
             env["HOST"] = "127.0.0.1"
-            env["PORT"] = "8000"
-            pb.start()
+            env["PORT"] = tavernPort.toString()
+            val p = pb.start()
+            serverProcess = p
             return true
         } catch (_: Exception) {
             return false
         }
     }
 
+    /** 把管理面板的实例配置写入 SillyTavern 的 config.yaml(覆盖式)。 */
+    private fun writeInstanceConfig(targetServerDir: File, config: InstanceConfig) {
+        try {
+            val yaml = buildString {
+                append("port: ").append(tavernPort).append("\n")
+                append("listen: ").append(config.listen).append("\n")
+                append("listenAddressIPv4: '127.0.0.1'\n")
+                append("protocolIPv4: ").append(config.ipv4).append("\n")
+                append("protocolIPv6: ").append(config.ipv6).append("\n")
+                append("dnsPreferIPv6: ").append(config.dnsIpv6).append("\n")
+                append("enableHeartbeat: ").append(config.heartbeat > 0).append("\n")
+                append("heartbeatInterval: ").append(config.heartbeat).append("\n")
+                append("enableHttpKeepAlive: ").append(config.keepAlive).append("\n")
+                append("whitelistMode: false\n")
+                append("securityOverride: true\n")
+            }
+            File(targetServerDir, "config.yaml").writeText(yaml)
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "writeInstanceConfig failed", e)
+        }
+    }
+
+    /** 下载 GitHub release zipball 并解压到目标目录。 */
+    private fun downloadAndExtractGithubRelease(zipballUrl: String, paths: RuntimePaths, targetServerDir: File): Boolean {
+        return try {
+            val url = java.net.URL(zipballUrl)
+            val conn = url.openConnection() as java.net.HttpURLConnection
+            conn.connectTimeout = 30000
+            conn.readTimeout = 120000
+            conn.setRequestProperty("User-Agent", "SillyClient")
+            conn.instanceFollowRedirects = true
+            if (conn.responseCode !in 200..299) {
+                conn.disconnect()
+                return false
+            }
+            val tmpZip = File(paths.tmpDir, "github-release-${System.currentTimeMillis()}.zip")
+            conn.inputStream.use { input ->
+                java.io.FileOutputStream(tmpZip).use { out -> input.copyTo(out) }
+            }
+            conn.disconnect()
+            // GitHub zipball 内层有一层目录(SillyTavern-<sha>/),解压后需要平铺
+            unzipFlatten(tmpZip, targetServerDir)
+            tmpZip.delete()
+            File(targetServerDir, "server.js").exists()
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "downloadAndExtractGithubRelease", e)
+            false
+        }
+    }
+
+    /** 解压 zip,跳过内层单层根目录(适应 GitHub zipball 结构)。 */
+    private fun unzipFlatten(zipFile: File, destDir: File) {
+        destDir.mkdirs()
+        java.util.zip.ZipInputStream(java.io.FileInputStream(zipFile)).use { zis ->
+            var entry = zis.nextEntry
+            while (entry != null) {
+                if (!entry.isDirectory) {
+                    // 去掉第一层目录前缀
+                    val name = entry.name.substringAfter('/', entry.name)
+                    if (name.isNotEmpty()) {
+                        val out = File(destDir, name)
+                        out.parentFile?.mkdirs()
+                        java.io.FileOutputStream(out).use { zis.copyTo(it) }
+                    }
+                }
+                entry = zis.nextEntry
+            }
+        }
+    }
+
+    /** 运行 npm install(若运行时含 npm)。返回是否成功。 */
+    private fun runNpmInstall(paths: RuntimePaths, targetServerDir: File): Boolean {
+        return try {
+            // 查找 npm-cli.js(node 自带)
+            val npmCli = File(paths.usrDir, "lib/node_modules/npm/bin/npm-cli.js")
+            if (!npmCli.exists()) return false
+            val pb = ProcessBuilder(paths.nodeBin.absolutePath, npmCli.absolutePath, "install", "--production", "--no-audit", "--no-fund")
+            pb.directory(targetServerDir)
+            pb.redirectErrorStream(true)
+            pb.redirectOutput(ProcessBuilder.Redirect.appendTo(File(paths.logsDir, "npm-install.log")))
+            val env = pb.environment()
+            env["LD_LIBRARY_PATH"] = "${paths.usrDir.absolutePath}/lib:${paths.nativeLibDir.absolutePath}"
+            env["PATH"] = "${paths.tmpDir.absolutePath}/bin:/system/bin"
+            val p = pb.start()
+            val finished = p.waitFor(600, java.util.concurrent.TimeUnit.SECONDS)
+            if (!finished) { p.destroyForcibly(); return false }
+            p.exitValue() == 0 && File(targetServerDir, "node_modules").exists()
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "runNpmInstall", e)
+            false
+        }
+    }
+
+    /** 扫描本地已存在的酒馆实例。返回五元组:instanceId, version, path, sizeBytes, hasServer。 */
+    fun scanInstances(): List<Quint<String, String, String, Long, Boolean>> {
+        val paths = RuntimePaths.from(this)
+        val serversRoot = File(paths.bootstrapDir, "servers")
+        val result = mutableListOf<Quint<String, String, String, Long, Boolean>>()
+        if (!serversRoot.exists()) return result
+        serversRoot.listFiles()?.forEach { dir ->
+            if (dir.isDirectory) {
+                val hasServer = File(dir, "server.js").exists()
+                val pkg = File(dir, "package.json")
+                var version = "unknown"
+                if (pkg.exists()) {
+                    try {
+                        val txt = pkg.readText()
+                        val m = Regex("\"version\"\\s*:\\s*\"([^\"]+)\"").find(txt)
+                        if (m != null) version = m.groupValues[1]
+                    } catch (_: Exception) {}
+                }
+                val size = dirSize(dir)
+                result.add(Quint(dir.name, version, dir.absolutePath, size, hasServer))
+            }
+        }
+        return result
+    }
+
+    /** 实例详情:version, path, sizeBytes, createdAt, status。 */
+    fun getInstanceInfo(instanceId: String, port: Int): Quint<String, String, Long, String, String> {
+        val paths = RuntimePaths.from(this)
+        val dir = File(paths.bootstrapDir, "servers/$instanceId")
+        if (!dir.exists()) return Quint("unknown", dir.absolutePath, 0L, "", "未安装")
+        val hasServer = File(dir, "server.js").exists()
+        var version = "unknown"
+        val pkg = File(dir, "package.json")
+        if (pkg.exists()) {
+            try {
+                val txt = pkg.readText()
+                val m = Regex("\"version\"\\s*:\\s*\"([^\"]+)\"").find(txt)
+                if (m != null) version = m.groupValues[1]
+            } catch (_: Exception) {}
+        }
+        val size = dirSize(dir)
+        val createdAt = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date(dir.lastModified()))
+        val status = if (hasServer) "已就绪" else "未完成"
+        return Quint(version, dir.absolutePath, size, createdAt, status)
+    }
+
+    private fun dirSize(dir: File): Long {
+        var size = 0L
+        dir.walkTopDown().forEach { if (it.isFile) size += it.length() }
+        return size
+    }
+
+    /** 向终端发送命令:运行 shell 命令并流式输出到日志。 */
+    fun sendCommand(text: String) {
+        if (text.isBlank()) return
+        val paths = RuntimePaths.from(this)
+        Thread {
+            pushLog("\$ $text")
+            try {
+                val pb = ProcessBuilder("/system/bin/sh", "-c", text)
+                pb.directory(paths.bootstrapDir)
+                pb.redirectErrorStream(true)
+                val env = pb.environment()
+                env["LD_LIBRARY_PATH"] = "${paths.usrDir.absolutePath}/lib:${paths.nativeLibDir.absolutePath}"
+                env["PATH"] = "${paths.tmpDir.absolutePath}/bin:/system/bin:${System.getenv("PATH") ?: ""}"
+                env["HOME"] = paths.tarvenHome.absolutePath
+                val p = pb.start()
+                java.io.BufferedReader(java.io.InputStreamReader(p.inputStream)).useLines { lines ->
+                    lines.forEach { pushLog(it) }
+                }
+                p.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
+            } catch (e: Exception) {
+                pushLog("命令执行失败: ${e.message}")
+            }
+        }.start()
+    }
+
+    /** 刷新酒馆 WebView。 */
+    fun reloadTavern() {
+        if (isWebViewVisible) webView.reload()
+    }
+
+    /** 清空宿主 WebView 缓存/Cookie/历史。 */
+    fun clearWebViewData() {
+        webView.clearCache(true)
+        webView.clearHistory()
+        android.webkit.CookieManager.getInstance().removeAllCookies(null)
+        android.webkit.WebStorage.getInstance().deleteAllData()
+        pushLog("已清空宿主 WebView 缓存/Cookie/历史")
+    }
+
+    /** 安全 insets(挖孔/状态栏避让),单位 px。
+     *  top = 仅挖孔摄像头高度(非整个状态栏),前端顶栏用此值避让。
+     */
+    fun getSafeInsets(): Quartet<Int, Int, Int, Int> {
+        var cutoutTop = 0
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val cutout = window.decorView.rootWindowInsets?.displayCutout
+            if (cutout != null) cutoutTop = cutout.safeInsetTop
+        }
+        return Quartet(cutoutTop, 0, 0, 0)
+    }
+
+    /** 启用/禁用酒馆 WebView 下拉刷新。 */
+    fun setPullToRefresh(enabled: Boolean) {
+        pullToRefreshEnabled = enabled
+    }
+
+    /** 把选中图片复制到 covers/{instanceId}.png,返回可加载的文件路径。 */
+    fun copyCoverImage(uri: android.net.Uri, instanceId: String): String {
+        val paths = RuntimePaths.from(this)
+        val coversDir = File(paths.bootstrapDir, "covers").apply { mkdirs() }
+        val outFile = File(coversDir, "$instanceId.png")
+        contentResolver.openInputStream(uri).use { input ->
+            java.io.FileOutputStream(outFile).use { out -> input?.copyTo(out) }
+        }
+        // WebView 可直接加载 file:// 路径
+        return outFile.absolutePath
+    }
+
+    /** 简单五元组(Kotlin 标准库无 Quintuple)。 */
+    data class Quint<A, B, C, D, E>(val first: A, val second: B, val third: C, val fourth: D, val fifth: E)
+    data class Quartet<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
+
     private fun pollUntilReady() {
         var a = 0
         while (a < 120) {
-            if (tryConnect(TAVERN_URL)) {
-                appendLog("✓ SillyTavern is online at 127.0.0.1:8000")
+            if (tryConnect(tavernUrl)) {
+                appendLog("✓ SillyTavern is online at $tavernUrl")
                 serverReady = true
                 updateHomeReady()
                 refreshLogToCompose()
@@ -736,17 +1024,22 @@ class MainActivity : BridgeActivity() {
     // ============================================
 
     private fun pushLog(line: String) {
-        TarvenEnvPlugin.notify("log", JSObject().put("line", line))
+        TarvenEnvPlugin.notify("log", JSObject().put("message", line))
     }
 
     private fun pushProgress(pct: Float, text: String? = null) {
-        val d = JSObject().put("pct", pct.toInt())
-        if (text != null) d.put("text", text)
+        val d = JSObject().put("percent", pct.toInt())
+        if (text != null) d.put("stage", text)
         TarvenEnvPlugin.notify("progress", d)
     }
 
     private fun pushReady(ready: Boolean) {
-        TarvenEnvPlugin.notify("ready", JSObject().put("ready", ready))
+        val d = JSObject().put("ready", ready)
+        if (ready) {
+            d.put("url", tavernUrl)
+            d.put("port", tavernPort)
+        }
+        TarvenEnvPlugin.notify("ready", d)
     }
 
     private fun setStatus(t: String) { pushLog(t) }

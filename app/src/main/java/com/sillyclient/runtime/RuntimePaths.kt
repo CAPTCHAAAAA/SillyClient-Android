@@ -61,5 +61,14 @@ data class RuntimePaths(
             tmpDir,
             logsDir
         ).forEach { it.mkdirs() }
+        // 多实例目录根
+        File(bootstrapDir, "servers").mkdirs()
+    }
+
+    /** 多实例:返回指定 instanceId 的独立 server 目录。 */
+    fun serverDirFor(instanceId: String): File {
+        val dir = File(bootstrapDir, "servers/$instanceId")
+        dir.mkdirs()
+        return dir
     }
 }

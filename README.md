@@ -1,77 +1,166 @@
+<div align="center">
+
+<!-- Logo placeholder -->
+<img src="docs/screenshots/launcher.png" alt="SillyClient" width="120" height="120" style="border-radius: 24px;">
+
 # SillyClient
 
-**SillyClient** 是唯一品牌名，跨所有框架与平台统一使用，不接受别名。
+**跨平台 SillyTavern 启动器 -- 在 Android 上一键运行完整酒馆实例**
 
-在设备上一键本地化运行 [SillyTavern](https://github.com/SillyTavern/SillyTavern) 的壳应用：把服务端随 App 打包，本地启动后用原生 WebView 承载酒馆，前端控制台通过插件接口控制整套阅读环境。当前安卓端可用，正转向 Capacitor 插件化多端架构。
+[![GitHub release](https://img.shields.io/github/v/release/CAPTCHAAAAA/SillyClient?style=flat-square&color=blue)](https://github.com/CAPTCHAAAAA/SillyClient/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
+[![Platform: Android](https://img.shields.io/badge/Platform-Android-green.svg?style=flat-square)](https://github.com/CAPTCHAAAAA/SillyClient)
+[![Windows: Planned](https://img.shields.io/badge/Windows-Planned-blueviolet.svg?style=flat-square)](https://github.com/CAPTCHAAAAA/SillyClient)
+[![iOS: Planned](https://img.shields.io/badge/iOS-Planned-lightgrey.svg?style=flat-square)](https://github.com/CAPTCHAAAAA/SillyClient)
+
+</div>
 
 ---
 
-## 它是什么
+## SillyClient 是什么？
 
-1. **打包 Node 起本地服务**：Node.js 以原生库打包进 App，启动后在 `127.0.0.1:8000` 跑起 SillyTavern。
-2. **原生 WebView 承载酒馆**：用一个原生 WebView 加载酒馆，叠加沉浸式阅读环境（刘海适配、变色龙顶框取色）。
-3. **控制台 webUI 控制**：webUI 通过插件接口控制阅读环境（进/出/取色/启停），不直接碰原生。
+SillyClient 将 Node.js 运行时、SillyTavern 服务端和沉浸式 WebView 打包在一起，让用户在 Android 设备上**一键运行完整的 SillyTavern 实例**，无需 Termux 或任何额外配置。
 
-> 启动器本体（环境检测 / 下载 / 配置 / 启动 / 打开阅读环境）已完善，不重写，只封装成插件。
+> "把酒馆装进口袋。"
 
-## 架构速览
+## ✨ 核心特性
 
-三层 + 双 WebView（职责正交）：
+| 特性 | 描述 |
+|:---|:---|
+| 📦 **内置 Node.js 运行时** | 基于 Termux/Proot 的 Linux ARM64 环境，预打包 Node.js 及全部依赖，开箱即用 |
+| 🔀 **多实例管理** | 同时配置多个本地/远程 SillyTavern 实例，独立端口、独立配置，随时切换 |
+| 🚀 **GitHub Releases 集成** | 从 GitHub 实时拉取 SillyTavern 版本列表，可选任意版本一键安装 |
+| 🖥️ **沉浸式 WebView** | 原生 WebView 承载酒馆界面，变色龙顶框自动取色，刘海/挖孔完美适配 |
+| 🎨 **VisionOS 风格 UI** | 液态玻璃导航栏、动态背景光晕、毛玻璃面板，视觉体验拉满 |
+| 💻 **termux 式终端** | 内置终端面板，可执行 shell 命令、实时查看日志输出 |
+| ⚙️ **实例配置同步** | 管理面板设置实时写入 config.yaml，启动端口/网络协议/心跳等参数一键生效 |
 
-| 层 | 内容 |
-|---|---|
-| 控制台 webUI | React/Ionic，由 Capacitor WebView 承载，只调统一插件接口 |
-| 接口契约 | Capacitor plugin TS 接口，全平台共享，写一次 |
-| 平台实现 | 各平台一份 `@CapacitorPlugin` 实现，复用各端已做好的原生能力 |
+## 📸 截图
 
-| WebView | 承载 | 归属 |
-|---|---|---|
+<!-- placeholder -->
+<img src="docs/screenshots/launcher.png" alt="Launcher" width="240" style="border-radius: 16px; margin: 8px;">
+<img src="docs/screenshots/launcher.png" alt="Immersive Mode" width="240" style="border-radius: 16px; margin: 8px;">
+<img src="docs/screenshots/launcher.png" alt="Terminal" width="240" style="border-radius: 16px; margin: 8px;">
+
+## 🏗️ 架构概览
+
+SillyClient 采用**三层插件化架构**，前端 UI 与平台实现完全解耦：
+
+```
+┌──────────────────────────────────────────────┐
+│  控制台 webUI (React + TanStack Router)       │
+│  由 Capacitor WebView 承载                    │
+└─────────────────────┬────────────────────────┘
+                      │  Capacitor Plugin 接口
+┌─────────────────────┴────────────────────────┐
+│  插件接口契约层 (TypeScript，全平台共享)        │
+└────────┬──────────────────────┬───────────────┘
+         │                      │
+    Android 实现           PC / iOS 实现 (规划中)
+    ─────────────          ──────────────────
+    libtarven-node.so      系统 Node.js
+    原生 WebView           原生 WebView
+    沉浸式 / 变色龙顶框     沉浸式 / 变色龙顶框
+```
+
+**双 WebView 分工：**
+
+| WebView | 承载内容 | 归属 |
+|:---|:---|:---|
 | Capacitor WebView | 控制台 webUI | 控制层 |
-| 插件内原生 WebView | 酒馆 SillyTavern | 阅读环境层（**Capacitor 不渲染酒馆**） |
+| 原生 WebView | SillyTavern 酒馆 | 阅读环境层 |
 
-完整说明见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+> 酒馆由插件内原生 WebView 承载（解决跨源取色与沉浸式适配问题），Capacitor 只负责控制台 UI。
 
-## 快速开始（安卓）
+## 🛠️ 技术栈
+
+| 层级 | 技术 |
+|:---|:---|
+| 前端 UI | React 19 + TypeScript + Vite + TailwindCSS 4 |
+| 路由 | TanStack Router |
+| UI 组件 | Radix UI + Framer Motion + shadcn/ui |
+| 跨平台框架 | Capacitor 7 |
+| 原生层 (Android) | Kotlin + BridgeActivity |
+| 运行时 | Node.js v24 (Bionic ARM64) |
+
+## 🚀 快速开始
+
+### 下载安装
+
+前往 [GitHub Releases](https://github.com/CAPTCHAAAAA/SillyClient/releases) 下载最新的 Android APK，直接安装即可。
+
+### 首次启动
+
+1. 打开 App，进入管理面板
+2. 从 GitHub Releases 列表中选择 SillyTavern 版本并安装
+3. 等待服务端自动配置（首次需下载运行时与资源）
+4. 点击「进入酒馆」-- 沉浸式阅读环境即刻呈现
+
+### 系统要求
+
+- Android 10+ (API 29+)
+- ARM64 架构设备
+- 约 500MB 可用存储空间（含运行时 + SillyTavern）
+
+## 🔧 构建说明
+
+### 环境准备
 
 ```bash
-# 原生壳（含已完善的启动器本体）
-./gradlew :app:assembleDebug
-# → app/build/outputs/apk/debug/app-debug.apk
+# 前端依赖
+pnpm install  # Node.js 22+ required
 
-# 启动页 webUI（改动 web/launch 后需重新构建并拷入 assets）
-cd web/launch && pnpm build
-cp dist/index.html ../../app/src/main/assets/ui/launch/index.html
+# Android 构建
+Android Studio Ladybug+ | Gradle 8.x | JDK 17+
 ```
 
-装机运行：
+### 构建步骤
 
 ```bash
-adb install -r app/build/outputs/apk/debug/app-debug.apk   # -r 保留数据，免首启重下 136MB
-adb shell monkey -p com.sillyclient -c android.intent.category.LAUNCHER 1
+# 1. 构建控制台 webUI
+cd web/capacitor-ui
+pnpm install
+pnpm build
+# 产物自动输出至 app/src/main/assets/public/
+
+# 2. 构建 Android APK
+# 在项目根目录执行
+./gradlew assembleDebug
+# 产物: app/build/outputs/apk/debug/app-debug.apk
 ```
 
-首启：下载解压 server-source → 启 Node → 轮询 `127.0.0.1:8000` 就绪 → WebView 加载酒馆。
+## 🗺️ 路线图
 
-## 文档导航
+- [x] Android 端 -- Node.js 运行时 + SillyTavern 服务端 + 沉浸式 WebView
+- [x] Capacitor 插件化架构 (TarvenEnvPlugin)
+- [x] 变色龙顶框 (PixelCopy 取色 + 毛玻璃渲染)
+- [x] GitHub Releases 版本管理集成
+- [ ] 多实例/多环境管理器 (ComfyUI 式)
+- [ ] Windows 端支持 (系统 Node.js)
+- [ ] iOS 端支持
 
-| 文档 | 说明 |
-|---|---|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构总览：三层架构、双 WebView 分工、架构约定、锁定项、路线 |
-| [docs/ONBOARDING.md](docs/ONBOARDING.md) | 新人上手：环境要求、构建装机、调试、路径速查、常见排查 |
-| [docs/DECISIONS.md](docs/DECISIONS.md) | 决策记录（ADR）：关键架构决策的背景与被否方案 |
+## 🤝 贡献
 
-## 当前状态
+欢迎任何形式的贡献！无论是 Bug 报告、功能建议还是代码提交。
 
-- ✅ 安卓端可用：Node 本地运行时、原生 WebView 承酒馆、沉浸式、变色龙顶框（锁定）
-- 🔧 进行中：现有 `com.sillyclient` 工程 Capacitor 化，把上述能力封装成 `TavernEnvPlugin`
-- ⛔ 已作废：`SillyClient-Capacitor` 仓（Capacitor 重写探索，仅留参考）
+1. Fork 本仓库
+2. 创建特性分支 (`git checkout -b feature/amazing-feature`)
+3. 提交改动 (`git commit -m 'Add some amazing feature'`)
+4. 推送至远程 (`git push origin feature/amazing-feature`)
+5. 发起 Pull Request
 
-## 相关
+> 提交前请确保 `./gradlew assembleDebug` 构建通过，前端请确保 `pnpm build` 无报错。
 
-- 仓库：https://github.com/CAPTCHAAAAA/SillyClient
-- 当前基线分支：`sillyclient-baseline` ｜ 架构文档分支：`capacitor-plugin-architecture`
-- 作废参考仓：https://github.com/CAPTCHAAAAA/SillyClient-Capacitor
+## 📄 License
 
-## License
+本项目基于 [MIT License](https://opensource.org/licenses/MIT) 开源。
 
-MIT
+---
+
+<div align="center">
+
+**SillyClient** -- 把酒馆装进口袋。
+
+Made with ❤️ by [CAPTCHAAAAA](https://github.com/CAPTCHAAAAA)
+
+</div>

@@ -28,3 +28,13 @@ web/*/.plan/
 # 游离截图（根目录）
 /*.png
 
+# Builder 大文件与缓存（不入库）
+Builder/cache/
+Builder/work/
+Builder/.cache/
+Builder/artifacts/
+
+# 杂项
+*.log
+*.hprof
+
