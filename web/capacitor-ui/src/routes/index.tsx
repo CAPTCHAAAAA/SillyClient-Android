@@ -243,6 +243,14 @@ function SillyClientLauncher() {
   const [cleaningGarbage, setCleaningGarbage] = useState(false);
 
   const isLight = bgMode === "custom" && themeStyle === "light";
+  const isDynamic = bgMode === "dynamic";
+
+  // 液态玻璃底色:动态模式微偏红,黑夜模式蓝紫,白天模式白色
+  const glassBg = isLight
+    ? "bg-white/70 border-black/5 shadow-[0_16px_60px_rgba(0,0,0,0.10)]"
+    : isDynamic
+      ? "bg-[#1c1420]/70 border-white/10 shadow-[0_16px_60px_rgba(0,0,0,0.30)]"
+      : "bg-[#1a1625]/70 border-white/10 shadow-[0_16px_60px_rgba(0,0,0,0.35)]";
 
   // 轮播滚动到指定卡片（居中）
   const scrollToSlide = useCallback((index: number) => {
@@ -968,8 +976,8 @@ function SillyClientLauncher() {
       {(showTerminal || isTerminalClosing) && (
         <div
           className={cn(
-            "fixed z-[55] rounded-2xl liquid-glass flex flex-col overflow-hidden",
-            isLight ? "liquid-glass-light" : "liquid-glass-dark",
+            "fixed z-[55] rounded-2xl flex flex-col overflow-hidden backdrop-blur-[40px] saturate-180",
+            glassBg,
             isTerminalClosing ? "animate-terminal-exit" : "animate-terminal-enter"
           )}
           style={{
@@ -1092,8 +1100,8 @@ function SillyClientLauncher() {
             setTimeout(() => { setShowAppMenu(false); setIsAppMenuClosing(false); }, 300);
           }} />
           <div className={cn(
-            "fixed z-[58] rounded-2xl liquid-glass flex flex-col overflow-hidden",
-            isLight ? "liquid-glass-light" : "liquid-glass-dark",
+            "fixed z-[58] rounded-2xl flex flex-col overflow-hidden backdrop-blur-[40px] saturate-180",
+            glassBg,
             isAppMenuClosing ? "animate-clone-panel-exit" : "animate-clone-panel"
           )} style={{
             top: '50%',
@@ -1410,8 +1418,8 @@ function SillyClientLauncher() {
                         isCardMenuClosing && "overlay-backdrop-exit"
                       )} onClick={closeCardMenu} />
                       <div className={cn(
-                        "fixed z-50 w-44 py-1 px-1 rounded-2xl liquid-glass overflow-hidden",
-                        isLight ? "liquid-glass-light" : "liquid-glass-dark",
+                        "fixed z-50 w-44 py-1 px-1 rounded-2xl overflow-hidden backdrop-blur-[40px] saturate-180",
+                        glassBg,
                         isCardMenuClosing ? "animate-popover-exit" : "animate-popover"
                       )} style={{
                         top: Math.max(Math.min(menuPos.top, window.innerHeight - 200), 16),
@@ -1475,7 +1483,7 @@ function SillyClientLauncher() {
       {renamingId && (
         <>
           <div className="fixed inset-0 z-[70] bg-black/15 backdrop-blur-[2px]" onClick={() => setRenamingId(null)} />
-          <div className={cn("fixed z-[72] rounded-2xl liquid-glass flex flex-col overflow-hidden", isLight ? "liquid-glass-light" : "liquid-glass-dark")} style={{
+          <div className={cn("fixed z-[72] rounded-2xl flex flex-col overflow-hidden backdrop-blur-[40px] saturate-180", glassBg)} style={{
             top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
             width: 'min(360px, calc(100vw - 2rem))',
           }}>
@@ -1511,8 +1519,8 @@ function SillyClientLauncher() {
         <>
           <div className="fixed inset-0 z-[60] bg-black/15 backdrop-blur-[2px]" />
           <div className={cn(
-            "fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[61] w-[340px] rounded-2xl liquid-glass overflow-hidden",
-            isLight ? "liquid-glass-light" : "liquid-glass-dark"
+            "fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[61] w-[340px] rounded-2xl overflow-hidden backdrop-blur-[40px] saturate-180",
+            glassBg
           )}>
             {/* 标题 */}
             <div className="px-5 pt-5 pb-3">
@@ -1602,7 +1610,7 @@ function SillyClientLauncher() {
       {showCleanPanel && (
         <>
           <div className="fixed inset-0 z-[70] bg-black/15 backdrop-blur-[2px]" onClick={() => { if (!cleaningGarbage) setShowCleanPanel(false); }} />
-          <div className={cn("fixed z-[72] rounded-2xl liquid-glass flex flex-col overflow-hidden", isLight ? "liquid-glass-light" : "liquid-glass-dark")} style={{
+          <div className={cn("fixed z-[72] rounded-2xl flex flex-col overflow-hidden backdrop-blur-[40px] saturate-180", glassBg)} style={{
             top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
             width: 'min(420px, calc(100vw - 2rem))',
             maxHeight: 'min(80vh, calc(100vh - 4rem))',
@@ -1671,8 +1679,8 @@ function SillyClientLauncher() {
             isNewInstancePanelClosing && "overlay-backdrop-exit"
           )} onClick={() => { setShowNewInstancePanel(false); setIsNewInstancePanelClosing(false); setVerDropdownOpen(false); }} />
           <div className={cn(
-            "fixed z-[62] rounded-2xl liquid-glass flex flex-col overflow-hidden",
-            isLight ? "liquid-glass-light" : "liquid-glass-dark",
+            "fixed z-[62] rounded-2xl flex flex-col overflow-hidden backdrop-blur-[40px] saturate-180",
+            glassBg,
             isNewInstancePanelClosing ? "animate-clone-panel-exit" : "animate-clone-panel"
           )} style={{
             top: '50%',
@@ -1903,8 +1911,8 @@ function SillyClientLauncher() {
         <>
           <div className="fixed inset-0 z-[70] overlay-backdrop" onClick={() => setVerDropdownOpen(false)} />
           <div className={cn(
-            "fixed z-[72] rounded-md liquid-glass overflow-hidden animate-dropdown",
-            isLight ? "liquid-glass-light" : "liquid-glass-dark"
+            "fixed z-[72] rounded-md overflow-hidden animate-dropdown backdrop-blur-[40px] saturate-180",
+            glassBg
           )} style={{
             top: verDropdownPos.top,
             left: verDropdownPos.left,
@@ -1964,8 +1972,8 @@ function SillyClientLauncher() {
             isManagePanelClosing && "overlay-backdrop-exit"
           )} onClick={() => { setShowManagePanel(null); setIsManagePanelClosing(false); setManageTab("general"); }} />
           <div className={cn(
-            "fixed z-[62] rounded-2xl liquid-glass flex flex-col overflow-hidden",
-            isLight ? "liquid-glass-light" : "liquid-glass-dark",
+            "fixed z-[62] rounded-2xl flex flex-col overflow-hidden backdrop-blur-[40px] saturate-180",
+            glassBg,
             isManagePanelClosing ? "animate-clone-panel-exit" : "animate-clone-panel"
           )} style={{
             top: '50%',
