@@ -16,7 +16,7 @@ import {
   Sun,
   Image as ImageIcon,
   Terminal,
-  RefreshCw,
+  Eraser,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Capacitor } from "@capacitor/core";
@@ -47,6 +47,8 @@ interface TavernInstance {
   installDir?: string;
   /** GitHub release zipball 下载地址(本地实例首次安装时下载) */
   zipballUrl?: string;
+  /** 本地 zip 文件路径(从本地导入) */
+  localZipPath?: string;
   /** 自定义封面图片路径(更换插图) */
   cover?: string;
   /** 本地实例运行配置(映射管理面板设置) */
@@ -96,17 +98,17 @@ type BgMode = "dynamic" | "custom";
 type ThemeStyle = "dark" | "light";
 
 // 外部组件定义(避免内部函数组件每次渲染重新创建导致 input 失焦)
-function NewInstanceField({ label, desc, isLight, children }: { label: string; desc: string; isLight: boolean; children: React.ReactNode }) {
+function NewInstanceField({ label, desc, isLight, children }: { label: string; desc?: string; isLight: boolean; children: React.ReactNode }) {
   return (
     <div>
-      <div className={cn("text-xs font-medium mb-1", isLight ? "text-[#1a1625]/70" : "text-white/70")}>{label}</div>
-      <div className={cn("text-[10px] mb-2", isLight ? "text-[#1a1625]/30" : "text-white/30")}>{desc}</div>
+      <div className={cn("text-xs font-medium mb-1.5", isLight ? "text-[#1a1625]/70" : "text-white/70")}>{label}</div>
+      {desc && <div className={cn("text-[10px] mb-2", isLight ? "text-[#1a1625]/30" : "text-white/30")}>{desc}</div>}
       {children}
     </div>
   );
 }
 
-function ManageItem({ label, desc, isLight, children }: { label: string; desc: string; isLight: boolean; children: React.ReactNode }) {
+function ManageItem({ label, desc, isLight, children }: { label: string; desc?: string; isLight: boolean; children: React.ReactNode }) {
   return (
     <div className={cn("flex items-center justify-between gap-4 py-3 border-b last:border-b-0", isLight ? "border-black/[0.04]" : "border-white/[0.04]")}>
       <div className="flex-1 min-w-0">
@@ -160,6 +162,11 @@ function SillyClientLauncher() {
     { msg: "SillyClient Launcher 就绪,选择实例并点击启动", level: "info" },
   ]);
   const [launchingId, setLaunchingId] = useState<string | null>(null);
+  const [launchProgress, setLaunchProgress] = useState<{ pct: number; text: string } | null>(null);
+  const [showLaunchPanel, setShowLaunchPanel] = useState(false);
+  const [launchError, setLaunchError] = useState<string | null>(null);
+  const [launchLogs, setLaunchLogs] = useState<{ msg: string; level?: string }[]>([]);
+  const [lastLaunchParams, setLastLaunchParams] = useState<any>(null);
 
   // Logo 字体切换
   const logoFonts = [
@@ -192,6 +199,7 @@ function SillyClientLauncher() {
   const [newInstanceDir, setNewInstanceDir] = useState("");
   const [newInstanceUrl, setNewInstanceUrl] = useState("http://");
   const [newInstanceVersion, setNewInstanceVersion] = useState("stable");
+  const [newInstanceLocalZip, setNewInstanceLocalZip] = useState<string | null>(null);
   // GitHub releases 真实数据
   const [releases, setReleases] = useState<GithubRelease[]>([]);
   const [fetchingReleases, setFetchingReleases] = useState(false);
@@ -523,79 +531,146 @@ function SillyClientLauncher() {
     };
   }, []);
 
-  // 启动实例:本地走 provisionAndStart(port)→enterImmersive;远程直接 enterImmersive(url)
+  // 启动实例的核心逻辑(可重试)
+  const doLaunch = useCallback(async (instance: TavernInstance) => {
+    const port = instance.port ?? 8000;
+    const instanceId = instance.installDir || instance.id;
+    const version = instance.version || "stable";
+    const config = instance.config ?? DEFAULT_CONFIG;
+    const zipballUrl = instance.zipballUrl;
+    const localZipPath = instance.localZipPath;
+
+    setLaunchProgress({ pct: 0, text: "初始化..." });
+    setLaunchError(null);
+    setLaunchLogs([{ msg: `> 启动实例 ${instance.name} (${instance.type})`, level: "info" }]);
+    setLaunchLogs(prev => [...prev, { msg: `> 准备本地 Node 环境 [${instanceId}] 端口 ${port}...`, level: "info" }]);
+
+    // 注册事件监听
+    let readyHandle: any;
+    let progressHandle: any;
+    let logHandle: any;
+    let errorHandle: any;
+    let readyReceived = false;
+    let errorMsg: string | null = null;
+
+    try {
+      progressHandle = await TarvenEnv.addListener("progress", (d: { percent: number; stage?: string }) => {
+        setLaunchProgress({ pct: d.percent ?? 0, text: d.stage || "" });
+        const msg = d.stage ? `${d.stage} ${d.percent}%` : `${d.percent}%`;
+        setLaunchLogs(prev => {
+          const last = prev[prev.length - 1];
+          if (last && last.level === "info" && /\d+%$/.test(last.msg)) {
+            return [...prev.slice(0, -1), { msg, level: "info" }];
+          }
+          return [...prev, { msg, level: "info" }];
+        });
+      });
+
+      logHandle = await TarvenEnv.addListener("log", (d: { message?: string; line?: string; text?: string; level?: string }) => {
+        const line = d.message || d.line || d.text || "";
+        if (!line) return;
+        setLaunchLogs(prev => [...prev.slice(-80), { msg: line, level: d.level || "info" }]);
+      });
+
+      errorHandle = await TarvenEnv.addListener("error", (d: { message?: string }) => {
+        errorMsg = d.message || "未知错误";
+      });
+
+      readyHandle = await TarvenEnv.addListener("ready", (d: { ready?: boolean }) => {
+        if (readyReceived) return;
+        if (d.ready !== false) { readyReceived = true; }
+      });
+
+      // 调用原生 provision
+      await TarvenEnv.provisionAndStart({ port, instanceId, version, zipballUrl, localZipPath, config });
+
+      // 等待 ready 或 error，同时轮询
+      const statusInterval = setInterval(async () => {
+        try {
+          const s = await TarvenEnv.getStatus();
+          if (s.serverReady && !readyReceived) { readyReceived = true; }
+        } catch {}
+      }, 2000);
+
+      // 超时兜底 600s
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => resolve(), 600000);
+        const check = setInterval(() => {
+          if (readyReceived || errorMsg) { clearTimeout(timer); clearInterval(check); resolve(); }
+        }, 500);
+      });
+      clearInterval(statusInterval);
+
+      if (errorMsg) {
+        throw new Error(errorMsg);
+      }
+
+      if (!readyReceived) {
+        throw new Error("启动超时: 下载/安装耗时过长(10分钟),请检查网络后重试");
+      }
+
+      setLaunchProgress({ pct: 100, text: "服务就绪" });
+      setLaunchLogs(prev => [...prev, { msg: `> 本地服务就绪,进入沉浸式`, level: "success" }]);
+      await TarvenEnv.enterImmersive({ url: `http://127.0.0.1:${port}/` });
+
+      // 成功,关闭面板
+      setTimeout(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 800);
+    } finally {
+      readyHandle?.remove?.();
+      progressHandle?.remove?.();
+      logHandle?.remove?.();
+      errorHandle?.remove?.();
+    }
+  }, []);
+
+  // 启动实例入口
   const launchTavern = useCallback(async (instance: TavernInstance) => {
     if (launchingId) return;
     setLaunchingId(instance.id);
     setInstances(prev => prev.map(t => t.id === instance.id ? { ...t, status: "running" } : t));
-    setTerminalLogs(prev => [...prev, { msg: `> 启动实例 ${instance.name} (${instance.type})`, level: "info" }]);
+    setShowLaunchPanel(true);
+    setLastLaunchParams(instance);
     try {
       if (instance.type === "local") {
-        const port = instance.port ?? 8000;
-        const instanceId = instance.installDir || instance.id;
-        const version = instance.version || "stable";
-        const config = instance.config ?? DEFAULT_CONFIG;
-        const zipballUrl = instance.zipballUrl;
-        setTerminalLogs(prev => [...prev, { msg: `> 准备本地 Node 环境 [${instanceId}] 端口 ${port}...`, level: "info" }]);
-
-        // 1. 注册 ready 事件监听
-        let readyHandle: any;
-        let readyReceived = false;
-        const readyPromise = new Promise<void>((resolve) => {
-          TarvenEnv.addListener("ready", (d: { ready?: boolean }) => {
-            if (readyReceived) return;
-            if (d.ready !== false) { readyReceived = true; resolve(); }
-          }).then((h: any) => { readyHandle = h; });
-        });
-
-        // 2. 调用原生 provision(下载+启动)
-        await TarvenEnv.provisionAndStart({ port, instanceId, version, zipballUrl, config });
-
-        // 3. 等待 ready 事件,同时用 getStatus 轮询兜底
-        let statusCheckInterval: any;
-        const statusPromise = new Promise<void>((resolve) => {
-          statusCheckInterval = setInterval(async () => {
-            try {
-              const s = await TarvenEnv.getStatus();
-              if (s.serverReady && !readyReceived) { readyReceived = true; resolve(); }
-            } catch { /* ignore */ }
-          }, 2000);
-        });
-
-        // 4. 超时兜底(已有实例 60s, 首次下载 180s)
-        const isFirstInstall = !zipballUrl;
-        const timeoutMs = isFirstInstall ? 180000 : 60000;
-        const timeoutPromise = new Promise<void>((resolve) => {
-          setTimeout(() => { if (!readyReceived) resolve(); }, timeoutMs);
-        });
-
-        await Promise.race([readyPromise, statusPromise, timeoutPromise]);
-        clearInterval(statusCheckInterval);
-        readyHandle?.remove?.();
-
-        if (!readyReceived) {
-          setTerminalLogs(prev => [...prev, { msg: `> 启动超时: ${isFirstInstall ? '下载/解压耗时过长' : '服务未在预期时间内就绪'}`, level: "error" }]);
-          setInstances(prev => prev.map(t => t.id === instance.id ? { ...t, status: "error" } : t));
-          try { await TarvenEnv.exitImmersive(); } catch {}
-          return;
-        }
-
-        setTerminalLogs(prev => [...prev, { msg: `> 本地服务就绪,进入沉浸式`, level: "success" }]);
-        await TarvenEnv.enterImmersive({ url: `http://127.0.0.1:${port}/` });
+        await doLaunch(instance);
       } else {
         const url = instance.url || "http://127.0.0.1:8000";
-        setTerminalLogs(prev => [...prev, { msg: `> 连接远程实例 ${url}`, level: "info" }]);
+        setLaunchLogs([{ msg: `> 连接远程实例 ${url}`, level: "info" }]);
+        setLaunchProgress({ pct: 100, text: "连接中..." });
         await TarvenEnv.enterImmersive({ url });
+        setTimeout(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 500);
       }
     } catch (err: any) {
       const msg = err?.message || String(err);
-      setTerminalLogs(prev => [...prev, { msg: `> 启动失败: ${msg}`, level: "error" }]);
+      setLaunchError(msg);
+      setLaunchProgress(null);
+      setLaunchLogs(prev => [...prev, { msg: `> 启动失败: ${msg}`, level: "error" }]);
       setInstances(prev => prev.map(t => t.id === instance.id ? { ...t, status: "error" } : t));
       try { await TarvenEnv.exitImmersive(); } catch {}
     } finally {
       setLaunchingId(null);
     }
-  }, [launchingId]);
+  }, [launchingId, doLaunch]);
+
+  // 重试启动
+  const retryLaunch = useCallback(async () => {
+    if (!lastLaunchParams) return;
+    setLaunchError(null);
+    setLaunchProgress({ pct: 0, text: "重新启动..." });
+    setInstances(prev => prev.map(t => t.id === lastLaunchParams.id ? { ...t, status: "running" } : t));
+    setLaunchingId(lastLaunchParams.id);
+    try {
+      await doLaunch(lastLaunchParams);
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      setLaunchError(msg);
+      setLaunchProgress(null);
+      setLaunchLogs(prev => [...prev, { msg: `> 重试失败: ${msg}`, level: "error" }]);
+      setInstances(prev => prev.map(t => t.id === lastLaunchParams.id ? { ...t, status: "error" } : t));
+    } finally {
+      setLaunchingId(null);
+    }
+  }, [lastLaunchParams, doLaunch]);
 
   /** 终端拖拽调整大小(同时支持鼠标与触屏)。 */
   const startResize = (clientX: number, clientY: number) => {
@@ -893,10 +968,8 @@ function SillyClientLauncher() {
       {(showTerminal || isTerminalClosing) && (
         <div
           className={cn(
-            "fixed z-[55] rounded-2xl backdrop-blur-[40px] saturate-180 flex flex-col overflow-hidden",
-            isLight
-              ? "bg-white/70 border border-black/[0.06] shadow-[0_8px_40px_rgba(0,0,0,0.08)]"
-              : "bg-[#1a1625]/80 border border-white/[0.08] shadow-[0_8px_40px_rgba(0,0,0,0.3)]",
+            "fixed z-[55] rounded-2xl liquid-glass flex flex-col overflow-hidden",
+            isLight ? "liquid-glass-light" : "liquid-glass-dark",
             isTerminalClosing ? "animate-terminal-exit" : "animate-terminal-enter"
           )}
           style={{
@@ -939,11 +1012,13 @@ function SillyClientLauncher() {
                 <span className={cn("text-[10px]", isLight ? "text-[#1a1625]/25" : "text-white/25")}>A</span>
               </div>
               <button
-                onClick={async () => { try { await TarvenEnv.reloadTavern(); } catch {} }}
-                title="刷新酒馆"
+                onClick={() => {
+                  setTerminalLogs([]);
+                }}
+                title="清空终端"
                 className={cn("p-1 rounded-md transition-colors", isLight ? "hover:bg-black/5 text-[#1a1625]/30" : "hover:bg-white/5 text-white/30")}
               >
-                <RefreshCw className="w-3.5 h-3.5" />
+                <Eraser className="w-3.5 h-3.5" />
               </button>
               <button
                 onClick={() => {
@@ -1010,17 +1085,15 @@ function SillyClientLauncher() {
       {(showAppMenu || isAppMenuClosing) && (
         <>
           <div className={cn(
-            "fixed inset-0 z-[56] bg-black/20 backdrop-blur-sm overlay-backdrop",
+            "fixed inset-0 z-[56] bg-black/15 backdrop-blur-[2px] overlay-backdrop",
             isAppMenuClosing && "overlay-backdrop-exit"
           )} onClick={() => {
             setIsAppMenuClosing(true);
             setTimeout(() => { setShowAppMenu(false); setIsAppMenuClosing(false); }, 300);
           }} />
           <div className={cn(
-            "fixed z-[58] rounded-2xl border backdrop-blur-[40px] saturate-180 flex flex-col overflow-hidden",
-            isLight
-              ? "bg-[#f5f3ef]/95 border-black/[0.08] shadow-[0_16px_60px_rgba(0,0,0,0.12)]"
-              : "bg-[#1a1625]/90 border-white/[0.08] shadow-[0_16px_60px_rgba(0,0,0,0.4)]",
+            "fixed z-[58] rounded-2xl liquid-glass flex flex-col overflow-hidden",
+            isLight ? "liquid-glass-light" : "liquid-glass-dark",
             isAppMenuClosing ? "animate-clone-panel-exit" : "animate-clone-panel"
           )} style={{
             top: '50%',
@@ -1333,15 +1406,13 @@ function SillyClientLauncher() {
                   {(activeCardMenu === instance.id || (isCardMenuClosing && activeCardMenu === instance.id)) && (
                     <>
                       <div className={cn(
-                        "fixed inset-0 z-40 bg-black/20 backdrop-blur-sm overlay-backdrop",
+                        "fixed inset-0 z-40 bg-black/15 backdrop-blur-[2px] overlay-backdrop",
                         isCardMenuClosing && "overlay-backdrop-exit"
                       )} onClick={closeCardMenu} />
                       <div className={cn(
-                        "fixed z-50 w-44 py-1 px-1 rounded-2xl border shadow-2xl overflow-hidden",
-                        isCardMenuClosing ? "animate-popover-exit" : "animate-popover",
-                        isLight
-                          ? "bg-[#f5f3ef]/95 backdrop-blur-xl border-black/[0.08] shadow-black/5"
-                          : "bg-[#1a1625]/90 backdrop-blur-xl border-white/[0.08] shadow-black/30"
+                        "fixed z-50 w-44 py-1 px-1 rounded-2xl liquid-glass overflow-hidden",
+                        isLight ? "liquid-glass-light" : "liquid-glass-dark",
+                        isCardMenuClosing ? "animate-popover-exit" : "animate-popover"
                       )} style={{
                         top: Math.max(Math.min(menuPos.top, window.innerHeight - 200), 16),
                         left: Math.max(Math.min(menuPos.left + 8, window.innerWidth - 192), 16),
@@ -1403,12 +1474,12 @@ function SillyClientLauncher() {
       {/* 重命名弹窗 */}
       {renamingId && (
         <>
-          <div className="fixed inset-0 z-[70] bg-black/20 backdrop-blur-sm" onClick={() => setRenamingId(null)} />
-          <div className="fixed z-[72] rounded-2xl border flex flex-col overflow-hidden" style={{
+          <div className="fixed inset-0 z-[70] bg-black/15 backdrop-blur-[2px]" onClick={() => setRenamingId(null)} />
+          <div className={cn("fixed z-[72] rounded-2xl liquid-glass flex flex-col overflow-hidden", isLight ? "liquid-glass-light" : "liquid-glass-dark")} style={{
             top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
             width: 'min(360px, calc(100vw - 2rem))',
           }}>
-            <div className={cn("p-5", isLight ? "bg-[#f5f3ef]/95 border-black/[0.08]" : "bg-[#1a1625]/90 border-white/[0.08]")}>
+            <div className="p-5">
               <div className={cn("text-sm font-semibold mb-3", isLight ? "text-[#1a1625]" : "text-white")}>重命名实例</div>
               <input
                 type="text"
@@ -1435,22 +1506,114 @@ function SillyClientLauncher() {
         </>
       )}
 
+      {/* 启动进度面板 */}
+      {showLaunchPanel && (
+        <>
+          <div className="fixed inset-0 z-[60] bg-black/15 backdrop-blur-[2px]" />
+          <div className={cn(
+            "fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[61] w-[340px] rounded-2xl liquid-glass overflow-hidden",
+            isLight ? "liquid-glass-light" : "liquid-glass-dark"
+          )}>
+            {/* 标题 */}
+            <div className="px-5 pt-5 pb-3">
+              <div className="flex items-center justify-between">
+                <h3 className={cn("text-[15px] font-bold", isLight ? "text-[#1a1625]" : "text-white")}>
+                  {launchError ? "启动失败" : "正在启动"}
+                </h3>
+                {launchProgress && !launchError && (
+                  <span className="text-[11px] font-mono tabular-nums text-[#e8365d]">{launchProgress.pct}%</span>
+                )}
+              </div>
+              <p className={cn("text-[11px] mt-0.5", isLight ? "text-[#1a1625]/40" : "text-white/40")}>
+                {lastLaunchParams?.name || "实例"}
+              </p>
+            </div>
+
+            {/* 进度条 */}
+            <div className="px-5 pb-3">
+              <div className={cn("h-1.5 rounded-full overflow-hidden", isLight ? "bg-black/[0.06]" : "bg-white/[0.06]")}>
+                <div
+                  className={cn("h-full rounded-full transition-all duration-500 ease-out", launchError ? "bg-red-500" : "bg-[#e8365d]")}
+                  style={{ width: `${launchError ? 100 : (launchProgress?.pct || 0)}%` }}
+                />
+              </div>
+              <p className={cn("text-[10px] mt-1.5 font-medium truncate", isLight ? "text-[#1a1625]/45" : "text-white/45")}>
+                {launchError ? launchError : (launchProgress?.text || "准备中...")}
+              </p>
+            </div>
+
+            {/* 日志区域 */}
+            <div className={cn("mx-5 mb-4 rounded-xl overflow-hidden max-h-[180px] overflow-y-auto", isLight ? "bg-black/[0.03]" : "bg-black/[0.2])")}>
+              <div className="px-3 py-2 font-mono text-[10px] leading-relaxed space-y-0.5">
+                {launchLogs.map((log, i) => (
+                  <div key={i} className={cn(
+                    "truncate",
+                    log.level === "error" ? "text-red-400" :
+                    log.level === "success" ? "text-emerald-400" :
+                    isLight ? "text-[#1a1625]/50" : "text-white/50"
+                  )}>
+                    {log.msg}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* 底部按钮 */}
+            <div className="px-5 pb-5 flex gap-2">
+              {launchError ? (
+                <>
+                  <button
+                    onClick={() => retryLaunch()}
+                    disabled={!!launchingId}
+                    className={cn(
+                      "flex-1 h-9 rounded-xl text-[12px] font-semibold transition-all active:scale-95 disabled:opacity-50",
+                      isLight ? "bg-[#1a1625] text-[#f5f3ef] hover:bg-[#1a1625]/90" : "bg-white/90 text-[#1a1625] hover:bg-white"
+                    )}
+                  >
+                    重试
+                  </button>
+                  <button
+                    onClick={() => { setShowLaunchPanel(false); setLaunchError(null); setLaunchProgress(null); }}
+                    className={cn(
+                      "flex-1 h-9 rounded-xl text-[12px] font-semibold transition-all active:scale-95",
+                      isLight ? "bg-black/[0.05] text-[#1a1625]/60 hover:bg-black/[0.08]" : "bg-white/[0.08] text-white/60 hover:bg-white/[0.12]"
+                    )}
+                  >
+                    取消
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => { setShowLaunchPanel(false); setLaunchProgress(null); }}
+                  className={cn(
+                    "w-full h-9 rounded-xl text-[12px] font-semibold transition-all active:scale-95",
+                    isLight ? "bg-black/[0.05] text-[#1a1625]/40 hover:bg-black/[0.08]" : "bg-white/[0.08] text-white/40 hover:bg-white/[0.12]"
+                  )}
+                >
+                  后台运行
+                </button>
+              )}
+            </div>
+          </div>
+        </>
+      )}
+
       {/* 清理垃圾面板 */}
       {showCleanPanel && (
         <>
-          <div className="fixed inset-0 z-[70] bg-black/20 backdrop-blur-sm" onClick={() => { if (!cleaningGarbage) setShowCleanPanel(false); }} />
-          <div className="fixed z-[72] rounded-2xl border flex flex-col overflow-hidden" style={{
+          <div className="fixed inset-0 z-[70] bg-black/15 backdrop-blur-[2px]" onClick={() => { if (!cleaningGarbage) setShowCleanPanel(false); }} />
+          <div className={cn("fixed z-[72] rounded-2xl liquid-glass flex flex-col overflow-hidden", isLight ? "liquid-glass-light" : "liquid-glass-dark")} style={{
             top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
             width: 'min(420px, calc(100vw - 2rem))',
             maxHeight: 'min(80vh, calc(100vh - 4rem))',
           }}>
-            <div className={cn("flex items-center justify-between px-5 h-12 flex-shrink-0 border-b", isLight ? "border-black/[0.06]" : "border-white/[0.06]", isLight ? "bg-[#f5f3ef]/95" : "bg-[#1a1625]/90")}>
+            <div className={cn("flex items-center justify-between px-5 h-12 flex-shrink-0 border-b", isLight ? "border-black/[0.06]" : "border-white/[0.06]")}>
               <span className={cn("text-sm font-semibold", isLight ? "text-[#1a1625]" : "text-white")}>清理垃圾</span>
               <button onClick={() => { if (!cleaningGarbage) setShowCleanPanel(false); }} className={cn("p-1.5 rounded-lg transition-colors", isLight ? "hover:bg-black/5 text-[#1a1625]/30" : "hover:bg-white/5 text-white/30")}>
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <div className={cn("flex-1 overflow-y-auto p-5 scrollbar-subtle", isLight ? "bg-[#f5f3ef]/95" : "bg-[#1a1625]/90")}>
+            <div className="flex-1 overflow-y-auto p-5 scrollbar-subtle">
               {cleaningGarbage && garbageItems.length === 0 ? (
                 <div className={cn("text-center py-8 text-sm", isLight ? "text-[#1a1625]/40" : "text-white/40")}>扫描中...</div>
               ) : garbageItems.length === 0 ? (
@@ -1473,7 +1636,7 @@ function SillyClientLauncher() {
                 </div>
               )}
             </div>
-            <div className={cn("flex items-center justify-end gap-2 px-5 py-3 border-t flex-shrink-0", isLight ? "border-black/[0.06] bg-[#f5f3ef]/95" : "border-white/[0.06] bg-[#1a1625]/90")}>
+            <div className={cn("flex items-center justify-end gap-2 px-5 py-3 border-t flex-shrink-0", isLight ? "border-black/[0.06]" : "border-white/[0.06]")}>
               <button onClick={() => setShowCleanPanel(false)} disabled={cleaningGarbage} className={cn(
                 "px-4 h-8 rounded-xl text-[11px] font-medium transition-all active:scale-[0.97] disabled:opacity-50",
                 isLight ? "bg-black/[0.05] text-[#1a1625]/45 hover:bg-black/[0.08]" : "bg-white/[0.06] text-white/45 hover:bg-white/10"
@@ -1504,15 +1667,13 @@ function SillyClientLauncher() {
       {(showNewInstancePanel || isNewInstancePanelClosing) && (
         <>
           <div className={cn(
-            "fixed inset-0 z-[60] bg-black/20 backdrop-blur-sm overlay-backdrop",
+            "fixed inset-0 z-[60] bg-black/15 backdrop-blur-[2px] overlay-backdrop",
             isNewInstancePanelClosing && "overlay-backdrop-exit"
           )} onClick={() => { setShowNewInstancePanel(false); setIsNewInstancePanelClosing(false); setVerDropdownOpen(false); }} />
           <div className={cn(
-            "fixed z-[62] rounded-2xl border flex flex-col overflow-hidden",
-            isNewInstancePanelClosing ? "animate-clone-panel-exit" : "animate-clone-panel",
-            isLight
-              ? "bg-[#f5f3ef]/95 border-black/[0.08] shadow-[0_16px_60px_rgba(0,0,0,0.12)]"
-              : "bg-[#1a1625]/90 border-white/[0.08] shadow-[0_16px_60px_rgba(0,0,0,0.4)]"
+            "fixed z-[62] rounded-2xl liquid-glass flex flex-col overflow-hidden",
+            isLight ? "liquid-glass-light" : "liquid-glass-dark",
+            isNewInstancePanelClosing ? "animate-clone-panel-exit" : "animate-clone-panel"
           )} style={{
             top: '50%',
             left: '50%',
@@ -1530,7 +1691,7 @@ function SillyClientLauncher() {
 
             <div className="flex-1 overflow-y-auto p-5 space-y-5 scrollbar-subtle">
               {/* 实例名称 */}
-              <NewInstanceField label="名称" desc="为这个酒馆实例设置一个备注名" isLight={isLight}>
+              <NewInstanceField label="名称" isLight={isLight}>
                 <input
                   type="text"
                   value={newInstanceName}
@@ -1573,7 +1734,7 @@ function SillyClientLauncher() {
               {/* 本地模式配置 */}
               {newInstanceMode === "local" && (
                 <>
-                  <NewInstanceField label="安装目录" desc="SillyTavern 的安装位置" isLight={isLight}>
+                  <NewInstanceField label="安装目录" isLight={isLight}>
                     <div className="flex items-center gap-2 w-full">
                       <input
                         type="text"
@@ -1598,7 +1759,39 @@ function SillyClientLauncher() {
                       )}>浏览</button>
                     </div>
                   </NewInstanceField>
-                  <NewInstanceField label="SillyTavern 版本" desc="从 GitHub releases 获取可用版本" isLight={isLight}>
+
+                  {/* 从本地导入 zip */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={async () => {
+                        try {
+                          const { path, sizeBytes } = await TarvenEnv.pickZipFile();
+                          setNewInstanceLocalZip(path);
+                          setNewInstanceVersion("local");
+                          setTerminalLogs(prev => [...prev, { msg: `> 已选择本地文件 (${(sizeBytes / 1048576).toFixed(1)}MB)`, level: "info" }]);
+                        } catch { /* 取消 */ }
+                      }}
+                      className={cn(
+                        "flex-1 h-9 rounded-xl text-[11px] font-medium border transition-all",
+                        newInstanceLocalZip
+                          ? (isLight ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-600" : "border-emerald-400/30 bg-emerald-400/5 text-emerald-400")
+                          : (isLight ? "border-black/[0.08] text-[#1a1625]/50 hover:bg-black/[0.04]" : "border-white/[0.08] text-white/50 hover:bg-white/[0.04]")
+                      )}
+                    >
+                      {newInstanceLocalZip ? "已选择文件" : "从本地导入 zip"}
+                    </button>
+                    {newInstanceLocalZip && (
+                      <button
+                        onClick={() => { setNewInstanceLocalZip(null); setNewInstanceVersion("stable"); }}
+                        className={cn(
+                          "h-9 px-3 rounded-xl text-[11px] font-medium border transition-all",
+                          isLight ? "border-black/[0.08] text-[#1a1625]/50 hover:bg-black/[0.04]" : "border-white/[0.08] text-white/50 hover:bg-white/[0.04]"
+                        )}
+                      >移除</button>
+                    )}
+                  </div>
+
+                  <NewInstanceField label="版本" isLight={isLight}>
                     <button
                       id="ver-trigger"
                       onClick={async () => {
@@ -1647,7 +1840,7 @@ function SillyClientLauncher() {
 
               {/* 远程模式配置 */}
               {newInstanceMode === "remote" && (
-                <NewInstanceField label="连接地址" desc="SillyTavern 服务的 URL 地址" isLight={isLight}>
+                <NewInstanceField label="连接地址" isLight={isLight}>
                   <input
                     type="text"
                     value={newInstanceUrl}
@@ -1688,12 +1881,12 @@ function SillyClientLauncher() {
                     lastUsed: "—",
                     totalUsage: "0h",
                     ...(newInstanceMode === "local"
-                      ? { port: 8000 + instances.filter(t => t.type === "local").length, installDir: newInstanceDir || `local-${Date.now()}`, zipballUrl: selRelease?.zipballUrl, config: { ...DEFAULT_CONFIG } }
+                      ? { port: 8000 + instances.filter(t => t.type === "local").length, installDir: newInstanceDir || `local-${Date.now()}`, zipballUrl: newInstanceLocalZip ? undefined : selRelease?.zipballUrl, localZipPath: newInstanceLocalZip || undefined, config: { ...DEFAULT_CONFIG } }
                       : { url: newInstanceUrl }),
                   };
                   setInstances(prev => [...prev, newInstance]);
                   setIsNewInstancePanelClosing(true);
-                  setTimeout(() => { setShowNewInstancePanel(false); setIsNewInstancePanelClosing(false); setNewInstanceName(""); setNewInstanceDir(""); setNewInstanceUrl("http://"); setNewInstanceVersion("stable"); }, 250);
+                  setTimeout(() => { setShowNewInstancePanel(false); setIsNewInstancePanelClosing(false); setNewInstanceName(""); setNewInstanceDir(""); setNewInstanceUrl("http://"); setNewInstanceVersion("stable"); setNewInstanceLocalZip(null); }, 250);
                 }}
                 className={cn(
                   "px-4 h-8 rounded-xl text-[11px] font-semibold transition-all active:scale-[0.97]",
@@ -1710,8 +1903,8 @@ function SillyClientLauncher() {
         <>
           <div className="fixed inset-0 z-[70] overlay-backdrop" onClick={() => setVerDropdownOpen(false)} />
           <div className={cn(
-            "fixed z-[72] rounded-md border overflow-hidden shadow-2xl animate-dropdown",
-            isLight ? "bg-[#f5f3ef]/95 border-black/[0.08]" : "bg-[#1a1625]/92 border-white/[0.08]"
+            "fixed z-[72] rounded-md liquid-glass overflow-hidden animate-dropdown",
+            isLight ? "liquid-glass-light" : "liquid-glass-dark"
           )} style={{
             top: verDropdownPos.top,
             left: verDropdownPos.left,
@@ -1767,15 +1960,13 @@ function SillyClientLauncher() {
         return (
         <>
           <div className={cn(
-            "fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm overlay-backdrop",
+            "fixed inset-0 z-[60] bg-black/25 backdrop-blur-[2px] overlay-backdrop",
             isManagePanelClosing && "overlay-backdrop-exit"
           )} onClick={() => { setShowManagePanel(null); setIsManagePanelClosing(false); setManageTab("general"); }} />
           <div className={cn(
-            "fixed z-[62] rounded-2xl border backdrop-blur-[40px] saturate-180 flex flex-col overflow-hidden",
-            isManagePanelClosing ? "animate-clone-panel-exit" : "animate-clone-panel",
-            isLight
-              ? "bg-[#f5f3ef]/95 border-black/[0.08] shadow-[0_16px_60px_rgba(0,0,0,0.12)]"
-              : "bg-[#1a1625]/90 border-white/[0.08] shadow-[0_16px_60px_rgba(0,0,0,0.4)]"
+            "fixed z-[62] rounded-2xl liquid-glass flex flex-col overflow-hidden",
+            isLight ? "liquid-glass-light" : "liquid-glass-dark",
+            isManagePanelClosing ? "animate-clone-panel-exit" : "animate-clone-panel"
           )} style={{
             top: '50%',
             left: '50%',

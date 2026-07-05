@@ -65,6 +65,7 @@ export interface TarvenEnvPlugin {
     instanceId: string
     version: string
     zipballUrl?: string
+    localZipPath?: string
     config: InstanceConfig
   }): Promise<{ ready: boolean }>
 
@@ -80,6 +81,9 @@ export interface TarvenEnvPlugin {
 
   /** 调用系统图片选择器,把图片复制到 covers/{instanceId},返回可加载的文件路径。 */
   pickImage(options: { instanceId: string }): Promise<{ path: string }>
+
+  /** 调用系统文件选择器,选择 SillyTavern zip 文件,复制到 tmp 并返回路径。 */
+  pickZipFile(): Promise<{ path: string; sizeBytes: number }>
 
   /** 自检:扫描本地已存在的酒馆实例目录。 */
   scanInstances(): Promise<{ instances: ScannedInstance[] }>
@@ -115,7 +119,7 @@ export interface TarvenEnvPlugin {
   deleteGarbageItem(options: { path: string }): Promise<{ success: boolean }>
 
   addListener(
-    eventName: 'log' | 'progress' | 'ready' | 'mode',
+    eventName: 'log' | 'progress' | 'ready' | 'mode' | 'error',
     listenerFunc: (data: any) => void,
   ): Promise<PluginListenerHandle>
 }

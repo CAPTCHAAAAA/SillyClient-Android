@@ -135,7 +135,10 @@ pnpm build
 - [x] Capacitor 插件化架构 (TarvenEnvPlugin)
 - [x] 变色龙顶框 (PixelCopy 取色 + 毛玻璃渲染)
 - [x] GitHub Releases 版本管理集成
-- [ ] 多实例/多环境管理器 (ComfyUI 式)
+- [x] 多实例/多环境管理器 (ComfyUI 式)
+- [x] 本地 zip 导入 (离线安装)
+- [x] npm install 修复 (淘宝镜像 + 重试 + TMPDIR)
+- [x] 液态玻璃 UI (所有二级三级菜单统一质感)
 - [ ] Windows 端支持 (系统 Node.js)
 - [ ] iOS 端支持
 

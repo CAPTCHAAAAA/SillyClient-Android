@@ -11,6 +11,8 @@ import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.ActivityCallback
 import com.sillyclient.MainActivity
+import java.io.File
+import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -50,6 +52,7 @@ class TarvenEnvPlugin : Plugin() {
         val instanceId = call.data.optString("instanceId", "default")
         val version = call.data.optString("version", "stable")
         val zipballUrl = call.data.optString("zipballUrl", "")
+        val localZipPath = call.data.optString("localZipPath", "")
         val configObj = call.data.optJSONObject("config")
         val config = if (configObj != null) {
             MainActivity.InstanceConfig(
@@ -71,7 +74,8 @@ class TarvenEnvPlugin : Plugin() {
             )
         }
         val urlArg = if (zipballUrl.isEmpty()) null else zipballUrl
-        act.runOnUiThread { act.provisionAndStart(port, instanceId, version, config, urlArg) }
+        val localArg = if (localZipPath.isEmpty()) null else localZipPath
+        act.runOnUiThread { act.provisionAndStart(port, instanceId, version, config, urlArg, localArg) }
         call.resolve()
     }
 
@@ -209,6 +213,47 @@ class TarvenEnvPlugin : Plugin() {
         } catch (e: Exception) {
             android.util.Log.e(TAG, "pickImage error", e)
             call.reject("pickImage: ${e.message}")
+        }
+    }
+
+    /** 系统文件选择器,选择 SillyTavern zip 文件,复制到 tmp 目录并返回路径。 */
+    @PluginMethod
+    fun pickZipFile(call: PluginCall) {
+        val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/zip"
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivityForResult(call, intent, "pickZipFile")
+    }
+
+    @ActivityCallback
+    private fun pickZipFile(call: PluginCall, @Suppress("UNUSED_PARAMETER") result: androidx.activity.result.ActivityResult) {
+        if (call == null) {
+            android.util.Log.e(TAG, "pickZipFile: call is null (process was killed)")
+            return
+        }
+        val data = result.data
+        if (result.resultCode != android.app.Activity.RESULT_OK || data == null) {
+            call.reject("cancelled")
+            return
+        }
+        val act = activity as? MainActivity
+        if (act == null) { call.reject("Not MainActivity"); return }
+        try {
+            val uri = data.data ?: run { call.reject("No file data"); return }
+            val tmpDir = File(act.cacheDir, "sillyclient-tmp").apply { mkdirs() }
+            val destFile = File(tmpDir, "sillytavern-import-${System.currentTimeMillis()}.zip")
+            act.contentResolver.openInputStream(uri).use { input ->
+                FileOutputStream(destFile).use { out -> input?.copyTo(out) }
+            }
+            val ret = JSObject()
+            ret.put("path", destFile.absolutePath)
+            ret.put("sizeBytes", destFile.length())
+            call.resolve(ret)
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "pickZipFile error", e)
+            call.reject("pickZipFile: ${e.message}")
         }
     }
 

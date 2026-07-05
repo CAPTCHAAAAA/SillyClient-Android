@@ -1,4 +1,4 @@
-﻿package com.sillyclient
+package com.sillyclient
 
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
@@ -87,8 +87,6 @@ class MainActivity : BridgeActivity() {
 
     companion object {
         private const val TAG = "SillyClient"
-        private const val SERVER_SOURCE_URL =
-            "https://github.com/CAPTCHAAAAA/TarvenPlus/releases/download/v0.2/server-source.zip"
         private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 
         private const val BG = 0xFF070408.toInt()
@@ -270,7 +268,7 @@ class MainActivity : BridgeActivity() {
     fun isTavernVisible(): Boolean = isWebViewVisible
     fun getTavernUrl(): String = tavernUrl
 
-    fun provisionAndStart(port: Int = 8000, instanceId: String = "default", version: String = "stable", config: InstanceConfig = InstanceConfig(), zipballUrl: String? = null) {
+    fun provisionAndStart(port: Int = 8000, instanceId: String = "default", version: String = "stable", config: InstanceConfig = InstanceConfig(), zipballUrl: String? = null, localZipPath: String? = null) {
         tavernPort = port
         tavernUrl = "http://127.0.0.1:$port/"
         Thread {
@@ -280,57 +278,95 @@ class MainActivity : BridgeActivity() {
             val targetServerDir = paths.serverDirFor(instanceId)
 
             val serverJs = File(targetServerDir, "server.js")
-            val hasServer = serverJs.exists()
+            val nodeModules = File(targetServerDir, "node_modules")
+            // server.js 存在但 node_modules 不存在 = 之前安装失败,需要重新安装
+            val hasServer = serverJs.exists() && nodeModules.exists()
 
             if (!hasServer) {
-                appendLog("→ Provisioning [$instanceId]...")
-                updateProgress(5)
-                appendLog("→ Extracting rootfs-libs.zip...")
+                appendLog("> Provisioning [$instanceId]...")
+                updateProgress(2, "Initializing")
+                // 清理之前安装失败的残留
+                if (serverJs.exists() && !nodeModules.exists()) {
+                    appendLog("> 清理之前安装失败的残留...")
+                    targetServerDir.deleteRecursively()
+                    targetServerDir.mkdirs()
+                }
+                appendLog("> Extracting rootfs-libs.zip...")
                 extractNativeLibs(paths)
-                updateProgress(15)
-                // 优先:按用户选择的 GitHub release 下载源码 + npm install
+                updateProgress(8, "Runtime ready")
                 var ok = false
-                if (zipballUrl != null) {
-                    appendLog("→ Downloading $version source from GitHub...")
+
+                // 优先:本地 zip 文件导入
+                if (localZipPath != null) {
+                    appendLog("> 从本地文件导入: $localZipPath")
+                    updateProgress(50, "Extracting local zip")
+                    val localZip = File(localZipPath)
+                    if (localZip.exists()) {
+                        ok = extractLocalZip(localZip, targetServerDir)
+                        if (ok) {
+                            appendLog("[OK] 本地文件解压完成")
+                            updateProgress(85, "Installing dependencies")
+                            appendLog("> Installing dependencies (npm install --production)...")
+                            val npmOk = runNpmInstall(paths, targetServerDir)
+                            if (!npmOk) {
+                                appendLog("[WARN] npm install 不可用,但源码已解压")
+                            } else {
+                                appendLog("[OK] Dependencies installed")
+                            }
+                        } else {
+                            appendLog("[ERR] 本地文件解压失败")
+                        }
+                    } else {
+                        appendLog("[ERR] 本地文件不存在: $localZipPath")
+                    }
+                }
+
+                // 其次:按用户选择的 GitHub release 下载源码 + npm install
+                if (!ok && zipballUrl != null) {
+                    appendLog("> Downloading $version source from GitHub...")
                     ok = downloadAndExtractGithubRelease(zipballUrl, paths, targetServerDir)
                     if (ok) {
-                        appendLog("→ Installing dependencies (npm install --production)...")
+                        appendLog("> Installing dependencies (npm install --production)...")
+                        updateProgress(85, "Installing dependencies")
                         val npmOk = runNpmInstall(paths, targetServerDir)
                         if (!npmOk) {
-                            appendLog("⚠ npm install 不可用,回退到预打包 server-source.zip")
+                            appendLog("[WARN] npm install 不可用")
                             ok = false
+                        } else {
+                            appendLog("[OK] Dependencies installed")
                         }
                     }
                 }
-                // 回退:预打包 server-source.zip(含 node_modules)
+
+                updateProgress(95, "Server source ready")
                 if (!ok) {
-                    appendLog("→ Downloading pre-bundled server-source.zip (136MB)...")
-                    ok = downloadAndExtractServer(paths, targetServerDir)
-                }
-                updateProgress(100)
-                if (!ok) {
-                    appendLog("✗ Download failed")
-                    setStatus("Download failed")
+                    appendLog("[ERR] 所有安装方式均失败")
+                    setStatus("Install failed")
+                    pushError("安装失败: 无法获取 SillyTavern 源码。请尝试从本地导入 zip 文件,或检查网络后重试。")
                     return@Thread
                 }
-                appendLog("✓ Server source extracted")
+                appendLog("[OK] Server source extracted")
             } else {
-                appendLog("✓ Server source already exists [$instanceId]")
+                appendLog("[OK] Server source already exists [$instanceId]")
+                updateProgress(50, "Server source exists")
             }
 
             // 写入实例运行配置(管理面板设置 → config.yaml)
             writeInstanceConfig(targetServerDir, config)
 
-            appendLog("→ Starting Node.js server...")
+            appendLog("> Starting Node.js server...")
+            updateProgress(97, "Starting server")
             setStatus("Starting server...")
             val started = startServer(paths, targetServerDir)
             if (!started) {
-                appendLog("✗ Server start failed")
+                appendLog("[ERR] Server start failed")
                 setStatus("Start failed")
+                pushError("Node.js 服务启动失败,请重试或检查实例完整性")
                 return@Thread
             }
-            appendLog("✓ Node.js process launched")
-            appendLog("→ Polling $tavernUrl...")
+            appendLog("[OK] Node.js process launched")
+            appendLog("> Polling $tavernUrl...")
+            updateProgress(99, "Waiting for server")
 
             pollUntilReady()
         }.start()
@@ -354,7 +390,7 @@ class MainActivity : BridgeActivity() {
      * ╚══════════════════════════════════════════════════════════════════╝
      */
     private fun runDiagnostics() {
-        appendLog("→ Diagnostics...")
+        appendLog("> Diagnostics...")
         pushProgress(0f)
         Thread {
             val paths = RuntimePaths.from(this)
@@ -373,7 +409,7 @@ class MainActivity : BridgeActivity() {
             pushProgress(80f)
             // 4. Fix if needed
             if (!nodeOk || libCount < 50 || !serverOk) {
-                appendLog("→ Issues found — fixing...")
+                appendLog("> Issues found — fixing...")
                 if (libCount < 50) try {
                     paths.usrDir.mkdirs()
                     assets.open("bootstrap/rootfs/rootfs-libs.zip").use { RuntimeFileUtils.unzipStream(it, paths.usrDir) }
@@ -619,6 +655,19 @@ class MainActivity : BridgeActivity() {
             android.util.Log.e(TAG, "Rootfs extraction failed", e)
         }
 
+        // Extract npm (node_modules) from APK assets
+        try {
+            val usrAssetPath = "bootstrap/rootfs/rootfs-usr.zip"
+            assets.open(usrAssetPath).use { input ->
+                RuntimeFileUtils.unzipStream(input, paths.usrDir)
+            }
+            android.util.Log.i(TAG, "npm extracted to ${paths.usrDir}")
+            val npmCli = File(paths.usrDir, "lib/node_modules/npm/bin/npm-cli.js")
+            android.util.Log.i(TAG, "npm-cli.js exists: ${npmCli.exists()}")
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "npm extraction failed", e)
+        }
+
         // Copy native SO files from lib dir to bootstrap for scripts
         val soFiles = listOf(
             "libtarven-sh.so",
@@ -636,67 +685,19 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    private fun downloadAndExtractServer(paths: RuntimePaths, targetServerDir: File): Boolean {
-        val destZip = File(paths.tarvenHome, "server-source.zip")
-        val serverDir = targetServerDir
-        serverDir.mkdirs()
-
-        if (!downloadFile(SERVER_SOURCE_URL, destZip)) return false
-
-        setStatus("Extracting server...")
-        try {
-            destZip.inputStream().use { input ->
-                RuntimeFileUtils.unzipStream(input, serverDir)
-            }
-            destZip.delete()
-            return true
-        } catch (e: Exception) {
-            android.util.Log.e(TAG, "Extract failed", e)
-            setStatus("Extract failed")
-            return false
-        }
-    }
-
-    private fun downloadFile(urlStr: String, dest: File): Boolean {
-        return try {
-            val conn = URL(urlStr).openConnection() as HttpURLConnection
-            conn.connectTimeout = 15000
-            conn.readTimeout = 60000
-            conn.setRequestProperty("User-Agent", "Tarven++/0.4")
-            conn.connect()
-            if (conn.responseCode != 200) {
-                android.util.Log.e(TAG, "Download HTTP ${conn.responseCode}")
-                return false
-            }
-            val total = conn.contentLengthLong
-            val input = BufferedInputStream(conn.inputStream)
-            val output = FileOutputStream(dest)
-            val buf = ByteArray(65536)
-            var dl = 0L
-            var len: Int
-            while (input.read(buf).also { len = it } != -1) {
-                output.write(buf, 0, len)
-                dl += len
-                if (total > 0 && dl % (5 * 1024 * 1024) < buf.size) {
-                    val pct = (dl * 100 / total).toInt()
-                    updateProgress(15 + (pct * 80 / 100))
-                    setStatus("Downloading... $pct%")
-                }
-            }
-            output.close()
-            input.close()
-            conn.disconnect()
-            android.util.Log.i(TAG, "Downloaded: ${dest.length()} bytes")
-            true
-        } catch (e: Exception) {
-            dest.delete()
-            android.util.Log.e(TAG, "Download failed", e)
-            false
-        }
-    }
-
     private fun startServer(paths: RuntimePaths, targetServerDir: File): Boolean {
         paths.logsDir.mkdirs()
+        // 杀掉旧的 server 进程,释放端口
+        serverProcess?.let { p ->
+            if (p.isAlive) {
+                appendLog("[WARN] Killing previous server process")
+                p.destroyForcibly()
+                p.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
+            }
+        }
+        serverProcess = null
+        // 清空旧日志
+        File(paths.logsDir, "server.log").delete()
         // Ensure local xdg-open from open package is executable
         val localXdgOpen = File(targetServerDir, "node_modules/open/xdg-open")
         if (localXdgOpen.exists()) RuntimeFileUtils.chmodExecutable(localXdgOpen)
@@ -742,6 +743,7 @@ class MainActivity : BridgeActivity() {
             env["PATH"] = "${paths.tmpDir.absolutePath}/bin:/system/bin:${System.getenv("PATH") ?: ""}"
             env["HOST"] = "127.0.0.1"
             env["PORT"] = tavernPort.toString()
+            env["NODE_OPTIONS"] = "--max-old-space-size=2048"
             val p = pb.start()
             serverProcess = p
             return true
@@ -772,73 +774,196 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    /** 下载 GitHub release zipball 并解压到目标目录。 */
-    private fun downloadAndExtractGithubRelease(zipballUrl: String, paths: RuntimePaths, targetServerDir: File): Boolean {
-        return try {
-            val url = URL(zipballUrl)
-            val conn = url.openConnection() as HttpURLConnection
-            conn.connectTimeout = 30000
-            conn.readTimeout = 120000
-            conn.setRequestProperty("User-Agent", "SillyClient")
-            conn.instanceFollowRedirects = true
-            if (conn.responseCode !in 200..299) {
-                conn.disconnect()
-                return false
-            }
-            val tmpZip = File(paths.tmpDir, "github-release-${System.currentTimeMillis()}.zip")
-            conn.inputStream.use { input ->
-                FileOutputStream(tmpZip).use { out -> input.copyTo(out) }
-            }
-            conn.disconnect()
-            // GitHub zipball 内层有一层目录(SillyTavern-<sha>/),解压后需要平铺
-            unzipFlatten(tmpZip, targetServerDir)
-            tmpZip.delete()
-            File(targetServerDir, "server.js").exists()
-        } catch (e: Exception) {
-            android.util.Log.e(TAG, "downloadAndExtractGithubRelease", e)
-            false
-        }
-    }
+    /** GitHub 代理镜像列表(国内加速)。原始 URL 会依次尝试直连 + 各代理。 */
+    private val githubMirrors = listOf(
+        "",  // 直连 GitHub
+        "https://ghfast.top/",
+        "https://gh-proxy.com/",
+        "https://ghproxy.net/",
+    )
 
-    /** 解压 zip,跳过内层单层根目录(适应 GitHub zipball 结构)。 */
-    private fun unzipFlatten(zipFile: File, destDir: File) {
-        destDir.mkdirs()
-        java.util.zip.ZipInputStream(java.io.FileInputStream(zipFile)).use { zis ->
-            var entry = zis.nextEntry
-            while (entry != null) {
-                if (!entry.isDirectory) {
-                    // 去掉第一层目录前缀
-                    val name = entry.name.substringAfter('/', entry.name)
-                    if (name.isNotEmpty()) {
-                        val out = File(destDir, name)
-                        out.parentFile?.mkdirs()
-                        FileOutputStream(out).use { zis.copyTo(it) }
+    private fun downloadAndExtractGithubRelease(zipballUrl: String, paths: RuntimePaths, targetServerDir: File): Boolean {
+        val maxRetries = 2
+        var tmpZip: File? = null
+
+        for ((mirrorIndex, mirror) in githubMirrors.withIndex()) {
+            val fullUrl = if (mirror.isEmpty()) zipballUrl else mirror + zipballUrl
+            val mirrorName = if (mirror.isEmpty()) "GitHub 直连" else mirror.removePrefix("https://").removeSuffix("/")
+
+            for (attempt in 1..maxRetries) {
+                try {
+                    appendLog("> 下载尝试 $attempt/$maxRetries via $mirrorName")
+                    updateProgress(10, "Downloading via $mirrorName")
+                    val url = URL(fullUrl)
+                    val conn = url.openConnection() as HttpURLConnection
+                    conn.connectTimeout = 20000
+                    conn.readTimeout = 300000
+                    conn.setRequestProperty("User-Agent", "SillyClient")
+                    conn.instanceFollowRedirects = true
+                    if (conn.responseCode !in 200..299) {
+                        appendLog("[ERR] HTTP ${conn.responseCode} ($mirrorName)")
+                        conn.disconnect()
+                        break  // 换下一个镜像
+                    }
+                    val total = conn.contentLengthLong
+                    tmpZip = File(paths.tmpDir, "github-release-${System.currentTimeMillis()}.zip")
+                    var downloaded = 0L
+                    var lastPct = -1
+                    conn.inputStream.use { input ->
+                        FileOutputStream(tmpZip).use { out ->
+                            val buf = ByteArray(65536)
+                            var len: Int
+                            while (input.read(buf).also { len = it } != -1) {
+                                out.write(buf, 0, len)
+                                downloaded += len
+                                if (total > 0) {
+                                    val pct = (downloaded * 100 / total).toInt()
+                                    if (pct != lastPct && pct % 5 == 0) {
+                                        lastPct = pct
+                                        updateProgress(10 + pct * 70 / 100, "Downloading $pct%")
+                                        appendLog("> 下载进度: $pct% (${downloaded / 1048576}MB / ${total / 1048576}MB)")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    conn.disconnect()
+                    appendLog("[OK] 下载完成,开始解压...")
+                    updateProgress(82, "Extracting")
+                    var entryCount = 0
+                    val totalEntries = 2000
+                    java.util.zip.ZipInputStream(java.io.FileInputStream(tmpZip)).use { zis ->
+                        var entry = zis.nextEntry
+                        while (entry != null) {
+                            if (!entry.isDirectory) {
+                                val name = entry.name.substringAfter('/', entry.name)
+                                if (name.isNotEmpty()) {
+                                    val out = File(targetServerDir, name)
+                                    out.parentFile?.mkdirs()
+                                    FileOutputStream(out).use { zis.copyTo(it) }
+                                    entryCount++
+                                    if (entryCount % 200 == 0) {
+                                        val pct = 82 + (entryCount * 18 / totalEntries).coerceAtMost(17)
+                                        updateProgress(pct, "Extracting ($entryCount files)")
+                                    }
+                                }
+                            }
+                            entry = zis.nextEntry
+                        }
+                    }
+                    tmpZip.delete()
+                    appendLog("[OK] 解压完成 ($entryCount 个文件)")
+                    updateProgress(100, "Extracted")
+                    return File(targetServerDir, "server.js").exists()
+                } catch (e: Exception) {
+                    android.util.Log.e(TAG, "download attempt $attempt via $mirrorName", e)
+                    appendLog("[ERR] 下载失败(尝试 $attempt, $mirrorName): ${e.message}")
+                    tmpZip?.delete()
+                    if (attempt < maxRetries) {
+                        appendLog("> 等待 2 秒后重试...")
+                        Thread.sleep(2000)
                     }
                 }
-                entry = zis.nextEntry
             }
+            appendLog("> 切换到下一个下载源...")
+        }
+        return false
+    }
+
+    /** 解压本地 zip 文件到目标目录。自动检测 GitHub zipball 格式(有内层目录)并平铺。 */
+    private fun extractLocalZip(zipFile: File, destDir: File): Boolean {
+        destDir.mkdirs()
+        return try {
+            var entryCount = 0
+            var hasInnerDir = false
+            java.util.zip.ZipInputStream(java.io.FileInputStream(zipFile)).use { zis ->
+                // 第一遍:检测是否有内层目录(GitHub zipball 格式)
+                var first = zis.nextEntry
+                if (first != null && first.name.contains('/')) {
+                    hasInnerDir = true
+                }
+                zis.closeEntry()
+            }
+            // 第二遍:解压
+            java.util.zip.ZipInputStream(java.io.FileInputStream(zipFile)).use { zis ->
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    if (!entry.isDirectory) {
+                        val name = if (hasInnerDir) entry.name.substringAfter('/', entry.name) else entry.name
+                        if (name.isNotEmpty()) {
+                            val out = File(destDir, name)
+                            out.parentFile?.mkdirs()
+                            FileOutputStream(out).use { zis.copyTo(it) }
+                            entryCount++
+                            if (entryCount % 200 == 0) {
+                                updateProgress(50 + (entryCount / 40), "Extracting ($entryCount files)")
+                            }
+                        }
+                    }
+                    entry = zis.nextEntry
+                }
+            }
+            appendLog("> 解压 $entryCount 个文件")
+            File(destDir, "server.js").exists()
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "extractLocalZip", e)
+            false
         }
     }
 
     /** 运行 npm install(若运行时含 npm)。返回是否成功。 */
     private fun runNpmInstall(paths: RuntimePaths, targetServerDir: File): Boolean {
         return try {
-            // 查找 npm-cli.js(node 自带)
             val npmCli = File(paths.usrDir, "lib/node_modules/npm/bin/npm-cli.js")
-            if (!npmCli.exists()) return false
-            val pb = ProcessBuilder(paths.nodeBin.absolutePath, npmCli.absolutePath, "install", "--production", "--no-audit", "--no-fund")
+            if (!npmCli.exists()) {
+                appendLog("[ERR] npm-cli.js not found")
+                return false
+            }
+            appendLog("[npm] cli: ${npmCli.absolutePath}")
+            // npm 缓存和临时目录必须指向 app 私有目录
+            // node 编译时 hardcode 了 termux 路径,用 TMPDIR 环境变量覆盖 os.tmpdir()
+            val npmCache = File(paths.tarvenHome, "npm-cache").apply { mkdirs() }
+            val npmTmp = File(paths.tarvenHome, "npm-tmp").apply { mkdirs() }
+            // npm 11+ 不再支持 --tmp 参数,改用 TMPDIR 环境变量
+            // 国内网络问题,使用淘宝镜像加速
+            val pb = ProcessBuilder(
+                paths.nodeBin.absolutePath, npmCli.absolutePath,
+                "install", "--omit=dev", "--no-audit", "--no-fund",
+                "--cache", npmCache.absolutePath,
+                "--prefix", targetServerDir.absolutePath,
+                "--registry", "https://registry.npmmirror.com"
+            )
             pb.directory(targetServerDir)
             pb.redirectErrorStream(true)
+            // 清空旧日志,避免混淆
+            File(paths.logsDir, "npm-install.log").delete()
             pb.redirectOutput(ProcessBuilder.Redirect.appendTo(File(paths.logsDir, "npm-install.log")))
             val env = pb.environment()
             env["LD_LIBRARY_PATH"] = "${paths.usrDir.absolutePath}/lib:${paths.nativeLibDir.absolutePath}"
             env["PATH"] = "${paths.tmpDir.absolutePath}/bin:/system/bin"
-            val p = pb.start()
-            val finished = p.waitFor(600, java.util.concurrent.TimeUnit.SECONDS)
-            if (!finished) { p.destroyForcibly(); return false }
-            p.exitValue() == 0 && File(targetServerDir, "node_modules").exists()
+            env["HOME"] = paths.tarvenHome.absolutePath
+            env["TMPDIR"] = npmTmp.absolutePath
+            env["npm_config_cache"] = npmCache.absolutePath
+            env["npm_config_prefix"] = paths.usrDir.absolutePath
+            var lastExit = -1
+            for (attempt in 1..3) {
+                appendLog("[npm] attempt $attempt/3")
+                val p = pb.start()
+                val finished = p.waitFor(600, java.util.concurrent.TimeUnit.SECONDS)
+                if (!finished) { p.destroyForcibly(); appendLog("[ERR] npm install timeout"); return false }
+                lastExit = p.exitValue()
+                if (lastExit == 0 && File(targetServerDir, "node_modules").exists()) {
+                    appendLog("[OK] npm install done")
+                    return true
+                }
+                appendLog("[WARN] npm attempt $attempt failed (exit $lastExit), retrying...")
+                if (attempt < 3) Thread.sleep(3000)
+            }
+            appendLog("[ERR] npm install failed after 3 attempts (exit $lastExit)")
+            false
         } catch (e: Exception) {
             android.util.Log.e(TAG, "runNpmInstall", e)
+            appendLog("[ERR] npm install exception: ${e.message}")
             false
         }
     }
@@ -917,7 +1042,12 @@ class MainActivity : BridgeActivity() {
 
     /** 刷新酒馆 WebView。 */
     fun reloadTavern() {
-        if (isWebViewVisible) webView.reload()
+        if (isWebViewVisible) {
+            webView.reload()
+        } else {
+            // 沉浸式未激活时,提示用户
+            pushLog("⚠ 酒馆未运行,无法刷新")
+        }
     }
 
     /** 清空宿主 WebView 缓存/Cookie/历史。 */
@@ -1062,20 +1192,31 @@ class MainActivity : BridgeActivity() {
 
     private fun pollUntilReady() {
         var a = 0
-        while (a < 120) {
+        while (a < 180) {
             if (tryConnect(tavernUrl)) {
-                appendLog("✓ SillyTavern is online at $tavernUrl")
+                appendLog("[OK] SillyTavern is online at $tavernUrl")
                 serverReady = true
+                pushReady(true)
                 updateHomeReady()
                 refreshLogToCompose()
                 return
             }
+            // 检查进程是否已退出
+            val p = serverProcess
+            if (p != null && !p.isAlive) {
+                appendLog("[ERR] Node process exited (code ${p.exitValue()})")
+                appendLog("[ERR] Check server.log for details")
+                setStatus("Server crashed")
+                pushError("Node.js 进程已退出 (code ${p.exitValue()}),请检查 server.log")
+                return
+            }
             a++
-            if (a % 10 == 0) appendLog("... still waiting ($a/120)")
+            if (a % 10 == 0) appendLog("... still waiting ($a/180)")
             try { Thread.sleep(1000) } catch (_: Exception) { break }
         }
-        appendLog("✗ Server did not respond within 120s")
+        appendLog("[ERR] Server did not respond within 180s")
         setStatus("No response")
+        pushError("服务器在 180 秒内未响应")
     }
 
     private fun tryConnect(url: String) = try {
@@ -1108,8 +1249,12 @@ class MainActivity : BridgeActivity() {
         TarvenEnvPlugin.notify("ready", d)
     }
 
+    private fun pushError(message: String) {
+        TarvenEnvPlugin.notify("error", JSObject().put("message", message))
+    }
+
     private fun setStatus(t: String) { pushLog(t) }
-    private fun updateProgress(pct: Int) { pushProgress(pct.toFloat()) }
+    private fun updateProgress(pct: Int, text: String? = null) { pushProgress(pct.toFloat(), text) }
     private fun appendLog(line: String) { pushLog(line) }
 
     /** Read server.log and push its tail to Capacitor JS. */

@@ -122,7 +122,7 @@
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", "Noto Sans SC", "PingFang SC", sans-serif;
+    font-family: "PingFang SC", "Helvetica Neue", "Hiragino Sans GB", "Source Han Sans SC", "Noto Sans SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     letter-spacing: -0.01em;
@@ -169,6 +169,28 @@
     inset 0 1px 0 oklch(1 0 0 / 0.15),
     inset 0 -1px 0 oklch(0 0 0 / 0.1),
     inset 0 2px 12px oklch(0 0 0 / 0.08);
+}
+
+/* 液态玻璃面板 - 用于所有二级/三级弹出菜单 */
+.liquid-glass {
+  backdrop-filter: blur(50px) saturate(1.4);
+  -webkit-backdrop-filter: blur(50px) saturate(1.4);
+}
+.liquid-glass-light {
+  background: rgba(255, 240, 243, 0.90);
+  border: 0.5px solid rgba(106, 17, 46, 0.12);
+  box-shadow:
+    0 16px 60px rgba(106, 17, 46, 0.15),
+    inset 0 1px 0 rgba(255, 255, 255, 0.70),
+    inset 0 -1px 0 rgba(106, 17, 46, 0.06);
+}
+.dark .liquid-glass-dark {
+  background: rgba(22, 20, 38, 0.90);
+  border: 0.5px solid rgba(140, 130, 200, 0.15);
+  box-shadow:
+    0 16px 60px rgba(10, 5, 30, 0.40),
+    inset 0 1px 0 rgba(180, 170, 230, 0.20),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.10);
 }
 
 /* 极细融入背景的滚动条 */

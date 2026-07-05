@@ -1,86 +1,92 @@
-# Tarven++ Roadmap
+# SillyClient Roadmap
 
-## v0.1 - Clean Runtime Host (current)
+> 最后更新：2026-07-06
 
-Demonstrate the runtime architecture end-to-end without copied SillyDroid assets.
+---
 
-- [x] Android project with correct package `com.tarven.plus`
-- [x] Kotlin runtime architecture: Paths -> Extract -> Probe -> Start
+## v0.1 - Runtime Host (done)
+
+- [x] Android project with package `com.sillyclient`
+- [x] Kotlin runtime: Paths → Extract → Probe → Start
 - [x] Asset extraction from APK assets
 - [x] Native library detection from nativeLibraryDir
-- [x] Native binary smoke test (libtarven-node.so --version)
-- [x] Server readiness probe (server.js, start-server.sh)
+- [x] Native binary smoke test (`libtarven-node.so --version`)
+- [x] Server readiness probe
 - [x] Diagnostic UI for self-check
-- [ ] Build pipeline generates native .so and server-source.zip (separate project)
 
-Acceptance:
-- APK installs and starts
-- Self-check shows all directory paths
-- Reports "missing native runtime" clearly (expected until pipeline runs)
-- Asset extraction works (start-server.sh is copied)
+## v0.2 - Build Pipeline (done)
 
-## v0.2 - Build Pipeline (TarvenBuilder)
+- [x] Pre-built Node.js for Android/Bionic (arm64-v8a) → `libtarven-node.so`
+- [x] Pre-built shell, git, curl → `libtarven-*.so`
+- [x] Package rootfs-libs.zip (system shared libraries)
+- [x] Package rootfs-usr.zip (npm + node_modules)
+- [x] Copy finished .so files to jniLibs
+- [x] Copy finished .zip files to assets
 
-Build-time artifact generation, NOT running on the device.
+## v0.3 - Server Launch (done)
 
-- [ ] Build Node.js for Android/Bionic (arm64-v8a)
-- [ ] Build shell, git, curl for Android/Bionic
-- [ ] Package SillyTavern source + node_modules into server-source.zip
-- [ ] Generate dependency packs from npm install
-- [ ] Produce rootfs overlay
-- [ ] Copy finished .so files to jniLibs
-- [ ] Copy finished .zip files to assets
+- [x] `start-server.sh` works with native Node
+- [x] SillyTavern configured for local-only mode (127.0.0.1:8000)
+- [x] Server starts and responds on 127.0.0.1:8000
+- [x] Server log captured to app private storage
+- [x] npm install with Taobao mirror + retry + correct TMPDIR
+- [x] Webpack frontend compilation (NODE_OPTIONS=--max-old-space-size=2048)
+- [x] Port conflict detection (kill stale process before start)
+- [x] Process exit detection during polling
 
-Acceptance:
-- APK contains libtarven-node.so, libtarven-sh.so
-- APK contains server-source.zip
-- v0.1 self-check passes all phases
-- `libtarven-node.so --version` returns valid Node version
+## v0.4 - WebView (done)
 
-## v0.3 - Server Launch
+- [x] Native WebView loads http://127.0.0.1:8000
+- [x] Back navigation handled
+- [x] Server lifecycle (start on open, stop on close)
+- [x] Chameleon top bar (PixelCopy color extraction + scrim)
+- [x] Immersive mode (cutout / status bar adaptation)
+- [x] SHORT_EDGES display + MIUI/HyperOS compatibility
 
-Start the SillyTavern server using the native runtime.
+## v0.5 - Manager Features (done)
 
-- [ ] Verify start-server.sh works with native Node
-- [ ] Configure SillyTavern for local-only mode
-- [ ] Server starts and responds on 127.0.0.1:8000
-- [ ] Server log captured to app private storage
+- [x] Multi-instance management (local + remote)
+- [x] GitHub Releases version integration (API + proxy mirrors)
+- [x] Local zip import (offline install)
+- [x Instance config editor (config.yaml sync)
+- [x] Terminal panel (shell commands + real-time log)
+- [x] Background service
+- [x] Garbage cleanup
 
-Acceptance:
-- Server starts within 30 seconds
-- `curl http://127.0.0.1:8000/` returns HTTP 200
+## v1.0 - Capacitor Plugin Architecture (done)
 
-## v0.4 - WebView
+- [x] Capacitor 7 plugin framework
+- [x] TarvenEnvPlugin (provision / start / enter / exit)
+- [x] Control webUI (React + TanStack Router)
+- [x] Dual WebView: Capacitor webUI + native WebView for SillyTavern
+- [x] Liquid Glass UI design system
 
-Open the running server in an in-app WebView.
+## v1.1 - UI Polish & npm Fix (current, 2026-07-06)
 
-- [ ] Add WebView to layout
-- [ ] Load http://127.0.0.1:8000
-- [ ] Handle back navigation
-- [ ] Handle server lifecycle (start on open, stop on close)
+- [x] Remove Montserrat/Nunito Google Fonts (AI-looking fonts)
+- [x] System font stack (PingFang SC → system-ui)
+- [x] Liquid Glass for all secondary/tertiary menus
+- [x] Reduce backdrop blur on overlays
+- [x] Dark mode glass color follows blue-purple theme (#1a1625)
+- [x] Dynamic mode glass color follows rose theme (#6a112e)
+- [x] Remove redundant icon annotations
+- [x] npm install fix: TMPDIR env + Taobao mirror + retry
+- [x] npm packaged in APK (rootfs-usr.zip)
+- [x] Server startup fix: kill stale process + NODE_OPTIONS + pushReady
+- [x] Poll timeout 120s → 180s (webpack needs 24s)
+- [x] Clean stale instance dir on install failure
 
-Acceptance:
-- SillyTavern UI renders inside the app
-- No external browser needed
+## v1.2 - Stability & UX (next)
 
-## v0.5 - Manager Features
+- [ ] Pre-bundle node_modules to skip npm install entirely
+- [ ] Foreground service for reliable background operation
+- [ ] Auto-restart on crash
+- [ ] Instance import/export
+- [ ] Screenshot support in README
 
-Full lifecycle management.
+## Future
 
-- [ ] Server start/stop/restart controls
-- [ ] Log viewer
-- [ ] Config editor
-- [ ] Update mechanism
-- [ ] Background service option
-
-## Banned Approaches
-
-These are explicitly NOT part of the roadmap:
-
-- Termux APK wrapper / repackage
-- SillyDroid generated asset copying
-- First-launch `pkg install`
-- On-device `git clone` or `npm install`
-- Node.js Mobile
-- PRoot
-- Plain nodejs.org linux-arm64 Node in APK
+- [ ] Windows support (system Node.js)
+- [ ] iOS support
+- [ ] Extension marketplace
+- [ ] Cloud sync for configs
