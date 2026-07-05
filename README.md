@@ -154,6 +154,17 @@ pnpm build
 
 > 提交前请确保 `./gradlew assembleDebug` 构建通过，前端请确保 `pnpm build` 无报错。
 
+## ⚠️ 发版规则
+
+**本仓库（SillyClient-Android）仅作为源码仓库，禁止创建 Release 和 Tag。**
+
+所有版本发布统一在主仓库 [SillyClient](https://github.com/CAPTCHAAAAA/SillyClient) 进行：
+- Release 和 Tag 只在主仓库创建
+- APK 文件只上传到主仓库的 Release
+- 本仓库零 Release、零 Tag
+
+详见 [发版规则文档](https://github.com/CAPTCHAAAAA/SillyClient/blob/main/release/RELEASE-GUIDE.md)。
+
 ## 📄 License
 
 本项目基于 [MIT License](https://opensource.org/licenses/MIT) 开源。
