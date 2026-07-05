@@ -16,10 +16,12 @@ import {
   Sun,
   Image as ImageIcon,
   Terminal,
+  RefreshCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Capacitor } from "@capacitor/core";
 import { TarvenEnv, DEFAULT_CONFIG } from "@/capacitor-plugin";
-import type { InstanceConfig } from "@/capacitor-plugin";
+import type { InstanceConfig, GithubRelease } from "@/capacitor-plugin";
 
 export const Route = createFileRoute("/")({
   component: SillyClientLauncher,
@@ -93,6 +95,54 @@ function saveInstances(list: TavernInstance[]) {
 type BgMode = "dynamic" | "custom";
 type ThemeStyle = "dark" | "light";
 
+// 外部组件定义(避免内部函数组件每次渲染重新创建导致 input 失焦)
+function NewInstanceField({ label, desc, isLight, children }: { label: string; desc: string; isLight: boolean; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className={cn("text-xs font-medium mb-1", isLight ? "text-[#1a1625]/70" : "text-white/70")}>{label}</div>
+      <div className={cn("text-[10px] mb-2", isLight ? "text-[#1a1625]/30" : "text-white/30")}>{desc}</div>
+      {children}
+    </div>
+  );
+}
+
+function ManageItem({ label, desc, isLight, children }: { label: string; desc: string; isLight: boolean; children: React.ReactNode }) {
+  return (
+    <div className={cn("flex items-center justify-between gap-4 py-3 border-b last:border-b-0", isLight ? "border-black/[0.04]" : "border-white/[0.04]")}>
+      <div className="flex-1 min-w-0">
+        <div className={cn("text-xs font-medium mb-0.5", isLight ? "text-[#1a1625]/70" : "text-white/70")}>{label}</div>
+        <div className={cn("text-[10px] leading-snug", isLight ? "text-[#1a1625]/30" : "text-white/30")}>{desc}</div>
+      </div>
+      <div className="flex-shrink-0">{children}</div>
+    </div>
+  );
+}
+
+function ToggleSwitch({ defaultOn = false, on, onChange, isLight }: { defaultOn?: boolean; on?: boolean; onChange?: (v: boolean) => void; isLight: boolean }) {
+  const [internal, setInternal] = useState(defaultOn);
+  const isControlled = on !== undefined;
+  const value = isControlled ? on! : internal;
+  return (
+    <button
+      onClick={() => { if (!isControlled) setInternal(!internal); onChange?.(!value); }}
+      className={cn(
+        "relative w-10 h-[22px] rounded-full transition-colors duration-200",
+        value
+          ? isLight ? "bg-[#1a1625]/60" : "bg-white/30"
+          : isLight ? "bg-black/[0.08]" : "bg-white/[0.08]"
+      )}
+    >
+      <div className={cn(
+        "absolute top-[2px] w-[18px] h-[18px] rounded-full shadow-sm transition-all duration-200",
+        value ? "left-[calc(100%-20px)]" : "left-[2px]",
+        isLight
+          ? "bg-white shadow-black/10"
+          : value ? "bg-white shadow-white/20" : "bg-white/50 shadow-black/15"
+      )} />
+    </button>
+  );
+}
+
 function SillyClientLauncher() {
   const [instances, setInstances] = useState<TavernInstance[]>(loadInstances);
   const [showBgPanel, setShowBgPanel] = useState(false);
@@ -143,10 +193,8 @@ function SillyClientLauncher() {
   const [newInstanceUrl, setNewInstanceUrl] = useState("http://");
   const [newInstanceVersion, setNewInstanceVersion] = useState("stable");
   // GitHub releases 真实数据
-  const [releases, setReleases] = useState<{ tag: string; name: string; zipballUrl: string; prerelease: boolean }[]>([]);
+  const [releases, setReleases] = useState<GithubRelease[]>([]);
   const [fetchingReleases, setFetchingReleases] = useState(false);
-  // 选中的 release tag + zipballUrl(供 provision 下载)
-  const [newInstanceZipUrl, setNewInstanceZipUrl] = useState<string | undefined>(undefined);
   // 搜索
   const [searchQuery, setSearchQuery] = useState("");
   // 终端输入
@@ -158,12 +206,33 @@ function SillyClientLauncher() {
   // APP 设置:下拉刷新
   const [pullToRefresh, setPullToRefresh] = useState(false);
   const [verDropdownOpen, setVerDropdownOpen] = useState(false);
-  const [verDropdownClosing, setVerDropdownClosing] = useState(false);
   const [verDropdownPos, setVerDropdownPos] = useState({ top: 0, left: 0, width: 0 });
   const carouselRef = useRef<HTMLDivElement>(null);
   const terminalBtnRef = useRef<HTMLButtonElement>(null);
+    const settingsBtnRef = useRef<HTMLButtonElement>(null);
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
-  const [terminalPos, setTerminalPos] = useState({ left: 16 });
+  const [terminalPos, setTerminalPos] = useState({ left: 16, right: 16 });
+
+  // 下拉刷新启动页
+  const [pullDistance, setPullDistance] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const touchStartY = useRef(0);
+  const touchStartX = useRef(0);
+  const isPulling = useRef(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // 卡片重命名
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+
+  // 数据导入文件 ref
+  const importInputRef = useRef<HTMLInputElement>(null);
+  // 管理面板 draftConfig/draftPort(保存前不写入 instances)
+  const [draftConfig, setDraftConfig] = useState<InstanceConfig>(DEFAULT_CONFIG);
+  const [draftPort, setDraftPort] = useState(8000);
+  // 清理垃圾
+  const [showCleanPanel, setShowCleanPanel] = useState(false);
+  const [garbageItems, setGarbageItems] = useState<any[]>([]);
+  const [cleaningGarbage, setCleaningGarbage] = useState(false);
 
   const isLight = bgMode === "custom" && themeStyle === "light";
 
@@ -342,6 +411,80 @@ function SillyClientLauncher() {
   // 实例列表持久化到 localStorage
   useEffect(() => { saveInstances(instances); }, [instances]);
 
+  // 远程实例在线状态检测(用原生 pingUrl 绕过 WebView CORS)
+  const checkRemoteStatus = useCallback(async () => {
+    const remotes = instances.filter(t => t.type === "remote" && t.url);
+    if (remotes.length === 0) return;
+    const results = await Promise.all(remotes.map(async (r) => {
+      try {
+        const res = await TarvenEnv.pingUrl({ url: r.url! });
+        return { id: r.id, online: res.online };
+      } catch {
+        return { id: r.id, online: false };
+      }
+    }));
+    setInstances(prev => prev.map(t => {
+      const res = results.find(r => r.id === t.id);
+      if (!res || t.type !== "remote") return t;
+      return { ...t, status: res.online ? "online" : "offline" };
+    }));
+  }, [instances.filter(t => t.type === "remote").map(t => t.id + t.url).join(",")]);
+
+  // 启动时 + 每15s 轮询
+  useEffect(() => {
+    checkRemoteStatus();
+    const interval = setInterval(checkRemoteStatus, 15000);
+    return () => clearInterval(interval);
+  }, [checkRemoteStatus]);
+
+  // 下拉刷新:触发远程状态检测
+  const handlePullRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    setPullDistance(60);
+    try {
+      await checkRemoteStatus();
+    } catch { /* ignore */ }
+    setTimeout(() => { setIsRefreshing(false); setPullDistance(0); }, 600);
+  }, [checkRemoteStatus]);
+
+  // touch 事件处理:仅当滚动到顶部且无弹窗时触发下拉,整个内容跟随拖拽(iOS 原生风格)
+  const onTouchStart = useCallback((e: React.TouchEvent) => {
+    if (isRefreshing) return;
+    // 有弹窗/面板打开时不触发下拉刷新
+    if (renamingId || showNewInstancePanel || showManagePanel || activeCardMenu) return;
+    // 输入框/文本域/内容可编辑元素不触发下拉刷新
+    const target = e.target as HTMLElement;
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
+    const el = scrollRef.current;
+    if (!el || el.scrollTop > 0) return;
+    touchStartY.current = e.touches[0].clientY;
+    touchStartX.current = e.touches[0].clientX;
+    isPulling.current = true;
+  }, [isRefreshing, renamingId, showNewInstancePanel, showManagePanel, activeCardMenu]);
+
+  const onTouchMove = useCallback((e: React.TouchEvent) => {
+    if (!isPulling.current || isRefreshing) return;
+    const deltaY = e.touches[0].clientY - touchStartY.current;
+    const deltaX = Math.abs(e.touches[0].clientX - touchStartX.current);
+    // 垂直手势检测:水平偏移不能超过垂直的 0.6 倍
+    if (deltaX > deltaY * 0.6) { isPulling.current = false; setPullDistance(0); return; }
+    if (deltaY > 0) {
+      e.preventDefault();
+      // iOS 风格阻尼:指数衰减,拉得越多阻力越大
+      const damped = Math.pow(deltaY, 0.7) * 1.2;
+      setPullDistance(Math.min(damped, 120));
+    }
+  }, [isRefreshing]);
+
+  const onTouchEnd = useCallback(() => {
+    isPulling.current = false;
+    if (pullDistance > 55) {
+      handlePullRefresh();
+    } else {
+      setPullDistance(0);
+    }
+  }, [pullDistance, handlePullRefresh]);
+
   // 监听原生插件事件:日志 / 就绪 / 模式变化
   useEffect(() => {
     let logHandle: any, readyHandle: any, modeHandle: any, progressHandle: any;
@@ -433,6 +576,7 @@ function SillyClientLauncher() {
         if (!readyReceived) {
           setTerminalLogs(prev => [...prev, { msg: `> 启动超时: ${isFirstInstall ? '下载/解压耗时过长' : '服务未在预期时间内就绪'}`, level: "error" }]);
           setInstances(prev => prev.map(t => t.id === instance.id ? { ...t, status: "error" } : t));
+          try { await TarvenEnv.exitImmersive(); } catch {}
           return;
         }
 
@@ -447,6 +591,7 @@ function SillyClientLauncher() {
       const msg = err?.message || String(err);
       setTerminalLogs(prev => [...prev, { msg: `> 启动失败: ${msg}`, level: "error" }]);
       setInstances(prev => prev.map(t => t.id === instance.id ? { ...t, status: "error" } : t));
+      try { await TarvenEnv.exitImmersive(); } catch {}
     } finally {
       setLaunchingId(null);
     }
@@ -499,77 +644,58 @@ function SillyClientLauncher() {
     setTimeout(() => { setActiveCardMenu(null); setIsCardMenuClosing(false); }, 200);
   }, []);
 
-  // 管理面板子组件
-  function ManageItem({ label, desc, children }: { label: string; desc: string; children: React.ReactNode }) {
-    return (
-      <div className={cn("flex items-center justify-between gap-4 py-3 border-b", isLight ? "border-black/[0.04]" : "border-white/[0.04]")}>
-        <div className="flex-1 min-w-0">
-          <div className={cn("text-xs font-medium mb-0.5", isLight ? "text-[#1a1625]/75" : "text-white/75")}>{label}</div>
-          <div className={cn("text-[10px] leading-snug", isLight ? "text-[#1a1625]/30" : "text-white/30")}>{desc}</div>
-        </div>
-        <div className="flex-shrink-0">{children}</div>
-      </div>
-    );
-  }
-
-  function ToggleSwitch({ defaultOn = false, on, onChange }: { defaultOn?: boolean; on?: boolean; onChange?: (v: boolean) => void }) {
-    const [internal, setInternal] = useState(defaultOn);
-    const isControlled = on !== undefined;
-    const value = isControlled ? on! : internal;
-    return (
-      <button
-        onClick={() => { if (!isControlled) setInternal(!internal); onChange?.(!value); }}
-        className={cn(
-          "relative w-10 h-[22px] rounded-full transition-colors duration-200",
-          value
-            ? isLight ? "bg-[#1a1625]/60" : "bg-white/30"
-            : isLight ? "bg-black/[0.08]" : "bg-white/[0.08]"
-        )}
-      >
-        <div className={cn(
-          "absolute top-[2px] w-[18px] h-[18px] rounded-full shadow-sm transition-all duration-200",
-          value ? "left-[calc(100%-20px)]" : "left-[2px]",
-          isLight
-            ? "bg-white shadow-black/10"
-            : value ? "bg-white shadow-white/20" : "bg-white/50 shadow-black/15"
-        )} />
-      </button>
-    );
-  }
-
   /** 更新当前管理面板实例的 config 字段。 */
   const updateManagedConfig = (patch: Partial<InstanceConfig>) => {
     if (!showManagePanel) return;
     setInstances(prev => prev.map(t => t.id === showManagePanel.id ? { ...t, config: { ...(t.config ?? DEFAULT_CONFIG), ...patch } } : t));
   };
 
-  function AppMenuItem({ label, desc, children }: { label: string; desc: string; children: React.ReactNode }) {
-    return (
-      <div className={cn("flex items-center justify-between gap-4 py-3 border-b last:border-b-0", isLight ? "border-black/[0.04]" : "border-white/[0.04]")}>
-        <div className="flex-1 min-w-0">
-          <div className={cn("text-xs font-medium mb-0.5", isLight ? "text-[#1a1625]/70" : "text-white/70")}>{label}</div>
-          <div className={cn("text-[10px] leading-snug", isLight ? "text-[#1a1625]/30" : "text-white/30")}>{desc}</div>
-        </div>
-        <div className="flex-shrink-0">{children}</div>
-      </div>
-    );
-  }
+  const closeAppMenu = useCallback(() => {
+    setIsAppMenuClosing(true);
+    setTimeout(() => { setShowAppMenu(false); setIsAppMenuClosing(false); }, 300);
+  }, []);
 
-  function NewInstanceField({ label, desc, children }: { label: string; desc: string; children: React.ReactNode }) {
-    return (
-      <div>
-        <div className={cn("text-xs font-medium mb-1", isLight ? "text-[#1a1625]/70" : "text-white/70")}>{label}</div>
-        <div className={cn("text-[10px] mb-2", isLight ? "text-[#1a1625]/30" : "text-white/30")}>{desc}</div>
-        {children}
-      </div>
-    );
-  }
+  const closeManagePanel = useCallback(() => {
+    setIsManagePanelClosing(true);
+    setTimeout(() => { setShowManagePanel(null); setIsManagePanelClosing(false); setManageTab("general"); }, 250);
+  }, []);
+
+  // 管理面板打开时初始化 draftConfig/draftPort
+  useEffect(() => {
+    if (showManagePanel) {
+      setDraftConfig(showManagePanel.config ?? DEFAULT_CONFIG);
+      setDraftPort(showManagePanel.port ?? 8000);
+    }
+  }, [showManagePanel]);
+
 
   return (
-    <div className={cn(
-      "min-h-screen overflow-hidden transition-colors duration-500",
+    <div
+      ref={scrollRef}
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+      className={cn(
+      "min-h-screen overflow-y-auto overscroll-none transition-colors duration-500",
       isLight ? "bg-[#f0ece8] text-[#1a1625]" : "bg-[#1a1625] text-white"
     )}>
+      {/* 下拉刷新指示器 — 固定在顶部,不跟随拖拽 */}
+      <div className="fixed left-0 right-0 z-[60] flex justify-center pointer-events-none" style={{ top: `calc(env(safe-area-inset-top) + 72px)`, opacity: pullDistance > 5 || isRefreshing ? 1 : 0, transition: isRefreshing || !isPulling.current ? 'opacity 0.3s' : 'none' }}>
+        <div className={cn("flex flex-col items-center gap-1.5", isLight ? "text-[#1a1625]/30" : "text-white/30")}>
+          <div className={cn("w-6 h-6 flex items-center justify-center rounded-full", isRefreshing ? "animate-spin" : "")}>
+            {isRefreshing ? (
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+              </svg>
+            ) : (
+              <svg className="w-4 h-4 transition-transform duration-300 ease-out" style={{ transform: pullDistance > 55 ? 'rotate(180deg)' : 'rotate(0deg)' }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 5v14M5 12l7 7 7-7" />
+              </svg>
+            )}
+          </div>
+          <span className="text-[9px] font-medium tracking-wide">{isRefreshing ? "刷新中" : pullDistance > 55 ? "松开刷新" : "下拉刷新"}</span>
+        </div>
+      </div>
       {/* 动态背景光效 */}
       {bgMode === "dynamic" && (
         <div className={cn("ambient-glow-container", dynamicPaused && "ambient-paused")}>
@@ -587,6 +713,27 @@ function SillyClientLauncher() {
       )}
 
       <input ref={wallpaperInputRef} type="file" accept="image/*" className="hidden" onChange={handleWallpaperUpload} />
+      <input ref={importInputRef} type="file" accept=".json" className="hidden" onChange={(e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          try {
+            const parsed = JSON.parse(String(reader.result));
+            const incoming = (parsed.instances || []) as TavernInstance[];
+            setInstances(prev => {
+              const map = new Map(prev.map(t => [t.id, t]));
+              for (const item of incoming) {
+                const icon = item.type === "local" ? <Folder className="w-5 h-5" /> : <Cloud className="w-5 h-5" />;
+                map.set(item.id, { ...item, icon });
+              }
+              return Array.from(map.values());
+            });
+          } catch (err) { console.error('[import]', err); }
+        };
+        reader.readAsText(file);
+        e.target.value = "";
+      }} />
 
       {/* 背景设置面板 */}
       {(showBgPanel || isPanelClosing) && (
@@ -695,9 +842,12 @@ function SillyClientLauncher() {
                   setTimeout(() => { setShowTerminal(false); setIsTerminalClosing(false); }, 300);
                 } else {
                   const btn = terminalBtnRef.current;
+                  const settingsBtn = settingsBtnRef.current;
                   if (btn) {
                     const rect = btn.getBoundingClientRect();
-                    setTerminalPos({ left: rect.left });
+                    const settingsRect = settingsBtn?.getBoundingClientRect();
+                    const rightEdge = settingsRect ? window.innerWidth - settingsRect.right : 16;
+                    setTerminalPos({ left: rect.left, right: Math.max(8, rightEdge) });
                   }
                   setShowTerminal(true);
                 }
@@ -721,6 +871,7 @@ function SillyClientLauncher() {
           </div>
 
           <button
+            ref={settingsBtnRef}
             onClick={() => {
               if (showAppMenu) {
                 setIsAppMenuClosing(true);
@@ -751,11 +902,12 @@ function SillyClientLauncher() {
           style={{
             top: '5.5rem',
             left: terminalPos.left,
+            right: terminalPos.right,
             width: terminalSize.w,
             height: terminalSize.h,
             minWidth: 320,
             minHeight: 200,
-            maxWidth: 'calc(100vw - 2rem)',
+            maxWidth: `calc(100vw - ${terminalPos.left + terminalPos.right}px)`,
             maxHeight: 'calc(100vh - 7rem)',
           }}
         >
@@ -786,6 +938,13 @@ function SillyClientLauncher() {
                 />
                 <span className={cn("text-[10px]", isLight ? "text-[#1a1625]/25" : "text-white/25")}>A</span>
               </div>
+              <button
+                onClick={async () => { try { await TarvenEnv.reloadTavern(); } catch {} }}
+                title="刷新酒馆"
+                className={cn("p-1 rounded-md transition-colors", isLight ? "hover:bg-black/5 text-[#1a1625]/30" : "hover:bg-white/5 text-white/30")}
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+              </button>
               <button
                 onClick={() => {
                   setIsTerminalClosing(true);
@@ -842,7 +1001,6 @@ function SillyClientLauncher() {
             <svg viewBox="0 0 12 12" fill="none" className="w-full h-full">
               <line x1="11" y1="1" x2="5" y2="7" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
               <line x1="11" y1="4" x2="8" y2="7" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
-              <line x1="11" y1="7" x2="11" y2="7" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
             </svg>
           </div>
         </div>
@@ -887,15 +1045,9 @@ function SillyClientLauncher() {
               <div>
                 <div className={cn("text-[10px] font-semibold tracking-wide uppercase mb-3", isLight ? "text-[#1a1625]/25" : "text-white/25")}>浏览器、服务与性能</div>
                 <div className="space-y-1">
-                  <AppMenuItem label="下拉刷新" desc="在酒馆界面顶部下拉刷新 WebView">
-                    <ToggleSwitch on={pullToRefresh} onChange={(v) => { setPullToRefresh(v); TarvenEnv.setPullToRefresh({ enabled: v }).catch(() => {}); }} />
-                  </AppMenuItem>
-                  <AppMenuItem label="Node 内存上限" desc="--max-old-space-size 的 V8 内存">
-                    <span className={cn("text-[11px] font-medium px-2 py-1 rounded-lg", isLight ? "bg-black/[0.05] text-[#1a1625]/50" : "bg-white/[0.06] text-white/50")}>自动</span>
-                  </AppMenuItem>
-                  <AppMenuItem label="Node semi-space" desc="V8 新生代半空间大小，影响 GC 频率和峰值内存">
-                    <span className={cn("text-[11px] font-medium px-2 py-1 rounded-lg", isLight ? "bg-black/[0.05] text-[#1a1625]/50" : "bg-white/[0.06] text-white/50")}>自动</span>
-                  </AppMenuItem>
+                  <ManageItem label="下拉刷新" desc="在酒馆界面顶部下拉刷新 WebView" isLight={isLight}>
+                    <ToggleSwitch on={pullToRefresh} onChange={(v) => { setPullToRefresh(v); TarvenEnv.setPullToRefresh({ enabled: v }).catch(() => {}); }} isLight={isLight} />
+                  </ManageItem>
                 </div>
               </div>
 
@@ -903,11 +1055,20 @@ function SillyClientLauncher() {
               <div>
                 <div className={cn("text-[10px] font-semibold tracking-wide uppercase mb-3", isLight ? "text-[#1a1625]/25" : "text-white/25")}>常用操作</div>
                 <div className="space-y-2">
-                  <button className={cn(
+                  <button onClick={() => importInputRef.current?.click()} className={cn(
                     "w-full px-4 py-2.5 rounded-xl text-xs font-medium text-left transition-all border",
                     isLight ? "bg-black/[0.03] border-black/[0.06] text-[#1a1625]/60 hover:bg-black/[0.06] hover:text-[#1a1625]/80" : "bg-white/[0.03] border-white/[0.06] text-white/60 hover:bg-white/[0.06] hover:text-white/80"
                   )}>导入数据压缩包</button>
-                  <button className={cn(
+                  <button onClick={() => {
+                    const data = JSON.stringify({ version: 2, instances: instances.map(({ icon: _icon, ...rest }) => rest), exportedAt: new Date().toISOString() }, null, 2);
+                    const blob = new Blob([data], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url; a.download = `sillyclient-backup-${new Date().toISOString().slice(0,10)}.json`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    closeAppMenu();
+                  }} className={cn(
                     "w-full px-4 py-2.5 rounded-xl text-xs font-medium text-left transition-all border",
                     isLight ? "bg-black/[0.03] border-black/[0.06] text-[#1a1625]/60 hover:bg-black/[0.06] hover:text-[#1a1625]/80" : "bg-white/[0.03] border-white/[0.06] text-white/60 hover:bg-white/[0.06] hover:text-white/80"
                   )}>导出数据压缩包</button>
@@ -921,6 +1082,22 @@ function SillyClientLauncher() {
               {/* 危险操作 */}
               <div>
                 <div className={cn("text-[10px] font-semibold tracking-wide uppercase mb-3", isLight ? "text-[#1a1625]/25" : "text-white/25")}>危险区域</div>
+                <button onClick={async () => {
+                  closeAppMenu();
+                  setCleaningGarbage(true);
+                  setShowCleanPanel(true);
+                  setGarbageItems([]);
+                  try {
+                    const { items } = await TarvenEnv.cleanGarbage({ dryRun: true });
+                    setGarbageItems(items);
+                  } catch (e) { console.error(e); }
+                  setCleaningGarbage(false);
+                }} className={cn(
+                  "w-full px-4 py-2.5 rounded-xl text-xs font-medium text-left transition-all border mb-2",
+                  isLight ? "bg-amber-50/50 border-amber-900/10 text-amber-900/60 hover:bg-amber-50/80 hover:text-amber-900/80" : "bg-amber-400/[0.04] border-amber-400/10 text-amber-400/60 hover:bg-amber-400/[0.08] hover:text-amber-400/80"
+                )}>
+                  清理垃圾
+                </button>
                 <button onClick={() => { if (confirm("确认清空宿主数据并重新初始化?所有实例将被删除!")) { localStorage.removeItem("sillyclient.instances"); TarvenEnv.clearWebViewData().catch(() => {}); setInstances([]); } }} className={cn(
                   "w-full px-4 py-2.5 rounded-xl text-xs font-medium text-left transition-all border",
                   isLight ? "bg-red-50/50 border-red-900/10 text-red-900/50 hover:bg-red-50/80 hover:text-red-900/70" : "bg-red-400/[0.04] border-red-400/10 text-red-400/50 hover:bg-red-400/[0.08] hover:text-red-400/70"
@@ -933,8 +1110,15 @@ function SillyClientLauncher() {
         </>
       )}
 
-      {/* 主内容 */}
-      <main className="pb-12 px-6 min-h-screen flex flex-col items-center" style={{ paddingTop: `calc(env(safe-area-inset-top) + 68px)` }}>
+      {/* 主内容 — 跟随下拉拖拽(iOS 原生风格) */}
+      <main
+        className="pb-12 px-6 min-h-screen flex flex-col items-center"
+        style={{
+          paddingTop: `calc(env(safe-area-inset-top) + 68px)`,
+          transform: `translateY(${pullDistance}px)`,
+          transition: isPulling.current || isRefreshing ? 'none' : 'transform 0.4s cubic-bezier(0.22, 1, 0.36, 1)',
+        }}
+      >
         {/* Logo */}
         <div className="mb-4 text-center select-none cursor-pointer group" onClick={() => setLogoFontIndex(prev => (prev + 1) % logoFonts.length)} title={`点击切换字体 (${logoFonts[logoFontIndex].name})`}>
           <span
@@ -1167,16 +1351,18 @@ function SillyClientLauncher() {
                           onClick={(e) => { e.stopPropagation(); closeCardMenu(); setShowManagePanel(instance); }}
                           className={cn("w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-[#1a1625]/50 hover:text-[#1a1625]/80" : "text-white/50 hover:text-white/80")}
                         >管理</button>
+                        <button onClick={(e) => { e.stopPropagation(); closeCardMenu(); setRenamingId(instance.id); setRenameValue(instance.name); }} className={cn("w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-[#1a1625]/50 hover:text-[#1a1625]/80" : "text-white/50 hover:text-white/80")}>重命名</button>
                         <button onClick={async (e) => {
                           e.stopPropagation();
                           closeCardMenu();
                           try {
                             const { path } = await TarvenEnv.pickImage({ instanceId: instance.installDir || instance.id });
-                            setInstances(prev => prev.map(t => t.id === instance.id ? { ...t, cover: `file://${path}` } : t));
-                          } catch { /* 取消或失败 */ }
+                            const coverUrl = Capacitor.getPlatform() === 'android' ? Capacitor.convertFileSrc(path) : `file://${path}`;
+                            setInstances(prev => prev.map(t => t.id === instance.id ? { ...t, cover: `${coverUrl}?t=${Date.now()}` } : t));
+                          } catch (err) { console.error('[pickImage]', err); }
                         }} className={cn("w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-[#1a1625]/50 hover:text-[#1a1625]/80" : "text-white/50 hover:text-white/80")}>更换插图</button>
                         <div className={cn("my-1 h-px", isLight ? "bg-black/[0.06]" : "bg-white/[0.06]")} />
-                        <button onClick={(e) => { e.stopPropagation(); closeCardMenu(); setInstances(prev => prev.filter(t => t.id !== instance.id)); }} className={cn("w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-red-900/40 hover:text-red-900/70" : "text-red-400/40 hover:text-red-400/70")}>卸载</button>
+                        <button onClick={async (e) => { e.stopPropagation(); closeCardMenu(); try { await TarvenEnv.uninstallInstance({ instanceId: instance.installDir || instance.id }); } catch (err) { console.error('[uninstall]', err); } finally { setInstances(prev => prev.filter(t => t.id !== instance.id)); } }} className={cn("w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-red-900/40 hover:text-red-900/70" : "text-red-400/40 hover:text-red-400/70")}>卸载</button>
                       </div>
                     </>
                   )}
@@ -1214,6 +1400,106 @@ function SillyClientLauncher() {
         </div>
       </main>
 
+      {/* 重命名弹窗 */}
+      {renamingId && (
+        <>
+          <div className="fixed inset-0 z-[70] bg-black/20 backdrop-blur-sm" onClick={() => setRenamingId(null)} />
+          <div className="fixed z-[72] rounded-2xl border flex flex-col overflow-hidden" style={{
+            top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+            width: 'min(360px, calc(100vw - 2rem))',
+          }}>
+            <div className={cn("p-5", isLight ? "bg-[#f5f3ef]/95 border-black/[0.08]" : "bg-[#1a1625]/90 border-white/[0.08]")}>
+              <div className={cn("text-sm font-semibold mb-3", isLight ? "text-[#1a1625]" : "text-white")}>重命名实例</div>
+              <input
+                type="text"
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                autoFocus
+                className={cn(
+                  "w-full h-10 px-3 rounded-xl border text-sm focus:outline-none focus:ring-0 transition-colors",
+                  isLight
+                    ? "bg-black/[0.04] border-black/[0.08] text-[#1a1625] placeholder:text-[#1a1625]/25 focus:border-[#1a1625]/20"
+                    : "bg-white/[0.04] border-white/[0.08] text-white placeholder:text-white/25 focus:border-white/20"
+                )}
+              />
+              <div className="flex gap-2 mt-4">
+                <button onClick={() => setRenamingId(null)} className={cn("flex-1 h-9 rounded-xl text-xs font-medium border transition-colors", isLight ? "border-black/[0.08] text-[#1a1625]/50 hover:bg-black/5" : "border-white/[0.08] text-white/50 hover:bg-white/5")}>取消</button>
+                <button onClick={() => {
+                  const name = renameValue.trim();
+                  if (name) setInstances(prev => prev.map(t => t.id === renamingId ? { ...t, name, subtitle: name } : t));
+                  setRenamingId(null);
+                }} className="flex-1 h-9 rounded-xl text-xs font-medium bg-[#e8365d] text-white hover:bg-[#e8365d]/90 transition-colors">确定</button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* 清理垃圾面板 */}
+      {showCleanPanel && (
+        <>
+          <div className="fixed inset-0 z-[70] bg-black/20 backdrop-blur-sm" onClick={() => { if (!cleaningGarbage) setShowCleanPanel(false); }} />
+          <div className="fixed z-[72] rounded-2xl border flex flex-col overflow-hidden" style={{
+            top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+            width: 'min(420px, calc(100vw - 2rem))',
+            maxHeight: 'min(80vh, calc(100vh - 4rem))',
+          }}>
+            <div className={cn("flex items-center justify-between px-5 h-12 flex-shrink-0 border-b", isLight ? "border-black/[0.06]" : "border-white/[0.06]", isLight ? "bg-[#f5f3ef]/95" : "bg-[#1a1625]/90")}>
+              <span className={cn("text-sm font-semibold", isLight ? "text-[#1a1625]" : "text-white")}>清理垃圾</span>
+              <button onClick={() => { if (!cleaningGarbage) setShowCleanPanel(false); }} className={cn("p-1.5 rounded-lg transition-colors", isLight ? "hover:bg-black/5 text-[#1a1625]/30" : "hover:bg-white/5 text-white/30")}>
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className={cn("flex-1 overflow-y-auto p-5 scrollbar-subtle", isLight ? "bg-[#f5f3ef]/95" : "bg-[#1a1625]/90")}>
+              {cleaningGarbage && garbageItems.length === 0 ? (
+                <div className={cn("text-center py-8 text-sm", isLight ? "text-[#1a1625]/40" : "text-white/40")}>扫描中...</div>
+              ) : garbageItems.length === 0 ? (
+                <div className={cn("text-center py-8 text-sm", isLight ? "text-[#1a1625]/40" : "text-white/40")}>未发现垃圾文件</div>
+              ) : (
+                <div className="space-y-2">
+                  {garbageItems.map((item, i) => (
+                    <div key={i} className={cn("flex items-center justify-between gap-3 p-3 rounded-xl border", isLight ? "bg-black/[0.03] border-black/[0.06]" : "bg-white/[0.03] border-white/[0.06]")}>
+                      <div className="flex-1 min-w-0">
+                        <div className={cn("text-xs font-medium", isLight ? "text-[#1a1625]/80" : "text-white/80")}>{item.description}</div>
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className={cn("text-[10px] px-1.5 py-0.5 rounded-md", isLight ? "bg-black/[0.05] text-[#1a1625]/40" : "bg-white/[0.06] text-white/40")}>{item.type}</span>
+                          <span className={cn("text-[10px] tabular-nums", isLight ? "text-[#1a1625]/40" : "text-white/40")}>
+                            {item.sizeBytes >= 1024 * 1024 ? `${(item.sizeBytes / 1024 / 1024).toFixed(1)} MB` : item.sizeBytes >= 1024 ? `${(item.sizeBytes / 1024).toFixed(0)} KB` : `${item.sizeBytes} B`}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className={cn("flex items-center justify-end gap-2 px-5 py-3 border-t flex-shrink-0", isLight ? "border-black/[0.06] bg-[#f5f3ef]/95" : "border-white/[0.06] bg-[#1a1625]/90")}>
+              <button onClick={() => setShowCleanPanel(false)} disabled={cleaningGarbage} className={cn(
+                "px-4 h-8 rounded-xl text-[11px] font-medium transition-all active:scale-[0.97] disabled:opacity-50",
+                isLight ? "bg-black/[0.05] text-[#1a1625]/45 hover:bg-black/[0.08]" : "bg-white/[0.06] text-white/45 hover:bg-white/10"
+              )}>取消</button>
+              <button
+                onClick={async () => {
+                  setCleaningGarbage(true);
+                  try {
+                    for (const item of garbageItems) {
+                      try { await TarvenEnv.deleteGarbageItem({ path: item.path }); } catch {}
+                    }
+                    setGarbageItems([]);
+                    setShowCleanPanel(false);
+                  } catch (e) { console.error(e); }
+                  setCleaningGarbage(false);
+                }}
+                disabled={cleaningGarbage || garbageItems.length === 0}
+                className={cn(
+                  "px-4 h-8 rounded-xl text-[11px] font-semibold transition-all active:scale-[0.97] disabled:opacity-50",
+                  isLight ? "bg-[#1a1625] text-[#f5f3ef] hover:bg-[#1a1625]/90" : "bg-white/90 text-[#1a1625] hover:bg-white"
+                )}>全部清理</button>
+            </div>
+          </div>
+        </>
+      )}
+
       {/* 新建实例面板 */}
       {(showNewInstancePanel || isNewInstancePanelClosing) && (
         <>
@@ -1244,7 +1530,7 @@ function SillyClientLauncher() {
 
             <div className="flex-1 overflow-y-auto p-5 space-y-5 scrollbar-subtle">
               {/* 实例名称 */}
-              <NewInstanceField label="名称" desc="为这个酒馆实例设置一个备注名">
+              <NewInstanceField label="名称" desc="为这个酒馆实例设置一个备注名" isLight={isLight}>
                 <input
                   type="text"
                   value={newInstanceName}
@@ -1287,7 +1573,7 @@ function SillyClientLauncher() {
               {/* 本地模式配置 */}
               {newInstanceMode === "local" && (
                 <>
-                  <NewInstanceField label="安装目录" desc="SillyTavern 的安装位置">
+                  <NewInstanceField label="安装目录" desc="SillyTavern 的安装位置" isLight={isLight}>
                     <div className="flex items-center gap-2 w-full">
                       <input
                         type="text"
@@ -1312,7 +1598,7 @@ function SillyClientLauncher() {
                       )}>浏览</button>
                     </div>
                   </NewInstanceField>
-                  <NewInstanceField label="SillyTavern 版本" desc="从 GitHub releases 获取可用版本">
+                  <NewInstanceField label="SillyTavern 版本" desc="从 GitHub releases 获取可用版本" isLight={isLight}>
                     <button
                       id="ver-trigger"
                       onClick={async () => {
@@ -1331,7 +1617,16 @@ function SillyClientLauncher() {
                           const trigger = document.getElementById('ver-trigger');
                           if (trigger) {
                             const r = trigger.getBoundingClientRect();
-                            setVerDropdownPos({ top: r.bottom + 4, left: r.left, width: r.width });
+                            const maxH = 360;
+                            const spaceBelow = window.innerHeight - r.bottom - 16;
+                            const spaceAbove = r.top - 16;
+                            if (spaceBelow >= maxH || spaceBelow >= spaceAbove) {
+                              // 下方展开
+                              setVerDropdownPos({ top: Math.min(r.bottom + 4, window.innerHeight - maxH - 8), left: Math.min(r.left, window.innerWidth - r.width - 8), width: r.width });
+                            } else {
+                              // 上方展开
+                              setVerDropdownPos({ top: Math.max(8, r.top - maxH - 4), left: Math.min(r.left, window.innerWidth - r.width - 8), width: r.width });
+                            }
                           }
                           setVerDropdownOpen(true);
                         }
@@ -1343,7 +1638,7 @@ function SillyClientLauncher() {
                           : "bg-white/[0.04] border-white/[0.08] text-white"
                       )}
                     >
-                      <span>{fetchingReleases ? "正在获取版本..." : (newInstanceVersion === "stable" ? "稳定版 (推荐)" : newInstanceVersion === "latest" ? "最新版" : newInstanceVersion)}</span>
+                      <span>{fetchingReleases ? "正在获取版本..." : (newInstanceVersion === "stable" ? "稳定版 (推荐)" : newInstanceVersion)}</span>
                       <ChevronDown className="w-3.5 h-3.5 opacity-40" />
                     </button>
                   </NewInstanceField>
@@ -1352,7 +1647,7 @@ function SillyClientLauncher() {
 
               {/* 远程模式配置 */}
               {newInstanceMode === "remote" && (
-                <NewInstanceField label="连接地址" desc="SillyTavern 服务的 URL 地址">
+                <NewInstanceField label="连接地址" desc="SillyTavern 服务的 URL 地址" isLight={isLight}>
                   <input
                     type="text"
                     value={newInstanceUrl}
@@ -1398,7 +1693,7 @@ function SillyClientLauncher() {
                   };
                   setInstances(prev => [...prev, newInstance]);
                   setIsNewInstancePanelClosing(true);
-                  setTimeout(() => { setShowNewInstancePanel(false); setIsNewInstancePanelClosing(false); setNewInstanceName(""); setNewInstanceDir(""); setNewInstanceUrl("http://"); setNewInstanceVersion("stable"); setNewInstanceZipUrl(undefined); }, 250);
+                  setTimeout(() => { setShowNewInstancePanel(false); setIsNewInstancePanelClosing(false); setNewInstanceName(""); setNewInstanceDir(""); setNewInstanceUrl("http://"); setNewInstanceVersion("stable"); }, 250);
                 }}
                 className={cn(
                   "px-4 h-8 rounded-xl text-[11px] font-semibold transition-all active:scale-[0.97]",
@@ -1413,10 +1708,7 @@ function SillyClientLauncher() {
       {/* 版本下拉菜单 — 渲染在面板外部避免 transform 裁剪 */}
       {verDropdownOpen && (
         <>
-          <div className={cn(
-            "fixed inset-0 z-[70] overlay-backdrop",
-            verDropdownClosing && "overlay-backdrop-exit"
-          )} onClick={() => setVerDropdownOpen(false)} />
+          <div className="fixed inset-0 z-[70] overlay-backdrop" onClick={() => setVerDropdownOpen(false)} />
           <div className={cn(
             "fixed z-[72] rounded-md border overflow-hidden shadow-2xl animate-dropdown",
             isLight ? "bg-[#f5f3ef]/95 border-black/[0.08]" : "bg-[#1a1625]/92 border-white/[0.08]"
@@ -1424,6 +1716,9 @@ function SillyClientLauncher() {
             top: verDropdownPos.top,
             left: verDropdownPos.left,
             width: verDropdownPos.width,
+            maxHeight: "min(50vh, 360px)",
+            overflowY: "auto",
+            overscrollBehavior: "contain",
           }}>
             {[
               { value: "stable", label: "稳定版", sublabel: "预打包, 无需额外下载", zipballUrl: undefined },
@@ -1439,7 +1734,6 @@ function SillyClientLauncher() {
                 key={opt.value}
                 onClick={() => {
                   setNewInstanceVersion(opt.value);
-                  setNewInstanceZipUrl(opt.zipballUrl);
                   setVerDropdownOpen(false);
                 }}
                 className={cn(
@@ -1523,44 +1817,36 @@ function SillyClientLauncher() {
             <div className="flex-1 overflow-y-auto p-5 space-y-4 scrollbar-subtle">
               {manageTab === "general" && (
                 <>
-                  {(() => {
-                    const cfg = showManagePanel!.config ?? DEFAULT_CONFIG;
-                    return (
-                    <>
-                  <ManageItem label="启动端口" desc="宿主 WebView 和本地服务都会使用这个端口">
-                    <input type="number" value={showManagePanel?.port ?? 8000} onChange={(e) => {
-                      const port = parseInt(e.target.value) || 8000;
-                      if (showManagePanel) setInstances(prev => prev.map(t => t.id === showManagePanel.id ? { ...t, port } : t));
+                  <ManageItem label="启动端口" desc="宿主 WebView 和本地服务都会使用这个端口" isLight={isLight}>
+                    <input type="number" value={draftPort} onChange={(e) => {
+                      setDraftPort(parseInt(e.target.value) || 8000);
                     }} className={cn("w-20 h-7 px-2 rounded-lg text-xs text-center border focus:outline-none focus:ring-0 transition-colors",
                       isLight ? "bg-black/[0.04] border-black/[0.08] text-[#1a1625] focus:border-[#1a1625]/20" : "bg-white/[0.04] border-white/[0.08] text-white focus:border-white/20"
                     )} />
                   </ManageItem>
-                  <ManageItem label="允许外部监听" desc="Android 宿主默认建议关闭，只在明确需要局域网访问时开启">
-                    <ToggleSwitch on={cfg.listen} onChange={(v) => updateManagedConfig({ listen: v })} />
+                  <ManageItem label="允许外部监听" desc="Android 宿主默认建议关闭，只在明确需要局域网访问时开启" isLight={isLight}>
+                    <ToggleSwitch on={draftConfig.listen} onChange={(v) => setDraftConfig(prev => ({ ...prev, listen: v }))} isLight={isLight} />
                   </ManageItem>
-                  <ManageItem label="启用 IPv4" desc="至少要保留一个网络协议可用">
-                    <ToggleSwitch on={cfg.ipv4} onChange={(v) => updateManagedConfig({ ipv4: v })} />
+                  <ManageItem label="启用 IPv4" desc="至少要保留一个网络协议可用" isLight={isLight}>
+                    <ToggleSwitch on={draftConfig.ipv4} onChange={(v) => setDraftConfig(prev => ({ ...prev, ipv4: v }))} isLight={isLight} />
                   </ManageItem>
-                  <ManageItem label="启用 IPv6" desc="如果网络环境稳定支持 IPv6，可以开启">
-                    <ToggleSwitch on={cfg.ipv6} onChange={(v) => updateManagedConfig({ ipv6: v })} />
+                  <ManageItem label="启用 IPv6" desc="如果网络环境稳定支持 IPv6，可以开启" isLight={isLight}>
+                    <ToggleSwitch on={draftConfig.ipv6} onChange={(v) => setDraftConfig(prev => ({ ...prev, ipv6: v }))} isLight={isLight} />
                   </ManageItem>
-                  <ManageItem label="优先使用 IPv6 DNS" desc="在 IPv6 网络质量足够好时再开启">
-                    <ToggleSwitch on={cfg.dnsIpv6} onChange={(v) => updateManagedConfig({ dnsIpv6: v })} />
+                  <ManageItem label="优先使用 IPv6 DNS" desc="在 IPv6 网络质量足够好时再开启" isLight={isLight}>
+                    <ToggleSwitch on={draftConfig.dnsIpv6} onChange={(v) => setDraftConfig(prev => ({ ...prev, dnsIpv6: v }))} isLight={isLight} />
                   </ManageItem>
-                  <ManageItem label="心跳写入间隔" desc="单位秒，填 0 关闭心跳文件">
-                    <input type="number" value={cfg.heartbeat} onChange={(e) => {
+                  <ManageItem label="心跳写入间隔" desc="单位秒，填 0 关闭心跳文件" isLight={isLight}>
+                    <input type="number" value={draftConfig.heartbeat} onChange={(e) => {
                       const heartbeat = parseInt(e.target.value) || 0;
-                      updateManagedConfig({ heartbeat });
+                      setDraftConfig(prev => ({ ...prev, heartbeat }));
                     }} className={cn("w-20 h-7 px-2 rounded-lg text-xs text-center border focus:outline-none focus:ring-0 transition-colors",
                       isLight ? "bg-black/[0.04] border-black/[0.08] text-[#1a1625] focus:border-[#1a1625]/20" : "bg-white/[0.04] border-white/[0.08] text-white focus:border-white/20"
                     )} />
                   </ManageItem>
-                  <ManageItem label="启用 HTTP Keep-Alive" desc="网络波动大时可临时关闭">
-                    <ToggleSwitch on={cfg.keepAlive} onChange={(v) => updateManagedConfig({ keepAlive: v })} />
+                  <ManageItem label="启用 HTTP Keep-Alive" desc="网络波动大时可临时关闭" isLight={isLight}>
+                    <ToggleSwitch on={draftConfig.keepAlive} onChange={(v) => setDraftConfig(prev => ({ ...prev, keepAlive: v }))} isLight={isLight} />
                   </ManageItem>
-                    </>
-                    );
-                  })()}
                 </>
               )}
               {manageTab === "about" && (
@@ -1619,7 +1905,11 @@ function SillyClientLauncher() {
                 "px-4 h-8 rounded-xl text-[11px] font-medium transition-all active:scale-[0.97]",
                 isLight ? "bg-black/[0.05] text-[#1a1625]/45 hover:bg-black/[0.08]" : "bg-white/[0.06] text-white/45 hover:bg-white/10"
               )}>取消</button>
-              <button className={cn(
+              <button onClick={() => {
+                updateManagedConfig(draftConfig);
+                if (showManagePanel) setInstances(prev => prev.map(t => t.id === showManagePanel.id ? { ...t, port: draftPort } : t));
+                closeManagePanel();
+              }} className={cn(
                 "px-4 h-8 rounded-xl text-[11px] font-semibold transition-all active:scale-[0.97]",
                 isLight ? "bg-[#1a1625] text-[#f5f3ef] hover:bg-[#1a1625]/90" : "bg-white/90 text-[#1a1625] hover:bg-white"
               )}>保存</button>

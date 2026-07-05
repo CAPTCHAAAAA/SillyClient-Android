@@ -171,89 +171,6 @@
     inset 0 2px 12px oklch(0 0 0 / 0.08);
 }
 
-/* 胶囊按钮 */
-.capsule-btn {
-  background: linear-gradient(180deg, oklch(1 0 0 / 0.30), oklch(1 0 0 / 0.20));
-  backdrop-filter: blur(20px) saturate(1.5);
-  -webkit-backdrop-filter: blur(20px) saturate(1.5);
-  border: 0.5px solid var(--glass-border);
-  border-radius: 9999px;
-  box-shadow:
-    inset 0 1px 0 oklch(1 0 0 / 0.50),
-    inset 0 -1px 0 oklch(0 0 0 / 0.04),
-    0 2px 6px oklch(0 0 0 / 0.06);
-  transition: all var(--transition-spring);
-}
-
-.capsule-btn:hover {
-  background: linear-gradient(180deg, oklch(1 0 0 / 0.40), oklch(1 0 0 / 0.30));
-  box-shadow:
-    inset 0 1px 0 oklch(1 0 0 / 0.60),
-    inset 0 -1px 0 oklch(0 0 0 / 0.04),
-    0 4px 12px oklch(0 0 0 / 0.08);
-}
-
-.capsule-btn:active {
-  transform: scale(0.96);
-}
-
-.dark .capsule-btn {
-  background: linear-gradient(180deg, oklch(1 0 0 / 0.15), oklch(1 0 0 / 0.08));
-}
-
-.dark .capsule-btn:hover {
-  background: linear-gradient(180deg, oklch(1 0 0 / 0.20), oklch(1 0 0 / 0.12));
-}
-
-/* 主要胶囊按钮（iOS 绿） */
-.capsule-btn-primary {
-  background: linear-gradient(180deg, var(--primary), oklch(0.65 0.16 150));
-  border: 0.5px solid oklch(0.6 0.15 150 / 0.3);
-  box-shadow:
-    inset 0 1px 0 oklch(1 0 0 / 0.30),
-    inset 0 -1px 0 oklch(0 0 0 / 0.10),
-    0 2px 8px oklch(0.72 0.18 150 / 0.25);
-}
-
-.capsule-btn-primary:hover {
-  background: linear-gradient(180deg, oklch(0.75 0.19 150), oklch(0.68 0.17 150));
-  box-shadow:
-    inset 0 1px 0 oklch(1 0 0 / 0.40),
-    inset 0 -1px 0 oklch(0 0 0 / 0.10),
-    0 4px 12px oklch(0.72 0.18 150 / 0.35);
-}
-
-/* 动画关键帧 */
-@keyframes ambient-float {
-  0%, 100% {
-    transform: translate(0, 0) scale(1);
-  }
-  25% {
-    transform: translate(10px, -15px) scale(1.02);
-  }
-  50% {
-    transform: translate(-5px, 10px) scale(0.98);
-  }
-  75% {
-    transform: translate(-15px, -5px) scale(1.01);
-  }
-}
-
-/* 工具类 */
-.animate-ambient {
-  animation: ambient-float 25s ease-in-out infinite;
-}
-
-/* 隐藏滚动条但保持滚动 */
-.scrollbar-hide {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-
-.scrollbar-hide::-webkit-scrollbar {
-  display: none;
-}
-
 /* 极细融入背景的滚动条 */
 .scrollbar-subtle {
   scrollbar-width: thin;
@@ -570,22 +487,6 @@ header span[class*="truncate"] {
   letter-spacing: 0.01em;
 }
 
-/* 下拉菜单 — visionOS popover 风格 */
-.animate-in {
-  animation: apple-popover-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) forwards;
-}
-
-@keyframes apple-popover-in {
-  0% {
-    opacity: 0;
-    transform: scale(0.92) translateY(-4px);
-  }
-  100% {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
-}
-
 /* 壁纸面板入场更柔和 */
 .bg-panel-enter {
   animation: panel-pop-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards;
@@ -722,22 +623,6 @@ header span[class*="truncate"] {
 
 .animate-dropdown {
   animation: dropdown-in 0.35s cubic-bezier(0.32, 0.72, 0, 1) forwards;
-}
-
-@keyframes dropdown-out {
-  0% {
-    opacity: 1;
-    transform: translateY(0) scaleY(1);
-  }
-  100% {
-    opacity: 0;
-    transform: translateY(-6px) scaleY(0.96);
-  }
-}
-
-.animate-dropdown-exit {
-  animation: dropdown-out 0.2s cubic-bezier(0.32, 0.72, 0, 1) forwards;
-  pointer-events: none;
 }
 
 /* iOS 原生拟真毛玻璃按钮 — 扁平色差 + 边缘高光凹凸质感 */

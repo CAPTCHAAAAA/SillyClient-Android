@@ -8,7 +8,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.Gravity
 import android.view.MotionEvent
 import android.view.PixelCopy
 import android.view.View
@@ -26,7 +25,6 @@ import com.sillyclient.plugin.TarvenEnvPlugin
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import com.getcapacitor.JSObject
 import com.sillyclient.runtime.RuntimePaths
 import com.sillyclient.runtime.RuntimeFileUtils
@@ -272,7 +270,7 @@ class MainActivity : BridgeActivity() {
     fun isTavernVisible(): Boolean = isWebViewVisible
     fun getTavernUrl(): String = tavernUrl
 
-    fun provisionAndStart(port: Int = 8000, instanceId: String = "default", version: String = "stable", config: InstanceConfig = InstanceConfig(), zipballUrl: String? = null, skipIfExists: Boolean = true) {
+    fun provisionAndStart(port: Int = 8000, instanceId: String = "default", version: String = "stable", config: InstanceConfig = InstanceConfig(), zipballUrl: String? = null) {
         tavernPort = port
         tavernUrl = "http://127.0.0.1:$port/"
         Thread {
@@ -437,20 +435,6 @@ class MainActivity : BridgeActivity() {
         switchToHome(true)
     }
 
-    /** Prevent system back gesture from intercepting edge touches inside the WebView. */
-    private fun excludeSystemGestures() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
-        webView.post {
-            val w = webView.width; if (w <= 0) return@post
-            val h = webView.height; if (h <= 0) return@post
-            val band = dp(36) // exclude ~36dp from each vertical edge
-            webView.systemGestureExclusionRects = listOf(
-                Rect(0, 0, band, h),            // left edge
-                Rect(w - band, 0, w, h)         // right edge
-            )
-        }
-    }
-
     private fun clearSystemGestureExclusions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             webView.systemGestureExclusionRects = emptyList()
@@ -508,15 +492,6 @@ class MainActivity : BridgeActivity() {
                 or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                 or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
             )
-        }
-    }
-
-    @Suppress("DEPRECATION")
-    private fun showSystemBars() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.insetsController?.show(WindowInsets.Type.systemBars())
-        } else {
-            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
         }
     }
 
@@ -669,7 +644,6 @@ class MainActivity : BridgeActivity() {
         if (!downloadFile(SERVER_SOURCE_URL, destZip)) return false
 
         setStatus("Extracting server...")
-        setStatus("Extracting server...")
         try {
             destZip.inputStream().use { input ->
                 RuntimeFileUtils.unzipStream(input, serverDir)
@@ -678,7 +652,6 @@ class MainActivity : BridgeActivity() {
             return true
         } catch (e: Exception) {
             android.util.Log.e(TAG, "Extract failed", e)
-            setStatus("Extract failed")
             setStatus("Extract failed")
             return false
         }
@@ -802,8 +775,8 @@ class MainActivity : BridgeActivity() {
     /** 下载 GitHub release zipball 并解压到目标目录。 */
     private fun downloadAndExtractGithubRelease(zipballUrl: String, paths: RuntimePaths, targetServerDir: File): Boolean {
         return try {
-            val url = java.net.URL(zipballUrl)
-            val conn = url.openConnection() as java.net.HttpURLConnection
+            val url = URL(zipballUrl)
+            val conn = url.openConnection() as HttpURLConnection
             conn.connectTimeout = 30000
             conn.readTimeout = 120000
             conn.setRequestProperty("User-Agent", "SillyClient")
@@ -814,7 +787,7 @@ class MainActivity : BridgeActivity() {
             }
             val tmpZip = File(paths.tmpDir, "github-release-${System.currentTimeMillis()}.zip")
             conn.inputStream.use { input ->
-                java.io.FileOutputStream(tmpZip).use { out -> input.copyTo(out) }
+                FileOutputStream(tmpZip).use { out -> input.copyTo(out) }
             }
             conn.disconnect()
             // GitHub zipball 内层有一层目录(SillyTavern-<sha>/),解压后需要平铺
@@ -839,7 +812,7 @@ class MainActivity : BridgeActivity() {
                     if (name.isNotEmpty()) {
                         val out = File(destDir, name)
                         out.parentFile?.mkdirs()
-                        java.io.FileOutputStream(out).use { zis.copyTo(it) }
+                        FileOutputStream(out).use { zis.copyTo(it) }
                     }
                 }
                 entry = zis.nextEntry
@@ -879,15 +852,7 @@ class MainActivity : BridgeActivity() {
         serversRoot.listFiles()?.forEach { dir ->
             if (dir.isDirectory) {
                 val hasServer = File(dir, "server.js").exists()
-                val pkg = File(dir, "package.json")
-                var version = "unknown"
-                if (pkg.exists()) {
-                    try {
-                        val txt = pkg.readText()
-                        val m = Regex("\"version\"\\s*:\\s*\"([^\"]+)\"").find(txt)
-                        if (m != null) version = m.groupValues[1]
-                    } catch (_: Exception) {}
-                }
+                val version = parsePackageVersion(dir)
                 val size = dirSize(dir)
                 result.add(Quint(dir.name, version, dir.absolutePath, size, hasServer))
             }
@@ -901,19 +866,22 @@ class MainActivity : BridgeActivity() {
         val dir = File(paths.bootstrapDir, "servers/$instanceId")
         if (!dir.exists()) return Quint("unknown", dir.absolutePath, 0L, "", "未安装")
         val hasServer = File(dir, "server.js").exists()
-        var version = "unknown"
-        val pkg = File(dir, "package.json")
-        if (pkg.exists()) {
-            try {
-                val txt = pkg.readText()
-                val m = Regex("\"version\"\\s*:\\s*\"([^\"]+)\"").find(txt)
-                if (m != null) version = m.groupValues[1]
-            } catch (_: Exception) {}
-        }
+        val version = parsePackageVersion(dir)
         val size = dirSize(dir)
         val createdAt = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date(dir.lastModified()))
         val status = if (hasServer) "已就绪" else "未完成"
         return Quint(version, dir.absolutePath, size, createdAt, status)
+    }
+
+    /** 读取目录下 package.json 的 version 字段，失败返回 "unknown"。 */
+    private fun parsePackageVersion(dir: File): String {
+        val pkg = File(dir, "package.json")
+        if (!pkg.exists()) return "unknown"
+        return try {
+            val txt = pkg.readText()
+            val m = Regex("\"version\"\\s*:\\s*\"([^\"]+)\"").find(txt)
+            if (m != null) m.groupValues[1] else "unknown"
+        } catch (_: Exception) { "unknown" }
     }
 
     private fun dirSize(dir: File): Long {
@@ -983,14 +951,109 @@ class MainActivity : BridgeActivity() {
 
     /** 把选中图片复制到 covers/{instanceId}.png,返回可加载的文件路径。 */
     fun copyCoverImage(uri: android.net.Uri, instanceId: String): String {
+        android.util.Log.d(TAG, "copyCoverImage: uri=$uri instanceId=$instanceId")
         val paths = RuntimePaths.from(this)
         val coversDir = File(paths.bootstrapDir, "covers").apply { mkdirs() }
-        val outFile = File(coversDir, "$instanceId.png")
-        contentResolver.openInputStream(uri).use { input ->
-            java.io.FileOutputStream(outFile).use { out -> input?.copyTo(out) }
+        // 清理 instanceId 中的非法字符(作为文件名)
+        val safeId = instanceId.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        val outFile = File(coversDir, "$safeId.png")
+        android.util.Log.d(TAG, "copyCoverImage: outFile=${outFile.absolutePath}")
+        val input = contentResolver.openInputStream(uri)
+            ?: throw java.io.IOException("无法打开图片流: $uri")
+        input.use { ins ->
+            FileOutputStream(outFile).use { out -> ins.copyTo(out) }
         }
-        // WebView 可直接加载 file:// 路径
+        android.util.Log.d(TAG, "copyCoverImage: done, size=${outFile.length()}")
         return outFile.absolutePath
+    }
+
+    /** 卸载实例:删除安装目录 + 封面图,返回释放的字节数。 */
+    fun uninstallInstance(instanceId: String): Long {
+        val paths = RuntimePaths.from(this)
+        var freed = 0L
+        // 删除安装目录
+        val serverDir = File(paths.bootstrapDir, "servers/$instanceId")
+        if (serverDir.exists()) {
+            freed += dirSize(serverDir)
+            serverDir.deleteRecursively()
+        }
+        // 删除封面图
+        val safeId = instanceId.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        val coverFile = File(paths.bootstrapDir, "covers/$safeId.png")
+        if (coverFile.exists()) {
+            freed += coverFile.length()
+            coverFile.delete()
+        }
+        android.util.Log.d(TAG, "uninstallInstance: $instanceId, freed=$freed bytes")
+        return freed
+    }
+
+    /**
+     * 清理垃圾:扫描孤立文件/目录。
+     * - orphan_instance: servers/ 下有实例目录但前端 instances 列表中不存在的(已删除卡片但文件残留)
+     * - orphan_cover: covers/ 下有封面图但没有对应实例的
+     * - temp_file: tmp/ 和 logs/ 下的临时文件
+     * - cache: WebView 缓存
+     * dryRun=true 仅扫描返回,不实际删除。
+     * 返回 (items, totalBytes)。
+     */
+    fun cleanGarbage(dryRun: Boolean): org.json.JSONArray {
+        val paths = RuntimePaths.from(this)
+        val items = org.json.JSONArray()
+        var totalBytes = 0L
+
+        fun add(path: String, type: String, size: Long, desc: String) {
+            if (size <= 0) return
+            val item = org.json.JSONObject()
+            item.put("path", path)
+            item.put("type", type)
+            item.put("sizeBytes", size)
+            item.put("description", desc)
+            items.put(item)
+            totalBytes += size
+        }
+
+        // 1. 扫描孤立实例目录(servers/ 下的)
+        val serversRoot = File(paths.bootstrapDir, "servers")
+        if (serversRoot.exists()) {
+            serversRoot.listFiles()?.forEach { dir ->
+                if (dir.isDirectory && dir.name != "default") {
+                    add(dir.absolutePath, "orphan_instance", dirSize(dir), "实例目录: ${dir.name}")
+                }
+            }
+        }
+
+        // 2. 扫描孤立封面图(covers/ 下)
+        val coversDir = File(paths.bootstrapDir, "covers")
+        if (coversDir.exists()) {
+            coversDir.listFiles()?.forEach { file ->
+                if (file.isFile && file.name.endsWith(".png")) {
+                    add(file.absolutePath, "orphan_cover", file.length(), "封面图: ${file.name}")
+                }
+            }
+        }
+
+        // 3. 扫描临时文件(tmp/ 和 logs/)
+        val tmpDir = paths.tmpDir
+        if (tmpDir.exists()) {
+            val tmpSize = dirSize(tmpDir)
+            add(tmpDir.absolutePath, "temp_file", tmpSize, "临时文件目录")
+        }
+        val logsDir = paths.logsDir
+        if (logsDir.exists()) {
+            val logsSize = dirSize(logsDir)
+            add(logsDir.absolutePath, "temp_file", logsSize, "日志文件目录")
+        }
+
+        // 4. WebView 缓存
+        val cacheDir = this.cacheDir
+        if (cacheDir.exists()) {
+            val cacheSize = dirSize(cacheDir)
+            add(cacheDir.absolutePath, "cache", cacheSize, "应用缓存")
+        }
+
+        android.util.Log.d(TAG, "cleanGarbage: dryRun=$dryRun, found ${items.length()} items, $totalBytes bytes")
+        return items
     }
 
     /** 简单五元组(Kotlin 标准库无 Quintuple)。 */
@@ -1046,7 +1109,6 @@ class MainActivity : BridgeActivity() {
     }
 
     private fun setStatus(t: String) { pushLog(t) }
-    private fun setProgressValue(pct: Int) { pushProgress(pct.toFloat()) }
     private fun updateProgress(pct: Int) { pushProgress(pct.toFloat()) }
     private fun appendLog(line: String) { pushLog(line) }
 
@@ -1101,9 +1163,7 @@ class MainActivity : BridgeActivity() {
 
     override fun onBackPressed() {
         if (fullscreenView != null) exitFullscreen()
-        else if (isWebViewVisible) {
-            // 酒馆内 back 不退出（退出走启动页 EXIT；控制台转 Capacitor）
-        } else super.onBackPressed()
+        else super.onBackPressed()
     }
 
 

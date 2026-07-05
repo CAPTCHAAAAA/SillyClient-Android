@@ -2,7 +2,6 @@ package com.sillyclient.plugin
 
 import android.content.Intent
 import android.net.Uri
-import android.provider.DocumentsContract
 import androidx.activity.result.ActivityResult
 import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
@@ -12,7 +11,8 @@ import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.ActivityCallback
 import com.sillyclient.MainActivity
-import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 
 /**
  * Capacitor plugin wrapping the SillyClient tavern startup & reading environment.
@@ -24,6 +24,7 @@ import org.json.JSONObject
 class TarvenEnvPlugin : Plugin() {
 
     companion object {
+        private const val TAG = "SillyClient"
         private var instance: TarvenEnvPlugin? = null
 
         /** Push event to Capacitor JS listeners. Safe from any thread. */
@@ -34,12 +35,6 @@ class TarvenEnvPlugin : Plugin() {
             }
         }
     }
-
-    /** 挂起的目录选择回调。 */
-    private var pendingDirCall: PluginCall? = null
-    /** 挂起的图片选择回调 + 目标 instanceId。 */
-    private var pendingImageCall: PluginCall? = null
-    private var pendingImageInstanceId: String? = null
 
     override fun load() {
         instance = this
@@ -55,25 +50,28 @@ class TarvenEnvPlugin : Plugin() {
         val instanceId = call.data.optString("instanceId", "default")
         val version = call.data.optString("version", "stable")
         val zipballUrl = call.data.optString("zipballUrl", "")
-        val config = MainActivity.InstanceConfig(
-            listen = call.data.optBoolean("listen", false),
-            ipv4 = call.data.optBoolean("ipv4", true),
-            ipv6 = call.data.optBoolean("ipv6", false),
-            dnsIpv6 = call.data.optBoolean("dnsIpv6", false),
-            heartbeat = call.data.optInt("heartbeat", 0),
-            keepAlive = call.data.optBoolean("keepAlive", false)
-        )
         val configObj = call.data.optJSONObject("config")
-        val real = if (configObj != null) MainActivity.InstanceConfig(
-            listen = configObj.optBoolean("listen", config.listen),
-            ipv4 = configObj.optBoolean("ipv4", config.ipv4),
-            ipv6 = configObj.optBoolean("ipv6", config.ipv6),
-            dnsIpv6 = configObj.optBoolean("dnsIpv6", config.dnsIpv6),
-            heartbeat = configObj.optInt("heartbeat", config.heartbeat),
-            keepAlive = configObj.optBoolean("keepAlive", config.keepAlive)
-        ) else config
+        val config = if (configObj != null) {
+            MainActivity.InstanceConfig(
+                listen = configObj.optBoolean("listen", false),
+                ipv4 = configObj.optBoolean("ipv4", true),
+                ipv6 = configObj.optBoolean("ipv6", false),
+                dnsIpv6 = configObj.optBoolean("dnsIpv6", false),
+                heartbeat = configObj.optInt("heartbeat", 0),
+                keepAlive = configObj.optBoolean("keepAlive", false)
+            )
+        } else {
+            MainActivity.InstanceConfig(
+                listen = call.data.optBoolean("listen", false),
+                ipv4 = call.data.optBoolean("ipv4", true),
+                ipv6 = call.data.optBoolean("ipv6", false),
+                dnsIpv6 = call.data.optBoolean("dnsIpv6", false),
+                heartbeat = call.data.optInt("heartbeat", 0),
+                keepAlive = call.data.optBoolean("keepAlive", false)
+            )
+        }
         val urlArg = if (zipballUrl.isEmpty()) null else zipballUrl
-        act.runOnUiThread { act.provisionAndStart(port, instanceId, version, real, urlArg) }
+        act.runOnUiThread { act.provisionAndStart(port, instanceId, version, config, urlArg) }
         call.resolve()
     }
 
@@ -108,8 +106,8 @@ class TarvenEnvPlugin : Plugin() {
     fun fetchReleases(call: PluginCall) {
         Thread {
             try {
-                val url = java.net.URL("https://api.github.com/repos/SillyTavern/SillyTavern/releases?per_page=30")
-                val conn = url.openConnection() as java.net.HttpURLConnection
+                val url = URL("https://api.github.com/repos/SillyTavern/SillyTavern/releases?per_page=30")
+                val conn = url.openConnection() as HttpURLConnection
                 conn.connectTimeout = 15000
                 conn.readTimeout = 20000
                 conn.setRequestProperty("Accept", "application/vnd.github+json")
@@ -150,19 +148,17 @@ class TarvenEnvPlugin : Plugin() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
         }
-        pendingDirCall = call
         startActivityForResult(call, intent, "pickDir")
     }
 
     @ActivityCallback
-    private fun pickDir(resultCode: Int, result: Intent?) {
-        val call = pendingDirCall ?: return
-        pendingDirCall = null
-        if (resultCode != android.app.Activity.RESULT_OK || result?.data == null) {
+    private fun pickDir(call: PluginCall, @Suppress("UNUSED_PARAMETER") result: androidx.activity.result.ActivityResult) {
+        if (call == null) return
+        if (result.resultCode != android.app.Activity.RESULT_OK || result.data?.data == null) {
             call.reject("cancelled")
             return
         }
-        val treeUri = result.data!!
+        val treeUri = result.data?.data ?: run { call.reject("No dir data"); return }
         try {
             getContext().contentResolver.takePersistableUriPermission(
                 treeUri,
@@ -182,34 +178,36 @@ class TarvenEnvPlugin : Plugin() {
     @PluginMethod
     fun pickImage(call: PluginCall) {
         val instanceId = call.data.optString("instanceId", "default")
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+        val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "image/*"
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        pendingImageCall = call
-        pendingImageInstanceId = instanceId
         startActivityForResult(call, intent, "pickImage")
     }
 
     @ActivityCallback
-    private fun pickImage(resultCode: Int, result: Intent?) {
-        val call = pendingImageCall ?: return
-        val instanceId = pendingImageInstanceId ?: "default"
-        pendingImageCall = null
-        pendingImageInstanceId = null
-        if (resultCode != android.app.Activity.RESULT_OK || result?.data == null) {
+    private fun pickImage(call: PluginCall, @Suppress("UNUSED_PARAMETER") result: androidx.activity.result.ActivityResult) {
+        if (call == null) {
+            android.util.Log.e(TAG, "pickImage: call is null (process was killed)")
+            return
+        }
+        val instanceId = call.getString("instanceId", "default") ?: "default"
+        val data = result.data
+        if (result.resultCode != android.app.Activity.RESULT_OK || data == null) {
             call.reject("cancelled")
             return
         }
         val act = activity as? MainActivity
         if (act == null) { call.reject("Not MainActivity"); return }
         try {
-            val outPath = act.copyCoverImage(result.data!!, instanceId)
+            val uri = data.data ?: run { call.reject("No image data"); return }
+            val outPath = act.copyCoverImage(uri, instanceId)
             val ret = JSObject()
             ret.put("path", outPath)
             call.resolve(ret)
         } catch (e: Exception) {
+            android.util.Log.e(TAG, "pickImage error", e)
             call.reject("pickImage: ${e.message}")
         }
     }
@@ -290,5 +288,97 @@ class TarvenEnvPlugin : Plugin() {
         val enabled = call.data.optBoolean("enabled", true)
         act.setPullToRefresh(enabled)
         call.resolve()
+    }
+
+    /** 探测远程实例是否在线(HEAD 请求,5s 超时)。绕过 WebView 的 CORS/mixed-content 限制。 */
+    @PluginMethod
+    fun pingUrl(call: PluginCall) {
+        val urlStr = call.getString("url") ?: run { call.reject("url required"); return }
+        Thread {
+            try {
+                val url = URL(urlStr)
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "HEAD"
+                    connectTimeout = 5000
+                    readTimeout = 5000
+                    instanceFollowRedirects = true
+                }
+                val code = conn.responseCode
+                conn.disconnect()
+                val ret = JSObject()
+                ret.put("online", code in 200..499) // 2xx/3xx/4xx 都算可达(服务在跑)
+                ret.put("statusCode", code)
+                call.resolve(ret)
+            } catch (e: Exception) {
+                val ret = JSObject()
+                ret.put("online", false)
+                ret.put("error", e.message ?: "unknown")
+                call.resolve(ret)
+            }
+        }.start()
+    }
+
+    /** 卸载实例:删除安装目录 + 封面图。 */
+    @PluginMethod
+    fun uninstallInstance(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
+        Thread {
+            try {
+                val freedBytes = act.uninstallInstance(instanceId)
+                val ret = JSObject()
+                ret.put("success", true)
+                ret.put("freedBytes", freedBytes)
+                call.resolve(ret)
+            } catch (e: Exception) {
+                call.reject("uninstall failed: ${e.message}")
+            }
+        }.start()
+    }
+
+    /** 清理垃圾:扫描孤立文件/目录。dryRun=true 仅扫描不删除。 */
+    @PluginMethod
+    fun cleanGarbage(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val dryRun = call.getBoolean("dryRun", true) ?: true
+        Thread {
+            try {
+                val items = act.cleanGarbage(dryRun)
+                var totalBytes = 0L
+                val arr = JSArray()
+                for (i in 0 until items.length()) {
+                    val o = items.getJSONObject(i)
+                    totalBytes += o.optLong("sizeBytes", 0)
+                    arr.put(o)
+                }
+                val ret = JSObject()
+                ret.put("items", arr)
+                ret.put("totalBytes", totalBytes)
+                call.resolve(ret)
+            } catch (e: Exception) {
+                call.reject("cleanGarbage failed: ${e.message}")
+            }
+        }.start()
+    }
+
+    /** 删除指定垃圾项(按 path)。 */
+    @PluginMethod
+    fun deleteGarbageItem(call: PluginCall) {
+        val path = call.getString("path") ?: run { call.reject("path required"); return }
+        Thread {
+            try {
+                val file = java.io.File(path)
+                if (!file.exists()) {
+                    call.reject("file not found")
+                    return@Thread
+                }
+                file.deleteRecursively()
+                val ret = JSObject()
+                ret.put("success", true)
+                call.resolve(ret)
+            } catch (e: Exception) {
+                call.reject("delete failed: ${e.message}")
+            }
+        }.start()
     }
 }

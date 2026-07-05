@@ -29,8 +29,6 @@ export const DEFAULT_CONFIG: InstanceConfig = {
 /** GitHub release 条目(来自 SillyTavern/SillyTavern releases)。 */
 export interface GithubRelease {
   tag: string
-  name: string
-  publishedAt: string
   zipballUrl: string
   prerelease: boolean
 }
@@ -39,7 +37,6 @@ export interface GithubRelease {
 export interface ScannedInstance {
   instanceId: string
   version: string
-  path: string
   sizeBytes: number
   hasServer: boolean
 }
@@ -51,8 +48,15 @@ export interface InstanceInfo {
   path: string
   sizeBytes: number
   createdAt: string
-  port: number
   status: string
+}
+
+/** 垃圾清理项。 */
+export interface GarbageItem {
+  path: string
+  type: 'orphan_instance' | 'orphan_cover' | 'temp_file' | 'cache'
+  sizeBytes: number
+  description: string
 }
 
 export interface TarvenEnvPlugin {
@@ -97,6 +101,18 @@ export interface TarvenEnvPlugin {
 
   /** 启用/禁用酒馆 WebView 下拉刷新。 */
   setPullToRefresh(options: { enabled: boolean }): Promise<void>
+
+  /** 探测远程实例是否在线(原生 HEAD 请求,绕过 WebView CORS)。 */
+  pingUrl(options: { url: string }): Promise<{ online: boolean; statusCode?: number; error?: string }>
+
+  /** 卸载实例:删除安装目录和封面图。 */
+  uninstallInstance(options: { instanceId: string }): Promise<{ success: boolean; freedBytes: number }>
+
+  /** 清理垃圾:扫描孤立文件/目录,返回可清理项。dryRun=true 仅扫描不删除。 */
+  cleanGarbage(options: { dryRun: boolean }): Promise<{ items: GarbageItem[]; totalBytes: number }>
+
+  /** 删除指定垃圾项(按 path)。 */
+  deleteGarbageItem(options: { path: string }): Promise<{ success: boolean }>
 
   addListener(
     eventName: 'log' | 'progress' | 'ready' | 'mode',
