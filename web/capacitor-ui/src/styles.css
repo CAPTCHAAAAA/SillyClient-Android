@@ -718,6 +718,12 @@ header span[class*="truncate"] {
     inset 0 0.5px 0 oklch(1 0 0 / 0.4);
 }
 
+/* 进度条流光动画 */
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
 /* 全局表单元素 — 去除浏览器默认样式 */
 input,
 select,

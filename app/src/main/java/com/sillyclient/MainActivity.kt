@@ -8,6 +8,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.GestureDetector
+import android.view.Gravity
 import android.view.MotionEvent
 import android.view.PixelCopy
 import android.view.View
@@ -25,6 +27,7 @@ import com.sillyclient.plugin.TarvenEnvPlugin
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.graphics.Insets
 import com.getcapacitor.JSObject
 import com.sillyclient.runtime.RuntimePaths
 import com.sillyclient.runtime.RuntimeFileUtils
@@ -52,6 +55,10 @@ class MainActivity : BridgeActivity() {
     private lateinit var topScrimBar: TopScrimBar     // 酒馆顶框 scrim 条（渐变+光泽+色波）
     private lateinit var webViewScreen: FrameLayout
     private lateinit var webView: WebView
+
+    // 顶部状态栏手势区 — 左右滑动返回启动页
+    private lateinit var topGestureZone: View
+    private lateinit var topGestureDetector: GestureDetector
 
     // ---- Hybrid UI host (web dashboard / console / bridge) ----
     private lateinit var hybridHost: HybridUiHost
@@ -165,7 +172,13 @@ class MainActivity : BridgeActivity() {
             visibility = View.GONE  // hidden — Compose is the only visible content at launch
         }
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
-            WindowInsetsCompat.CONSUMED
+            // 消费系统栏 insets（WebView 不受系统栏影响），但保留 IME insets 传递给子 View
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            WindowInsetsCompat.Builder()
+                .setInsets(WindowInsetsCompat.Type.systemBars(), Insets.of(0, 0, 0, 0))
+                .setInsets(WindowInsetsCompat.Type.ime(), insets.getInsets(WindowInsetsCompat.Type.ime()))
+                .setVisible(WindowInsetsCompat.Type.ime(), insets.isVisible(WindowInsetsCompat.Type.ime()))
+                .build()
         }
         addContentView(root, FrameLayout.LayoutParams(MATCH, MATCH))
 
@@ -173,6 +186,36 @@ class MainActivity : BridgeActivity() {
         // 随酒馆页顶部取色，scrim 渐变 + 光泽呼吸 + 自下而上色波（设计见 TopScrimBar）。
         topScrimBar = TopScrimBar(this)
         topScrimBar.attach(root, statusBarFixedPx)
+
+        // 顶部状态栏手势区：透明 View 覆盖 statusBarFixedPx 条带，检测左右滑动 → 返回启动页
+        topGestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
+                if (e1 == null) return false
+                val dx = e2.x - e1.x
+                val dy = e2.y - e1.y
+                // 水平滑动距离 > 垂直滑动距离 且速度足够
+                if (kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.8f &&
+                    kotlin.math.abs(dx) > 60 &&
+                    kotlin.math.abs(vx) > 300) {
+                    exitTavern()
+                    return true
+                }
+                return false
+            }
+        })
+        topGestureZone = View(this).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            isClickable = true  // 消费触摸以接收完整手势序列
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                statusBarFixedPx
+            ).apply { gravity = Gravity.TOP }
+            setOnTouchListener { _, event ->
+                topGestureDetector.onTouchEvent(event)
+                true  // 消费事件 — 顶部条带是纯视觉区，WebView 内容从 statusBarFixedPx 下方开始
+            }
+        }
+        root.addView(topGestureZone)
 
         // ============================================
         // WEBVIEW SCREEN (inside native overlay)
@@ -220,6 +263,16 @@ class MainActivity : BridgeActivity() {
 
         webViewScreen.addView(webView, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(webViewScreen, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        // IME 适配：输入法弹出时，给 webViewScreen 加底部 padding，让内容不被遮挡
+        // setDecorFitsSystemWindows(false) + CONSUMED 会吞掉所有 insets，
+        // 所以在 webViewScreen 上单独监听 IME insets。
+        ViewCompat.setOnApplyWindowInsetsListener(webViewScreen) { v, insets ->
+            val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
+            val imeHeight = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+            v.setPadding(0, 0, 0, if (imeVisible) imeHeight else 0)
+            insets
+        }
 
         // ---- Hybrid UI host owns the web dashboard + console + bridge ----
 

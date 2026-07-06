@@ -146,6 +146,7 @@ function ToggleSwitch({ defaultOn = false, on, onChange, isLight }: { defaultOn?
 }
 
 function SillyClientLauncher() {
+  const isWeb = !Capacitor.isNativePlatform();
   const [instances, setInstances] = useState<TavernInstance[]>(loadInstances);
   const [showBgPanel, setShowBgPanel] = useState(false);
   const [isPanelClosing, setIsPanelClosing] = useState(false);
@@ -159,7 +160,7 @@ function SillyClientLauncher() {
   const [terminalSize, setTerminalSize] = useState({ w: 640, h: 340 });
   const [terminalFontSize, setTerminalFontSize] = useState(12);
   const [terminalLogs, setTerminalLogs] = useState<{ msg: string; level?: string }[]>([
-    { msg: "SillyClient Launcher 就绪,选择实例并点击启动", level: "info" },
+    { msg: "就绪，选择实例启动", level: "info" },
   ]);
   const [launchingId, setLaunchingId] = useState<string | null>(null);
   const [launchProgress, setLaunchProgress] = useState<{ pct: number; text: string } | null>(null);
@@ -521,7 +522,7 @@ function SillyClientLauncher() {
           });
         });
         readyHandle = await TarvenEnv.addListener("ready", (d: { url?: string; port?: number }) => {
-          setTerminalLogs(prev => [...prev, { msg: `✓ 服务就绪${d.url ? " " + d.url : ""}`, level: "success" }]);
+          setTerminalLogs(prev => [...prev, { msg: `✓ 就绪${d.url ? " " + d.url : ""}`, level: "success" }]);
         });
         modeHandle = await TarvenEnv.addListener("mode", (d: { mode: string }) => {
           // 退回启动器时,把本地 running 实例置为 stopped
@@ -548,10 +549,10 @@ function SillyClientLauncher() {
     const zipballUrl = instance.zipballUrl;
     const localZipPath = instance.localZipPath;
 
-    setLaunchProgress({ pct: 0, text: "初始化..." });
+    setLaunchProgress({ pct: 0, text: "初始化" });
     setLaunchError(null);
-    setLaunchLogs([{ msg: `> 启动实例 ${instance.name} (${instance.type})`, level: "info" }]);
-    setLaunchLogs(prev => [...prev, { msg: `> 准备本地 Node 环境 [${instanceId}] 端口 ${port}...`, level: "info" }]);
+    setLaunchLogs([{ msg: `启动 ${instance.name} (${instance.type})`, level: "info" }]);
+    setLaunchLogs(prev => [...prev, { msg: `准备 Node 环境 [${instanceId}] :${port}`, level: "info" }]);
 
     // 注册事件监听
     let readyHandle: any;
@@ -614,11 +615,11 @@ function SillyClientLauncher() {
       }
 
       if (!readyReceived) {
-        throw new Error("启动超时: 下载/安装耗时过长(10分钟),请检查网络后重试");
+        throw new Error("超时：下载/安装超过 10 分钟，检查网络后重试");
       }
 
-      setLaunchProgress({ pct: 100, text: "服务就绪" });
-      setLaunchLogs(prev => [...prev, { msg: `> 本地服务就绪,进入沉浸式`, level: "success" }]);
+      setLaunchProgress({ pct: 100, text: "就绪" });
+      setLaunchLogs(prev => [...prev, { msg: `服务就绪，进入沉浸式`, level: "success" }]);
       await TarvenEnv.enterImmersive({ url: `http://127.0.0.1:${port}/` });
 
       // 成功,关闭面板
@@ -643,8 +644,8 @@ function SillyClientLauncher() {
         await doLaunch(instance);
       } else {
         const url = instance.url || "http://127.0.0.1:8000";
-        setLaunchLogs([{ msg: `> 连接远程实例 ${url}`, level: "info" }]);
-        setLaunchProgress({ pct: 100, text: "连接中..." });
+        setLaunchLogs([{ msg: `连接 ${url}`, level: "info" }]);
+        setLaunchProgress({ pct: 100, text: "连接中" });
         await TarvenEnv.enterImmersive({ url });
         setTimeout(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 500);
       }
@@ -652,7 +653,7 @@ function SillyClientLauncher() {
       const msg = err?.message || String(err);
       setLaunchError(msg);
       setLaunchProgress(null);
-      setLaunchLogs(prev => [...prev, { msg: `> 启动失败: ${msg}`, level: "error" }]);
+      setLaunchLogs(prev => [...prev, { msg: `失败: ${msg}`, level: "error" }]);
       setInstances(prev => prev.map(t => t.id === instance.id ? { ...t, status: "error" } : t));
       try { await TarvenEnv.exitImmersive(); } catch {}
     } finally {
@@ -664,7 +665,7 @@ function SillyClientLauncher() {
   const retryLaunch = useCallback(async () => {
     if (!lastLaunchParams) return;
     setLaunchError(null);
-    setLaunchProgress({ pct: 0, text: "重新启动..." });
+    setLaunchProgress({ pct: 0, text: "重启" });
     setInstances(prev => prev.map(t => t.id === lastLaunchParams.id ? { ...t, status: "running" } : t));
     setLaunchingId(lastLaunchParams.id);
     try {
@@ -673,7 +674,7 @@ function SillyClientLauncher() {
       const msg = err?.message || String(err);
       setLaunchError(msg);
       setLaunchProgress(null);
-      setLaunchLogs(prev => [...prev, { msg: `> 重试失败: ${msg}`, level: "error" }]);
+      setLaunchLogs(prev => [...prev, { msg: `重试失败: ${msg}`, level: "error" }]);
       setInstances(prev => prev.map(t => t.id === lastLaunchParams.id ? { ...t, status: "error" } : t));
     } finally {
       setLaunchingId(null);
@@ -920,6 +921,7 @@ function SillyClientLauncher() {
             <button
               ref={terminalBtnRef}
               onClick={() => {
+                if (isWeb) return;
                 if (showTerminal) {
                   setIsTerminalClosing(true);
                   setTimeout(() => { setShowTerminal(false); setIsTerminalClosing(false); }, 300);
@@ -956,6 +958,7 @@ function SillyClientLauncher() {
           <button
             ref={settingsBtnRef}
             onClick={() => {
+              if (isWeb) return;
               if (showAppMenu) {
                 setIsAppMenuClosing(true);
                 setTimeout(() => { setShowAppMenu(false); setIsAppMenuClosing(false); }, 300);
@@ -1124,7 +1127,7 @@ function SillyClientLauncher() {
             <div className="flex-1 overflow-y-auto p-5 space-y-5 scrollbar-subtle">
               {/* 浏览器、服务与性能 */}
               <div>
-                <div className={cn("text-[10px] font-semibold tracking-wide uppercase mb-3", isLight ? "text-[#1a1625]/25" : "text-white/25")}>浏览器、服务与性能</div>
+                <div className={cn("text-[10px] font-semibold tracking-wide uppercase mb-3", isLight ? "text-[#1a1625]/25" : "text-white/25")}>浏览与性能</div>
                 <div className="space-y-1">
                   <ManageItem label="下拉刷新" desc="在酒馆界面顶部下拉刷新 WebView" isLight={isLight}>
                     <ToggleSwitch on={pullToRefresh} onChange={(v) => { setPullToRefresh(v); TarvenEnv.setPullToRefresh({ enabled: v }).catch(() => {}); }} isLight={isLight} />
@@ -1179,11 +1182,11 @@ function SillyClientLauncher() {
                 )}>
                   清理垃圾
                 </button>
-                <button onClick={() => { if (confirm("确认清空宿主数据并重新初始化?所有实例将被删除!")) { localStorage.removeItem("sillyclient.instances"); TarvenEnv.clearWebViewData().catch(() => {}); setInstances([]); } }} className={cn(
+                <button onClick={() => { if (confirm("确认清空数据并重新初始化？所有实例将被删除")) { localStorage.removeItem("sillyclient.instances"); TarvenEnv.clearWebViewData().catch(() => {}); setInstances([]); } }} className={cn(
                   "w-full px-4 py-2.5 rounded-xl text-xs font-medium text-left transition-all border",
                   isLight ? "bg-red-50/50 border-red-900/10 text-red-900/50 hover:bg-red-50/80 hover:text-red-900/70" : "bg-red-400/[0.04] border-red-400/10 text-red-400/50 hover:bg-red-400/[0.08] hover:text-red-400/70"
                 )}>
-                  清空宿主数据并重新初始化
+                  清空数据并重置
                 </button>
               </div>
             </div>
@@ -1266,6 +1269,7 @@ function SillyClientLauncher() {
               {/* 新建实例 */}
               <button
                 onClick={() => {
+                  if (isWeb) { window.open('https://github.com/CAPTCHAAAAA/SillyClient/releases/latest', '_blank'); return; }
                   setNewInstanceMode("local");
                   setNewInstanceName("");
                   setNewInstanceDir("");
@@ -1284,8 +1288,8 @@ function SillyClientLauncher() {
                     <Play className={cn("w-3.5 h-3.5", isLight ? "text-[#1a1625]/40" : "text-white/40")} />
                   </div>
                   <div>
-                    <div className={cn("text-base font-semibold mb-0.5", isLight ? "text-[#1a1625]" : "text-white")}>新建实例</div>
-                    <div className={cn("text-xs", isLight ? "text-[#1a1625]/40" : "text-white/40")}>设置新的酒馆环境</div>
+                    <div className={cn("text-base font-semibold mb-0.5", isLight ? "text-[#1a1625]" : "text-white")}>{isWeb ? "下载 APK" : "新建实例"}</div>
+                    <div className={cn("text-xs", isLight ? "text-[#1a1625]/40" : "text-white/40")}>{isWeb ? "获取最新版本" : "设置新的酒馆环境"}</div>
                   </div>
                 </div>
               </button>
@@ -1307,7 +1311,7 @@ function SillyClientLauncher() {
                   }}
                 >
                   <div className="absolute inset-0 rounded-[20px] overflow-hidden">
-                    <img src={instance.cover || "/tavern-logo.png"} alt="" className="w-full h-full object-cover" loading="lazy" />
+                    <img src={instance.cover || "./tavern-logo.png"} alt="" className="w-full h-full object-cover" loading="lazy" />
                     <div className="absolute inset-0" style={{
                       background: isLight
                         ? 'linear-gradient(135deg, oklch(1 0 0 / 0.40) 0%, oklch(1 0 0 / 0.25) 100%)'
@@ -1477,6 +1481,30 @@ function SillyClientLauncher() {
             </div>
           </div>
         </div>
+
+        {/* Web 环境: 产品信息区 */}
+        {isWeb && (
+          <div className="w-full max-w-2xl mx-auto px-6 mt-8 mb-8">
+            <div className={cn("grid grid-cols-3 gap-3 mb-6")}>
+              {[
+                { icon: "⚡", title: "原生运行", desc: "Node.js 24 直接运行" },
+                { icon: "🎨", title: "沉浸式", desc: "变色龙顶框适配" },
+                { icon: "📦", title: "多实例", desc: "独立端口与配置" },
+              ].map(f => (
+                <div key={f.title} className={cn("p-4 rounded-2xl text-center", isLight ? "bg-black/[0.03] border border-black/[0.06]" : "bg-white/[0.04] border border-white/[0.06]")}>
+                  <div className="text-2xl mb-1.5">{f.icon}</div>
+                  <div className={cn("text-xs font-semibold mb-0.5", isLight ? "text-[#1a1625]" : "text-white")}>{f.title}</div>
+                  <div className={cn("text-[10px]", isLight ? "text-[#1a1625]/40" : "text-white/40")}>{f.desc}</div>
+                </div>
+              ))}
+            </div>
+            <div className={cn("text-center text-xs leading-relaxed", isLight ? "text-[#1a1625]/35" : "text-white/35")}>
+              SillyClient 是跨平台 SillyTavern 启动器，在 Android 上一键运行完整酒馆实例。
+              <br />无需 root，无需 Termux，原生 Node.js 运行时 + 沉浸式 WebView，把酒馆装进口袋。
+              <br />MIT License · <a href="https://github.com/CAPTCHAAAAA/SillyClient" target="_blank" rel="noopener" className="underline hover:opacity-70">GitHub</a> · <a href="https://github.com/CAPTCHAAAAA/SillyClient/releases" target="_blank" rel="noopener" className="underline hover:opacity-70">所有版本</a>
+            </div>
+          </div>
+        )}
       </main>
 
       {/* 重命名弹窗 */}
@@ -1517,64 +1545,87 @@ function SillyClientLauncher() {
       {/* 启动进度面板 */}
       {showLaunchPanel && (
         <>
-          <div className="fixed inset-0 z-[60] bg-black/15 backdrop-blur-[2px]" />
+          <div className="fixed inset-0 z-[60] bg-black/25 backdrop-blur-[4px]" />
           <div className={cn(
-            "fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[61] w-[340px] rounded-2xl overflow-hidden backdrop-blur-[40px] saturate-180",
+            "fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[61] w-[360px] rounded-3xl overflow-hidden backdrop-blur-[40px] saturate-180",
+            "shadow-[0_24px_80px_rgba(0,0,0,0.4),0_0_0_0.5px_rgba(255,255,255,0.06),inset_0_0.5px_0_rgba(255,255,255,0.08)]",
             glassBg
           )}>
             {/* 标题 */}
-            <div className="px-5 pt-5 pb-3">
+            <div className="px-6 pt-6 pb-4">
               <div className="flex items-center justify-between">
-                <h3 className={cn("text-[15px] font-bold", isLight ? "text-[#1a1625]" : "text-white")}>
-                  {launchError ? "启动失败" : "正在启动"}
+                <h3 className={cn("text-[17px] font-bold tracking-tight", isLight ? "text-[#1a1625]" : "text-white")}>
+                  {launchError ? "启动失败" : "启动中"}
                 </h3>
                 {launchProgress && !launchError && (
-                  <span className="text-[11px] font-mono tabular-nums text-[#e8365d]">{launchProgress.pct}%</span>
+                  <span className={cn("text-[14px] font-mono tabular-nums font-semibold", isLight ? "text-[#8b3a52]" : "text-[#c4788e]")}>{launchProgress.pct}%</span>
                 )}
               </div>
-              <p className={cn("text-[11px] mt-0.5", isLight ? "text-[#1a1625]/40" : "text-white/40")}>
+              <p className={cn("text-[12px] mt-1", isLight ? "text-[#1a1625]/40" : "text-white/40")}>
                 {lastLaunchParams?.name || "实例"}
               </p>
             </div>
 
             {/* 进度条 */}
-            <div className="px-5 pb-3">
-              <div className={cn("h-1.5 rounded-full overflow-hidden", isLight ? "bg-black/[0.06]" : "bg-white/[0.06]")}>
+            <div className="px-6 pb-4">
+              <div className={cn(
+                "h-[3px] rounded-full overflow-hidden relative",
+                isLight ? "bg-black/[0.06]" : "bg-white/[0.08]"
+              )}>
                 <div
-                  className={cn("h-full rounded-full transition-all duration-500 ease-out", launchError ? "bg-red-500" : "bg-[#e8365d]")}
+                  className={cn(
+                    "h-full rounded-full transition-all duration-500 ease-out relative overflow-hidden",
+                    launchError
+                      ? "bg-red-500/80"
+                      : isLight
+                        ? "bg-[#8b3a52]"
+                        : "bg-gradient-to-r from-[#7a3245] via-[#a04860] to-[#8b3a52]"
+                  )}
                   style={{ width: `${launchError ? 100 : (launchProgress?.pct || 0)}%` }}
-                />
+                >
+                  {!launchError && launchProgress && launchProgress.pct > 0 && launchProgress.pct < 100 && (
+                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-[shimmer_1.5s_ease-in-out_infinite]" />
+                  )}
+                </div>
               </div>
-              <p className={cn("text-[10px] mt-1.5 font-medium truncate", isLight ? "text-[#1a1625]/45" : "text-white/45")}>
-                {launchError ? launchError : (launchProgress?.text || "准备中...")}
+              <p className={cn("text-[12px] mt-2 font-medium truncate", isLight ? "text-[#1a1625]/50" : "text-white/50")}>
+                {launchError ? launchError : (launchProgress?.text || "初始化")}
               </p>
             </div>
 
-            {/* 日志区域 */}
-            <div className={cn("mx-5 mb-4 rounded-xl overflow-hidden max-h-[180px] overflow-y-auto", isLight ? "bg-black/[0.03]" : "bg-black/[0.2])")}>
-              <div className="px-3 py-2 font-mono text-[10px] leading-relaxed space-y-0.5">
-                {launchLogs.map((log, i) => (
-                  <div key={i} className={cn(
-                    "truncate",
-                    log.level === "error" ? "text-red-400" :
-                    log.level === "success" ? "text-emerald-400" :
-                    isLight ? "text-[#1a1625]/50" : "text-white/50"
-                  )}>
-                    {log.msg}
-                  </div>
-                ))}
+            {/* 日志区域 — 色差内凹效果 */}
+            <div className="mx-6 mb-5">
+              <div className={cn(
+                "rounded-2xl overflow-hidden max-h-[200px] overflow-y-auto",
+                "border shadow-[inset_0_2px_6px_rgba(0,0,0,0.3),inset_0_0.5px_0_rgba(0,0,0,0.2)]",
+                isLight
+                  ? "bg-black/[0.04] border-black/[0.1]"
+                  : "bg-black/[0.32] border-white/[0.03]"
+              )}>
+                <div className="px-4 py-3 font-mono text-[11px] leading-[1.7] space-y-1">
+                  {launchLogs.map((log, i) => (
+                    <div key={i} className={cn(
+                      "truncate",
+                      log.level === "error" ? "text-red-400/90" :
+                      log.level === "success" ? "text-emerald-400/90" :
+                      isLight ? "text-[#1a1625]/50" : "text-white/50"
+                    )}>
+                      {log.msg}
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
 
             {/* 底部按钮 */}
-            <div className="px-5 pb-5 flex gap-2">
+            <div className="px-6 pb-6 flex gap-2.5">
               {launchError ? (
                 <>
                   <button
                     onClick={() => retryLaunch()}
                     disabled={!!launchingId}
                     className={cn(
-                      "flex-1 h-9 rounded-xl text-[12px] font-semibold transition-all active:scale-95 disabled:opacity-50",
+                      "flex-1 h-10 rounded-xl text-[13px] font-semibold transition-all active:scale-95 disabled:opacity-50",
                       isLight ? "bg-[#1a1625] text-[#f5f3ef] hover:bg-[#1a1625]/90" : "bg-white/90 text-[#1a1625] hover:bg-white"
                     )}
                   >
@@ -1583,22 +1634,22 @@ function SillyClientLauncher() {
                   <button
                     onClick={() => { setShowLaunchPanel(false); setLaunchError(null); setLaunchProgress(null); }}
                     className={cn(
-                      "flex-1 h-9 rounded-xl text-[12px] font-semibold transition-all active:scale-95",
+                      "flex-1 h-10 rounded-xl text-[13px] font-semibold transition-all active:scale-95",
                       isLight ? "bg-black/[0.05] text-[#1a1625]/60 hover:bg-black/[0.08]" : "bg-white/[0.08] text-white/60 hover:bg-white/[0.12]"
                     )}
                   >
-                    取消
+                    关闭
                   </button>
                 </>
               ) : (
                 <button
                   onClick={() => { setShowLaunchPanel(false); setLaunchProgress(null); }}
                   className={cn(
-                    "w-full h-9 rounded-xl text-[12px] font-semibold transition-all active:scale-95",
+                    "w-full h-10 rounded-xl text-[13px] font-semibold transition-all active:scale-95",
                     isLight ? "bg-black/[0.05] text-[#1a1625]/40 hover:bg-black/[0.08]" : "bg-white/[0.08] text-white/40 hover:bg-white/[0.12]"
                   )}
                 >
-                  后台运行
+                  隐藏
                 </button>
               )}
             </div>
@@ -1839,7 +1890,7 @@ function SillyClientLauncher() {
                           : "bg-white/[0.04] border-white/[0.08] text-white"
                       )}
                     >
-                      <span>{fetchingReleases ? "正在获取版本..." : (newInstanceVersion === "stable" ? "稳定版 (推荐)" : newInstanceVersion)}</span>
+                      <span>{fetchingReleases ? "获取版本中" : (newInstanceVersion === "stable" ? "稳定版" : newInstanceVersion)}</span>
                       <ChevronDown className="w-3.5 h-3.5 opacity-40" />
                     </button>
                   </NewInstanceField>

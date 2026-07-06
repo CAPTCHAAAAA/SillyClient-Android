@@ -7,7 +7,7 @@
  * - 根布局见 src/routes/__root.tsx；首页占位见 src/routes/index.tsx（须整体替换）
  */
 import { QueryClient } from '@tanstack/react-query';
-import { createRouter } from '@tanstack/react-router';
+import { createRouter, createHashHistory } from '@tanstack/react-router';
 import { routeTree } from './routeTree.gen';
 
 export const getRouter = () => {
@@ -15,6 +15,7 @@ export const getRouter = () => {
 
   const router = createRouter({
     routeTree,
+    history: createHashHistory(),
     context: { queryClient },
     scrollRestoration: true,
     defaultPreloadStaleTime: 0,
