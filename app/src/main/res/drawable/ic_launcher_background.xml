@@ -4,8 +4,11 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- 深色暖调背景，匹配 icon.svg 的 bg-warm 渐变基调 -->
+    <!-- 背景渐变：暖深色调，匹配 logo.html 的 bg-warm -->
+    <path
+        android:fillColor="#2D131E"
+        android:pathData="M0,0h108v108h-108z" />
     <path
         android:fillColor="#14060A"
-        android:pathData="M0,0h108v108h-108z" />
+        android:pathData="M0,54h108v54h-108z" />
 </vector>

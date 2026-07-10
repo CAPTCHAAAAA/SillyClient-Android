@@ -6,7 +6,12 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- 聊天气泡主体：玫瑰渐变粗描边 U 形，打开右侧 -->
+    <!-- 发光气泡底层（logo.html 中 opacity=0.4 的 glow 效果，用低透明度模拟） -->
+    <path
+        android:fillColor="#1AFF5E85"
+        android:pathData="M81,20.25 L27,20.25 A10.125,10.125 0 0,0 16.875,30.375 L16.875,70.875 A10.125,10.125 0 0,0 27,81 L37.125,81 L37.125,94.5 L54,81 L81,81 A10.125,10.125 0 0,0 91.125,70.875 L91.125,30.375 A10.125,10.125 0 0,0 81,20.25 Z" />
+
+    <!-- 聊天气泡主体：玫瑰渐变粗描边 U 形 -->
     <path
         android:fillColor="#00000000"
         android:pathData="M87.75,20.25 L33.75,20.25 A13.5,13.5 0 0,0 20.25,33.75 L20.25,74.25 A13.5,13.5 0 0,0 33.75,87.75 L87.75,87.75"
@@ -39,8 +44,8 @@
                 android:startY="37.125"
                 android:endX="87.75"
                 android:endY="70.875">
-                <item android:offset="0" android:color="#FFF0F3" />
-                <item android:offset="0.5" android:color="#B3FFE1E8" />
+                <item android:offset="0" android:color="#F2F0F3" />
+                <item android:offset="0.5" android:color="#73FFE1E8" />
                 <item android:offset="1.0" android:color="#0DFFD2DC" />
             </gradient>
         </aapt:attr>

@@ -1,50 +1,31 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" width="100%" height="100%">
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 256 256">
   <defs>
-    <linearGradient id="iconBg" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#2C2C2E" />
-      <stop offset="100%" stop-color="#1C1C1E" />
+    <linearGradient id="bg-warm" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2D131E" />
+      <stop offset="60%" stop-color="#14060A" />
+      <stop offset="100%" stop-color="#080204" />
     </linearGradient>
-
-    <linearGradient id="solidLineGrad" x1="106" y1="0" x2="694" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#E599AD" />
-      <stop offset="100%" stop-color="#D12A4F" />
+    <linearGradient id="glowing-rose" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF5E85" />
+      <stop offset="40%" stop-color="#C7154B" />
+      <stop offset="100%" stop-color="#6A112E" />
     </linearGradient>
-
-    <linearGradient id="solidLiquid" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#A82341" />
-      <stop offset="100%" stop-color="#611325" />
+    <linearGradient id="rose-quartz" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="rgba(255, 240, 243, 0.95)" />
+      <stop offset="50%" stop-color="rgba(255, 225, 232, 0.45)" />
+      <stop offset="100%" stop-color="rgba(255, 210, 220, 0.05)" />
     </linearGradient>
+    <filter id="warm-shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="2" dy="4" stdDeviation="3" flood-color="#4A051A" flood-opacity="0.4" />
+      <feDropShadow dx="-2" dy="12" stdDeviation="12" flood-color="#3D0315" flood-opacity="0.3" />
+    </filter>
+    <filter id="bubble-glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="12" result="blur" />
+    </filter>
   </defs>
-
-  <rect width="800" height="800" rx="180" fill="url(#iconBg)" />
-
-  <g>
-    
-    <path d="M 106 547 
-             Q 400 463 694 547 
-             L 694 603 
-             A 98 98 0 0 1 596 701 
-             L 204 701 
-             A 98 98 0 0 1 106 603 
-             Z" 
-          fill="url(#solidLiquid)" />
-
-    <g stroke="url(#solidLineGrad)" stroke-width="54" stroke-linecap="round" stroke-linejoin="round" fill="none">
-      
-      <path d="M 694 99 
-               L 204 99 
-               A 98 98 0 0 0 106 197 
-               C 106 281, 326 253, 326 337 
-               C 326 421, 106 393, 106 477 
-               L 106 603 
-               A 98 98 0 0 0 204 701 
-               L 596 701 
-               A 98 98 0 0 0 694 603 
-               L 694 470 
-               A 220 133 0 0 1 694 204" />
-
-      <path d="M 400 99 L 400 701" />
-               
-    </g>
-  </g>
+  <rect width="256" height="256" rx="56" fill="url(#bg-warm)" />
+  <rect x="1" y="1" width="254" height="254" rx="55" fill="none" stroke="rgba(255, 200, 215, 0.06)" stroke-width="1.5" />
+  <path d="M 192 48 H 64 A 24 24 0 0 0 40 72 V 168 A 24 24 0 0 0 64 192 H 88 V 224 L 128 192 H 192 A 24 24 0 0 0 216 168 V 72 A 24 24 0 0 0 192 48 Z" fill="url(#glowing-rose)" opacity="0.4" filter="url(#bubble-glow)" />
+  <path d="M 208 48 L 80 48 A 32 32 0 0 0 48 80 L 48 176 A 32 32 0 0 0 80 208 L 208 208" fill="none" stroke="url(#glowing-rose)" stroke-width="32" stroke-linecap="round" />
+  <path d="M 208 88 L 140 88 A 20 20 0 0 0 140 128 L 156 128 A 20 20 0 0 1 156 168 L 88 168" fill="none" stroke="url(#rose-quartz)" stroke-width="32" stroke-linecap="round" filter="url(#warm-shadow)" />
 </svg>
