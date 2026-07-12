@@ -524,9 +524,10 @@ function SillyClientLauncher() {
         readyHandle = await TarvenEnv.addListener("ready", (d: { url?: string; port?: number }) => {
           setTerminalLogs(prev => [...prev, { msg: `✓ 就绪${d.url ? " " + d.url : ""}`, level: "success" }]);
         });
-        modeHandle = await TarvenEnv.addListener("mode", (d: { mode: string }) => {
-          // 退回启动器时,把本地 running 实例置为 stopped
-          if (d.mode === "launcher") {
+        modeHandle = await TarvenEnv.addListener("mode", (d: { mode: string; tavernRunning?: boolean }) => {
+          // 只有 tavernRunning=false（实例真正关闭）时才置 stopped
+          // tavernRunning=true（手势退出）时实例还在跑，不改变状态
+          if (d.mode === "launcher" && !d.tavernRunning) {
             setInstances(prev => prev.map(t => t.status === "running" && t.type === "local" ? { ...t, status: "stopped" } : t));
           }
         });
@@ -1426,10 +1427,29 @@ function SillyClientLauncher() {
                         glassBg,
                         isCardMenuClosing ? "animate-popover-exit" : "animate-popover"
                       )} style={{
-                        top: Math.max(Math.min(menuPos.top, window.innerHeight - 200), 16),
+                        top: Math.max(Math.min(menuPos.top, window.innerHeight - 240), 16),
                         left: Math.max(Math.min(menuPos.left + 8, window.innerWidth - 192), 16),
                         transform: 'translateY(-50%)',
                       }}>
+                        {instance.status === "running" && instance.type === "local" && (
+                          <>
+                            <button
+                              onClick={async (e) => {
+                                e.stopPropagation(); closeCardMenu();
+                                try { await TarvenEnv.returnToTavern(); } catch (err) { console.error('[returnToTavern]', err); }
+                              }}
+                              className={cn("w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-[#1a1625]/50 hover:text-[#1a1625]/80" : "text-white/50 hover:text-white/80")}
+                            >返回酒馆</button>
+                            <button
+                              onClick={async (e) => {
+                                e.stopPropagation(); closeCardMenu();
+                                try { await TarvenEnv.closeTavern(); } catch (err) { console.error('[closeTavern]', err); }
+                              }}
+                              className={cn("w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-red-900/40 hover:text-red-900/70" : "text-red-400/40 hover:text-red-400/70")}
+                            >停止实例</button>
+                            <div className={cn("my-1 h-px", isLight ? "bg-black/[0.06]" : "bg-white/[0.06]")} />
+                          </>
+                        )}
                         <button
                           onClick={(e) => { e.stopPropagation(); closeCardMenu(); setShowManagePanel(instance); }}
                           className={cn("w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-[#1a1625]/50 hover:text-[#1a1625]/80" : "text-white/50 hover:text-white/80")}
