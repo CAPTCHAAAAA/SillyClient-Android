@@ -96,6 +96,20 @@ class TarvenEnvPlugin : Plugin() {
     }
 
     @PluginMethod
+    fun returnToTavern(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        act.runOnUiThread { act.returnToTavern() }
+        call.resolve()
+    }
+
+    @PluginMethod
+    fun closeTavern(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        act.runOnUiThread { act.closeTavern() }
+        call.resolve()
+    }
+
+    @PluginMethod
     fun getStatus(call: PluginCall) {
         val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
         val ret = JSObject()
