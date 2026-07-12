@@ -187,17 +187,25 @@ class MainActivity : BridgeActivity() {
         topScrimBar = TopScrimBar(this)
         topScrimBar.attach(root, statusBarFixedPx)
 
-        // 顶部状态栏手势区：透明 View 覆盖 statusBarFixedPx 条带，检测左右滑动 → 返回启动页
+        // 顶部状态栏手势区：透明 View 覆盖 statusBarFixedPx 条带
+        // 始终可见（不放在 root 里），支持双向操作：
+        //   酒馆模式：滑动 → exitTavern()（回启动器，不停服务）
+        //   启动器模式：滑动 → returnToTavern()（回酒馆，如果还在跑）
         topGestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
                 if (e1 == null) return false
                 val dx = e2.x - e1.x
                 val dy = e2.y - e1.y
-                // 水平滑动距离 > 垂直滑动距离 且速度足够
                 if (kotlin.math.abs(dx) > kotlin.math.abs(dy) * 1.8f &&
                     kotlin.math.abs(dx) > 60 &&
                     kotlin.math.abs(vx) > 300) {
-                    exitTavern()
+                    if (isWebViewVisible) {
+                        // 酒馆 → 启动器
+                        exitTavern()
+                    } else if (serverReady && tavernUrl.isNotBlank()) {
+                        // 启动器 → 酒馆（实例还在跑）
+                        returnToTavern()
+                    }
                     return true
                 }
                 return false
@@ -205,17 +213,26 @@ class MainActivity : BridgeActivity() {
         })
         topGestureZone = View(this).apply {
             setBackgroundColor(Color.TRANSPARENT)
-            isClickable = true  // 消费触摸以接收完整手势序列
+            isClickable = true
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 statusBarFixedPx
             ).apply { gravity = Gravity.TOP }
             setOnTouchListener { _, event ->
                 topGestureDetector.onTouchEvent(event)
-                true  // 消费事件 — 顶部条带是纯视觉区，WebView 内容从 statusBarFixedPx 下方开始
+                true
             }
         }
-        root.addView(topGestureZone)
+        // 加到独立的始终可见的容器（不放在 root 里）
+        val gestureHost = FrameLayout(this).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            // 不消费区域外的触摸，只让 topGestureZone 消费状态栏区域
+            isClickable = false
+        }
+        gestureHost.addView(topGestureZone)
+        addContentView(gestureHost, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+        ))
 
         // ============================================
         // WEBVIEW SCREEN (inside native overlay)
@@ -511,17 +528,70 @@ class MainActivity : BridgeActivity() {
     private fun isLocalUrl(url: String): Boolean =
         url.startsWith("http://127.0.0.1") || url.startsWith("http://localhost")
 
+    /**
+     * 手势退出：只隐藏 WebView，不停服务。
+     * 实例继续运行，可通过 returnToTavern() 回到酒馆。
+     */
     fun exitTavern() {
         if (!isWebViewVisible) return
         handler.removeCallbacks(topColorPoll)
         topScrimBar.reset()
-        // 启动器也保持沉浸式,不显示系统栏
-        // Restore system gesture handling
         clearSystemGestureExclusions()
         val lp = webViewScreen.layoutParams as FrameLayout.LayoutParams
         lp.topMargin = 0
         webViewScreen.layoutParams = lp
-        switchToHome(true)
+        // tavernRunning=true：实例还在跑，前端不置 stopped
+        switchToHome(true, tavernRunning = true)
+    }
+
+    /**
+     * 从启动器返回酒馆（手势返回）。
+     * 只在酒馆 URL 仍存在时生效。
+     */
+    fun returnToTavern() {
+        if (isWebViewVisible) return
+        if (tavernUrl.isBlank()) return
+        if (!serverReady) return
+        // WebView 还保留着之前的页面，不需要重新 loadUrl
+        val h = statusBarFixedPx
+        val lp = webViewScreen.layoutParams as FrameLayout.LayoutParams
+        lp.topMargin = h
+        webViewScreen.layoutParams = lp
+        enterImmersive()
+        switchToWebView(true)
+        handler.removeCallbacks(topColorPoll)
+        handler.postDelayed(topColorPoll, 350)
+    }
+
+    /**
+     * 真正关闭实例（停止服务）。
+     * 由前端"停止"按钮调用。
+     */
+    fun closeTavern() {
+        if (isWebViewVisible) {
+            handler.removeCallbacks(topColorPoll)
+            topScrimBar.reset()
+            clearSystemGestureExclusions()
+            val lp = webViewScreen.layoutParams as FrameLayout.LayoutParams
+            lp.topMargin = 0
+            webViewScreen.layoutParams = lp
+        }
+        isWebViewVisible = false
+        webViewScreen.visibility = View.GONE
+        root.visibility = View.GONE
+        // 停止服务进程
+        serverProcess?.let { p ->
+            if (p.isAlive) {
+                p.destroyForcibly()
+                p.waitFor(3, java.util.concurrent.TimeUnit.SECONDS)
+            }
+        }
+        serverProcess = null
+        serverReady = false
+        tavernUrl = ""
+        // tavernRunning=false：前端置 stopped
+        pushMode("launcher", tavernRunning = false)
+        pushReady(true)
     }
 
     private fun clearSystemGestureExclusions() {
@@ -530,8 +600,8 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    private fun pushMode(mode: String) {
-        TarvenEnvPlugin.notify("mode", JSObject().put("mode", mode))
+    private fun pushMode(mode: String, tavernRunning: Boolean = false) {
+        TarvenEnvPlugin.notify("mode", JSObject().put("mode", mode).put("tavernRunning", tavernRunning))
     }
 
     private fun switchToWebView(animate: Boolean) {
@@ -539,7 +609,7 @@ class MainActivity : BridgeActivity() {
         // Show native overlay (tavernWebView + FCC) — Capacitor console stays behind it.
         root.visibility = View.VISIBLE
         webViewScreen.visibility = View.VISIBLE
-        pushMode("tavern")
+        pushMode("tavern", true)
         if (animate) {
             webViewScreen.alpha = 0f
             webViewScreen.animate().alpha(1f).setDuration(220).start()
@@ -548,12 +618,12 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    private fun switchToHome(animate: Boolean) {
+    private fun switchToHome(animate: Boolean, tavernRunning: Boolean = false) {
         isWebViewVisible = false
         // Hide native overlay — Capacitor console shows underneath.
         webViewScreen.visibility = View.GONE
         root.visibility = View.GONE
-        pushMode("launcher")
+        pushMode("launcher", tavernRunning)
         pushReady(true)
     }
 
