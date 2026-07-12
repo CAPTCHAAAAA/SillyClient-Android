@@ -71,6 +71,8 @@ export interface TarvenEnvPlugin {
 
   enterImmersive(options: { url: string }): Promise<void>
   exitImmersive(): Promise<void>
+  returnToTavern(): Promise<void>
+  closeTavern(): Promise<void>
   getStatus(): Promise<{ serverReady: boolean; mode: string; url?: string }>
 
   /** 拉取 GitHub SillyTavern releases 列表。 */
