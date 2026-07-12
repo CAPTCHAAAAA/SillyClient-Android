@@ -39,3 +39,13 @@ Builder/artifacts/
 *.hprof
 
 SillyClient-v1.1.0.apk
+
+# Junk
+build_old/
+.idea/
+.gradle/
+.kotlin/
+build/
+local.properties
+*.apk
+
