@@ -1504,40 +1504,29 @@ function SillyClientLauncher() {
 
         {/* Web 环境: 产品信息区 */}
         {isWeb && (
-          <div className="w-full max-w-2xl mx-auto px-6 mt-16 mb-12">
-            {/* 标题 */}
-            <div className="text-center mb-10">
-              <h2 className={cn("text-2xl font-semibold tracking-tight mb-3", isLight ? "text-[#1a1625]" : "text-white")}>
-                把酒馆装进口袋
-              </h2>
-              <p className={cn("text-sm leading-relaxed max-w-md mx-auto", isLight ? "text-[#1a1625]/45" : "text-white/45")}>
-                SillyClient 是 SillyTavern 的跨平台启动器。
-                内置完整运行时，安装即用，无需命令行。
-              </p>
-            </div>
+          <div className="w-full max-w-md mx-auto px-6 mt-10 mb-8">
+            {/* 一句话 */}
+            <p className={cn("text-center text-[13px] leading-relaxed mb-5", isLight ? "text-[#1a1625]/35" : "text-white/35")}>
+              SillyTavern 跨平台启动器 · 安装即用
+            </p>
 
-            {/* 特性 — 极简列表式 */}
-            <div className={cn("divide-y", isLight ? "divide-black/[0.06]" : "divide-white/[0.06]")}>
-              {[
-                { title: "一键启动", desc: "内置 Node.js 运行时，下载安装后直接运行酒馆，不依赖 Termux 或命令行" },
-                { title: "多实例管理", desc: "创建多个独立实例，各自配置端口、版本和角色卡，卡片式轮播切换" },
-                { title: "沉浸式体验", desc: "状态栏适配、手势导航、液态玻璃界面，原生应用级的交互质感" },
-                { title: "跨平台", desc: "Android 与 Windows 双端同步发布，共享同一套前端代码" },
-              ].map(f => (
-                <div key={f.title} className="flex items-baseline gap-4 py-4">
-                  <div className={cn("text-sm font-medium shrink-0 w-20", isLight ? "text-[#1a1625]/70" : "text-white/70")}>{f.title}</div>
-                  <div className={cn("text-xs leading-relaxed", isLight ? "text-[#1a1625]/40" : "text-white/40")}>{f.desc}</div>
-                </div>
+            {/* 特性 — 横向标签 */}
+            <div className={cn("flex items-center justify-center gap-2 flex-wrap mb-5")}>
+              {["一键启动", "多实例管理", "沉浸式界面", "跨平台"].map((t, i) => (
+                <span key={t}>
+                  {i > 0 && <span className={cn("mx-2", isLight ? "text-[#1a1625]/15" : "text-white/15")}>·</span>}
+                  <span className={cn("text-[13px] font-medium", isLight ? "text-[#1a1625]/50" : "text-white/50")}>{t}</span>
+                </span>
               ))}
             </div>
 
             {/* 底部链接 */}
-            <div className={cn("flex items-center justify-center gap-4 mt-8 text-xs", isLight ? "text-[#1a1625]/30" : "text-white/30")}>
-              <span>MIT License</span>
-              <span className={cn(isLight ? "text-[#1a1625]/15" : "text-white/15")}>·</span>
-              <a href="https://github.com/CAPTCHAAAAA/SillyClient" target="_blank" rel="noopener" className={cn("transition-colors", isLight ? "hover:text-[#1a1625]/60" : "hover:text-white/60")}>GitHub</a>
-              <span className={cn(isLight ? "text-[#1a1625]/15" : "text-white/15")}>·</span>
-              <a href="https://github.com/CAPTCHAAAAA/SillyClient/releases" target="_blank" rel="noopener" className={cn("transition-colors", isLight ? "hover:text-[#1a1625]/60" : "hover:text-white/60")}>所有版本</a>
+            <div className={cn("flex items-center justify-center gap-3 text-[11px]", isLight ? "text-[#1a1625]/25" : "text-white/25")}>
+              <span>MIT</span>
+              <span className={cn(isLight ? "text-[#1a1625]/10" : "text-white/10")}>·</span>
+              <a href="https://github.com/CAPTCHAAAAA/SillyClient" target="_blank" rel="noopener" className={cn("transition-colors", isLight ? "hover:text-[#1a1625]/50" : "hover:text-white/50")}>GitHub</a>
+              <span className={cn(isLight ? "text-[#1a1625]/10" : "text-white/10")}>·</span>
+              <a href="https://github.com/CAPTCHAAAAA/SillyClient/releases" target="_blank" rel="noopener" className={cn("transition-colors", isLight ? "hover:text-[#1a1625]/50" : "hover:text-white/50")}>Releases</a>
             </div>
           </div>
         )}
