@@ -1502,34 +1502,6 @@ function SillyClientLauncher() {
           </div>
         </div>
 
-        {/* Web 环境: 产品信息区 */}
-        {isWeb && (
-          <div className="w-full max-w-md mx-auto px-6 mt-10 mb-8">
-            {/* 一句话 */}
-            <p className={cn("text-center text-[13px] leading-relaxed mb-5", isLight ? "text-[#1a1625]/35" : "text-white/35")}>
-              SillyTavern 跨平台启动器 · 安装即用
-            </p>
-
-            {/* 特性 — 横向标签 */}
-            <div className={cn("flex items-center justify-center gap-2 flex-wrap mb-5")}>
-              {["一键启动", "多实例管理", "沉浸式界面", "跨平台"].map((t, i) => (
-                <span key={t}>
-                  {i > 0 && <span className={cn("mx-2", isLight ? "text-[#1a1625]/15" : "text-white/15")}>·</span>}
-                  <span className={cn("text-[13px] font-medium", isLight ? "text-[#1a1625]/50" : "text-white/50")}>{t}</span>
-                </span>
-              ))}
-            </div>
-
-            {/* 底部链接 */}
-            <div className={cn("flex items-center justify-center gap-3 text-[11px]", isLight ? "text-[#1a1625]/25" : "text-white/25")}>
-              <span>MIT</span>
-              <span className={cn(isLight ? "text-[#1a1625]/10" : "text-white/10")}>·</span>
-              <a href="https://github.com/CAPTCHAAAAA/SillyClient" target="_blank" rel="noopener" className={cn("transition-colors", isLight ? "hover:text-[#1a1625]/50" : "hover:text-white/50")}>GitHub</a>
-              <span className={cn(isLight ? "text-[#1a1625]/10" : "text-white/10")}>·</span>
-              <a href="https://github.com/CAPTCHAAAAA/SillyClient/releases" target="_blank" rel="noopener" className={cn("transition-colors", isLight ? "hover:text-[#1a1625]/50" : "hover:text-white/50")}>Releases</a>
-            </div>
-          </div>
-        )}
       </main>
 
       {/* 重命名弹窗 */}
