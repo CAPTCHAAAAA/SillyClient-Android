@@ -1504,24 +1504,40 @@ function SillyClientLauncher() {
 
         {/* Web 环境: 产品信息区 */}
         {isWeb && (
-          <div className="w-full max-w-2xl mx-auto px-6 mt-8 mb-8">
-            <div className={cn("grid grid-cols-3 gap-3 mb-6")}>
+          <div className="w-full max-w-2xl mx-auto px-6 mt-16 mb-12">
+            {/* 标题 */}
+            <div className="text-center mb-10">
+              <h2 className={cn("text-2xl font-semibold tracking-tight mb-3", isLight ? "text-[#1a1625]" : "text-white")}>
+                把酒馆装进口袋
+              </h2>
+              <p className={cn("text-sm leading-relaxed max-w-md mx-auto", isLight ? "text-[#1a1625]/45" : "text-white/45")}>
+                SillyClient 是 SillyTavern 的跨平台启动器。
+                内置完整运行时，安装即用，无需命令行。
+              </p>
+            </div>
+
+            {/* 特性 — 极简列表式 */}
+            <div className={cn("divide-y", isLight ? "divide-black/[0.06]" : "divide-white/[0.06]")}>
               {[
-                { icon: "⚡", title: "原生运行", desc: "Node.js 24 直接运行" },
-                { icon: "🎨", title: "沉浸式", desc: "变色龙顶框适配" },
-                { icon: "📦", title: "多实例", desc: "独立端口与配置" },
+                { title: "一键启动", desc: "内置 Node.js 运行时，下载安装后直接运行酒馆，不依赖 Termux 或命令行" },
+                { title: "多实例管理", desc: "创建多个独立实例，各自配置端口、版本和角色卡，卡片式轮播切换" },
+                { title: "沉浸式体验", desc: "状态栏适配、手势导航、液态玻璃界面，原生应用级的交互质感" },
+                { title: "跨平台", desc: "Android 与 Windows 双端同步发布，共享同一套前端代码" },
               ].map(f => (
-                <div key={f.title} className={cn("p-4 rounded-2xl text-center", isLight ? "bg-black/[0.03] border border-black/[0.06]" : "bg-white/[0.04] border border-white/[0.06]")}>
-                  <div className="text-2xl mb-1.5">{f.icon}</div>
-                  <div className={cn("text-xs font-semibold mb-0.5", isLight ? "text-[#1a1625]" : "text-white")}>{f.title}</div>
-                  <div className={cn("text-[10px]", isLight ? "text-[#1a1625]/40" : "text-white/40")}>{f.desc}</div>
+                <div key={f.title} className="flex items-baseline gap-4 py-4">
+                  <div className={cn("text-sm font-medium shrink-0 w-20", isLight ? "text-[#1a1625]/70" : "text-white/70")}>{f.title}</div>
+                  <div className={cn("text-xs leading-relaxed", isLight ? "text-[#1a1625]/40" : "text-white/40")}>{f.desc}</div>
                 </div>
               ))}
             </div>
-            <div className={cn("text-center text-xs leading-relaxed", isLight ? "text-[#1a1625]/35" : "text-white/35")}>
-              SillyClient 是跨平台 SillyTavern 启动器，在 Android 上一键运行完整酒馆实例。
-              <br />无需 root，无需 Termux，原生 Node.js 运行时 + 沉浸式 WebView，把酒馆装进口袋。
-              <br />MIT License · <a href="https://github.com/CAPTCHAAAAA/SillyClient" target="_blank" rel="noopener" className="underline hover:opacity-70">GitHub</a> · <a href="https://github.com/CAPTCHAAAAA/SillyClient/releases" target="_blank" rel="noopener" className="underline hover:opacity-70">所有版本</a>
+
+            {/* 底部链接 */}
+            <div className={cn("flex items-center justify-center gap-4 mt-8 text-xs", isLight ? "text-[#1a1625]/30" : "text-white/30")}>
+              <span>MIT License</span>
+              <span className={cn(isLight ? "text-[#1a1625]/15" : "text-white/15")}>·</span>
+              <a href="https://github.com/CAPTCHAAAAA/SillyClient" target="_blank" rel="noopener" className={cn("transition-colors", isLight ? "hover:text-[#1a1625]/60" : "hover:text-white/60")}>GitHub</a>
+              <span className={cn(isLight ? "text-[#1a1625]/15" : "text-white/15")}>·</span>
+              <a href="https://github.com/CAPTCHAAAAA/SillyClient/releases" target="_blank" rel="noopener" className={cn("transition-colors", isLight ? "hover:text-[#1a1625]/60" : "hover:text-white/60")}>所有版本</a>
             </div>
           </div>
         )}
