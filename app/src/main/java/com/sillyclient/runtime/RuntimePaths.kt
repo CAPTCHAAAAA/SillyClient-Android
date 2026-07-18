@@ -67,7 +67,13 @@ data class RuntimePaths(
 
     /** 多实例:返回指定 instanceId 的独立 server 目录。 */
     fun serverDirFor(instanceId: String): File {
-        val dir = File(bootstrapDir, "servers/$instanceId")
+        val safeId = instanceId
+            .trim()
+            .replace(Regex("[^\\p{L}\\p{N}._-]+"), "-")
+            .trim('.', '_', '-')
+            .take(80)
+            .ifBlank { "default" }
+        val dir = File(File(bootstrapDir, "servers"), safeId)
         dir.mkdirs()
         return dir
     }

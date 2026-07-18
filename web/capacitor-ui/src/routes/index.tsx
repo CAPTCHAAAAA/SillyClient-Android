@@ -17,6 +17,9 @@ import {
   Image as ImageIcon,
   Terminal,
   Eraser,
+  AlertTriangle,
+  LoaderCircle,
+  CheckCircle2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Capacitor } from "@capacitor/core";
@@ -96,6 +99,29 @@ function saveInstances(list: TavernInstance[]) {
 
 type BgMode = "dynamic" | "custom";
 type ThemeStyle = "dark" | "light";
+type OperationPurpose = "launch" | "create";
+
+function formatOperationStage(stage?: string, percent?: number) {
+  const value = (stage || "").toLowerCase();
+  if (value.includes("download")) return percent ? `正在下载当前版本 · ${percent}%` : "正在下载当前版本";
+  if (value.includes("extract")) return "正在解压并校验文件";
+  if (value.includes("depend") || value.includes("npm")) return "正在安装运行依赖";
+  if (value.includes("runtime")) return "运行环境已准备";
+  if (value.includes("source ready")) return "实例文件校验完成";
+  if (value.includes("start")) return "正在启动 SillyTavern";
+  if (value.includes("waiting") || value.includes("poll")) return "正在确认实例可运行";
+  if (value.includes("ready") || value.includes("就绪")) return "实例已就绪";
+  return stage || "正在初始化";
+}
+
+function normalizeInstanceId(value: string, fallback: string) {
+  const normalized = value
+    .trim()
+    .replace(/[^\p{L}\p{N}._-]+/gu, "-")
+    .replace(/^[._-]+|[._-]+$/g, "")
+    .slice(0, 80);
+  return normalized || fallback;
+}
 
 // 外部组件定义(避免内部函数组件每次渲染重新创建导致 input 失焦)
 function NewInstanceField({ label, desc, isLight, children }: { label: string; desc?: string; isLight: boolean; children: React.ReactNode }) {
@@ -147,6 +173,14 @@ function ToggleSwitch({ defaultOn = false, on, onChange, isLight }: { defaultOn?
 
 function SillyClientLauncher() {
   const isWeb = !Capacitor.isNativePlatform();
+  const isWindows = typeof window !== "undefined"
+    && (window as typeof window & { __SILLYCLIENT_PLATFORM__?: string }).__SILLYCLIENT_PLATFORM__ === "windows";
+  const terminalTitle = isWindows ? "Windows 控制台" : "Android 终端";
+  const terminalPrompt = isWindows ? "C:\\>" : "~ $";
+  const terminalBanner = isWindows
+    ? "SillyClient 1.5.0 · Windows · cmd.exe"
+    : "SillyClient 1.5.0 · Android shell";
+  const terminalPlaceholder = isWindows ? "输入 Windows 命令" : "输入 Android shell 命令";
   const [instances, setInstances] = useState<TavernInstance[]>(loadInstances);
   const [showBgPanel, setShowBgPanel] = useState(false);
   const [isPanelClosing, setIsPanelClosing] = useState(false);
@@ -168,6 +202,7 @@ function SillyClientLauncher() {
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [launchLogs, setLaunchLogs] = useState<{ msg: string; level?: string }[]>([]);
   const [lastLaunchParams, setLastLaunchParams] = useState<any>(null);
+  const [operationPurpose, setOperationPurpose] = useState<OperationPurpose>("launch");
 
   // Logo 字体切换
   const logoFonts = [
@@ -201,6 +236,8 @@ function SillyClientLauncher() {
   const [newInstanceUrl, setNewInstanceUrl] = useState("http://");
   const [newInstanceVersion, setNewInstanceVersion] = useState("stable");
   const [newInstanceLocalZip, setNewInstanceLocalZip] = useState<string | null>(null);
+  const [newInstanceError, setNewInstanceError] = useState<string | null>(null);
+  const [isCreatingInstance, setIsCreatingInstance] = useState(false);
   // GitHub releases 真实数据
   const [releases, setReleases] = useState<GithubRelease[]>([]);
   const [fetchingReleases, setFetchingReleases] = useState(false);
@@ -242,6 +279,9 @@ function SillyClientLauncher() {
   const [showCleanPanel, setShowCleanPanel] = useState(false);
   const [garbageItems, setGarbageItems] = useState<any[]>([]);
   const [cleaningGarbage, setCleaningGarbage] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<TavernInstance | null>(null);
+  const [isDeletingInstance, setIsDeletingInstance] = useState(false);
+  const [deleteInstanceError, setDeleteInstanceError] = useState<string | null>(null);
 
   const isLight = bgMode === "custom" && themeStyle === "light";
   const isDynamic = bgMode === "dynamic";
@@ -372,6 +412,25 @@ function SillyClientLauncher() {
           return [...scanned, ...prev];
         });
       } catch { /* 非 Capacitor 环境 */ }
+    })();
+  }, []);
+
+  // 原生进程被系统结束后，持久化的 running 状态可能已经失效。
+  useEffect(() => {
+    (async () => {
+      try {
+        const status = await TarvenEnv.getStatus();
+        const activePort = status.url ? Number(new URL(status.url).port || 80) : null;
+        setInstances(prev => prev.map(instance => {
+          if (instance.type !== "local" || instance.status === "error") return instance;
+          const isActive = status.serverReady
+            && activePort !== null
+            && (instance.port ?? 8000) === activePort;
+          return { ...instance, status: isActive ? "running" : "stopped" };
+        }));
+      } catch {
+        /* 浏览器环境没有原生运行状态。 */
+      }
     })();
   }, []);
 
@@ -541,8 +600,8 @@ function SillyClientLauncher() {
     };
   }, []);
 
-  // 启动实例的核心逻辑(可重试)
-  const doLaunch = useCallback(async (instance: TavernInstance) => {
+  // 配置并启动本地实例。创建流程只在确认服务可访问后写入卡片。
+  const doLaunch = useCallback(async (instance: TavernInstance, enterWhenReady = true) => {
     const port = instance.port ?? 8000;
     const instanceId = instance.installDir || instance.id;
     const version = instance.version || "stable";
@@ -562,10 +621,15 @@ function SillyClientLauncher() {
     let errorHandle: any;
     let readyReceived = false;
     let errorMsg: string | null = null;
+    let resolvedPort = port;
+    let resolvedUrl = `http://127.0.0.1:${port}/`;
+    let statusInterval: ReturnType<typeof setInterval> | null = null;
+    let readyCheck: ReturnType<typeof setInterval> | null = null;
+    let readyTimeout: ReturnType<typeof setTimeout> | null = null;
 
     try {
       progressHandle = await TarvenEnv.addListener("progress", (d: { percent: number; stage?: string }) => {
-        setLaunchProgress({ pct: d.percent ?? 0, text: d.stage || "" });
+        setLaunchProgress({ pct: d.percent ?? 0, text: formatOperationStage(d.stage, d.percent) });
         const msg = d.stage ? `${d.stage} ${d.percent}%` : `${d.percent}%`;
         setLaunchLogs(prev => {
           const last = prev[prev.length - 1];
@@ -586,30 +650,43 @@ function SillyClientLauncher() {
         errorMsg = d.message || "未知错误";
       });
 
-      readyHandle = await TarvenEnv.addListener("ready", (d: { ready?: boolean }) => {
+      readyHandle = await TarvenEnv.addListener("ready", (d: { ready?: boolean; url?: string; port?: number }) => {
         if (readyReceived) return;
-        if (d.ready !== false) { readyReceived = true; }
+        if (d.ready !== false) {
+          readyReceived = true;
+          if (d.port) resolvedPort = d.port;
+          if (d.url) resolvedUrl = d.url.endsWith("/") ? d.url : `${d.url}/`;
+        }
       });
 
       // 调用原生 provision
-      await TarvenEnv.provisionAndStart({ port, instanceId, version, zipballUrl, localZipPath, config });
+      const provisionResult = await TarvenEnv.provisionAndStart({ port, instanceId, version, zipballUrl, localZipPath, config });
+      if (provisionResult?.ready === false && !readyReceived) {
+        throw new Error(errorMsg || "实例未能启动，请检查安装日志");
+      }
 
       // 等待 ready 或 error，同时轮询
-      const statusInterval = setInterval(async () => {
+      statusInterval = setInterval(async () => {
         try {
           const s = await TarvenEnv.getStatus();
-          if (s.serverReady && !readyReceived) { readyReceived = true; }
+          if (s.serverReady && !readyReceived) {
+            readyReceived = true;
+            if (s.url) resolvedUrl = s.url.endsWith("/") ? s.url : `${s.url}/`;
+          }
         } catch {}
       }, 2000);
 
       // 超时兜底 600s
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(() => resolve(), 600000);
-        const check = setInterval(() => {
-          if (readyReceived || errorMsg) { clearTimeout(timer); clearInterval(check); resolve(); }
+        readyTimeout = setTimeout(() => resolve(), 600000);
+        readyCheck = setInterval(() => {
+          if (readyReceived || errorMsg) {
+            if (readyTimeout) clearTimeout(readyTimeout);
+            if (readyCheck) clearInterval(readyCheck);
+            resolve();
+          }
         }, 500);
       });
-      clearInterval(statusInterval);
 
       if (errorMsg) {
         throw new Error(errorMsg);
@@ -619,13 +696,19 @@ function SillyClientLauncher() {
         throw new Error("超时：下载/安装超过 10 分钟，检查网络后重试");
       }
 
-      setLaunchProgress({ pct: 100, text: "就绪" });
-      setLaunchLogs(prev => [...prev, { msg: `服务就绪，进入沉浸式`, level: "success" }]);
-      await TarvenEnv.enterImmersive({ url: `http://127.0.0.1:${port}/` });
-
-      // 成功,关闭面板
-      setTimeout(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 800);
+      setLaunchProgress({ pct: 100, text: enterWhenReady ? "实例已就绪" : "创建完成，可以运行" });
+      setLaunchLogs(prev => [...prev, {
+        msg: enterWhenReady ? "服务就绪，进入沉浸式" : "服务可访问，实例创建完成",
+        level: "success",
+      }]);
+      if (enterWhenReady) {
+        await TarvenEnv.enterImmersive({ url: resolvedUrl });
+      }
+      return { url: resolvedUrl, port: resolvedPort };
     } finally {
+      if (statusInterval) clearInterval(statusInterval);
+      if (readyCheck) clearInterval(readyCheck);
+      if (readyTimeout) clearTimeout(readyTimeout);
       readyHandle?.remove?.();
       progressHandle?.remove?.();
       logHandle?.remove?.();
@@ -639,10 +722,13 @@ function SillyClientLauncher() {
     setLaunchingId(instance.id);
     setInstances(prev => prev.map(t => t.id === instance.id ? { ...t, status: "running" } : t));
     setShowLaunchPanel(true);
+    setOperationPurpose("launch");
     setLastLaunchParams(instance);
     try {
       if (instance.type === "local") {
-        await doLaunch(instance);
+        const result = await doLaunch(instance);
+        setInstances(prev => prev.map(t => t.id === instance.id ? { ...t, status: "running", port: result.port } : t));
+        setTimeout(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 800);
       } else {
         const url = instance.url || "http://127.0.0.1:8000";
         setLaunchLogs([{ msg: `连接 ${url}`, level: "info" }]);
@@ -662,25 +748,165 @@ function SillyClientLauncher() {
     }
   }, [launchingId, doLaunch]);
 
-  // 重试启动
+  const provisionCreatedInstance = useCallback(async (instance: TavernInstance) => {
+    if (instance.type === "remote") {
+      const url = instance.url || "";
+      setLaunchProgress({ pct: 20, text: "正在检查远程连接" });
+      setLaunchLogs([{ msg: `检查 ${url}`, level: "info" }]);
+      const result = await TarvenEnv.pingUrl({ url });
+      if (!result.online) throw new Error(result.error || "远程实例当前不可访问");
+      setLaunchProgress({ pct: 100, text: "连接可用，创建完成" });
+      setLaunchLogs(prev => [...prev, { msg: "远程实例连接正常", level: "success" }]);
+      setInstances(prev => prev.some(t => t.id === instance.id) ? prev : [...prev, { ...instance, status: "online" }]);
+      return;
+    }
+
+    const result = await doLaunch(instance, false);
+    setInstances(prev => prev.some(t => t.id === instance.id)
+      ? prev
+      : [...prev, { ...instance, status: "running", port: result.port }]);
+  }, [doLaunch]);
+
+  const createInstance = useCallback(async () => {
+    if (isCreatingInstance || launchingId) return;
+    setNewInstanceError(null);
+    setIsCreatingInstance(true);
+    let operationStarted = false;
+
+    try {
+      const now = Date.now();
+      const subtitle = newInstanceName.trim() || "新实例";
+      const installDir = normalizeInstanceId(newInstanceDir, `local-${now}`);
+      let selectedVersion = newInstanceVersion;
+      let selectedZipballUrl: string | undefined;
+
+      if (newInstanceMode === "local" && !newInstanceLocalZip) {
+        let availableReleases = releases;
+        if (availableReleases.length === 0) {
+          const response = await TarvenEnv.fetchReleases();
+          availableReleases = response.releases || [];
+          setReleases(availableReleases);
+        }
+        const selectedRelease = selectedVersion === "stable"
+          ? availableReleases.find(release => !release.prerelease) || availableReleases[0]
+          : availableReleases.find(release => release.tag === selectedVersion);
+        if (!selectedRelease) throw new Error("无法获取当前 SillyTavern 版本，请检查网络后重试");
+        selectedVersion = selectedRelease.tag;
+        selectedZipballUrl = selectedRelease.zipballUrl;
+      }
+
+      let port = 8000;
+      const occupiedPorts = new Set(instances.filter(t => t.type === "local").map(t => t.port ?? 8000));
+      while (occupiedPorts.has(port)) port += 1;
+
+      let remoteUrl = newInstanceUrl.trim();
+      if (newInstanceMode === "remote") {
+        const parsed = new URL(remoteUrl);
+        if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("连接地址必须使用 HTTP 或 HTTPS");
+        remoteUrl = parsed.toString();
+      }
+
+      const instance: TavernInstance = {
+        id: `new-${now}`,
+        name: "SillyTavern",
+        subtitle,
+        version: newInstanceLocalZip ? "local" : selectedVersion,
+        type: newInstanceMode,
+        status: newInstanceMode === "local" ? "stopped" : "offline",
+        icon: newInstanceMode === "local" ? <Folder className="w-5 h-5" /> : <Cloud className="w-5 h-5" />,
+        color: "#6366f1",
+        createdAt: new Date().toISOString().slice(0, 10),
+        lastUsed: "—",
+        totalUsage: "0h",
+        ...(newInstanceMode === "local"
+          ? {
+              port,
+              installDir,
+              zipballUrl: selectedZipballUrl,
+              localZipPath: newInstanceLocalZip || undefined,
+              config: { ...DEFAULT_CONFIG },
+            }
+          : { url: remoteUrl }),
+      };
+
+      setShowNewInstancePanel(false);
+      setIsNewInstancePanelClosing(false);
+      setVerDropdownOpen(false);
+      setOperationPurpose("create");
+      setLastLaunchParams(instance);
+      setShowLaunchPanel(true);
+      setLaunchError(null);
+      setLaunchProgress({ pct: 0, text: newInstanceMode === "local" ? "准备下载当前版本" : "准备检查连接" });
+      setLaunchingId(instance.id);
+      operationStarted = true;
+
+      await provisionCreatedInstance(instance);
+      setTimeout(() => {
+        setShowLaunchPanel(false);
+        setLaunchProgress(null);
+        setNewInstanceName("");
+        setNewInstanceDir("");
+        setNewInstanceUrl("http://");
+        setNewInstanceVersion("stable");
+        setNewInstanceLocalZip(null);
+      }, 1100);
+    } catch (err: any) {
+      const message = err?.message || String(err);
+      if (!operationStarted) {
+        setNewInstanceError(message);
+      } else {
+        setLaunchError(message);
+        setLaunchProgress(null);
+        setLaunchLogs(prev => [...prev, { msg: `创建失败: ${message}`, level: "error" }]);
+      }
+    } finally {
+      setLaunchingId(null);
+      setIsCreatingInstance(false);
+    }
+  }, [
+    instances,
+    isCreatingInstance,
+    launchingId,
+    newInstanceDir,
+    newInstanceLocalZip,
+    newInstanceMode,
+    newInstanceName,
+    newInstanceUrl,
+    newInstanceVersion,
+    provisionCreatedInstance,
+    releases,
+  ]);
+
+  // 重试当前操作
   const retryLaunch = useCallback(async () => {
     if (!lastLaunchParams) return;
     setLaunchError(null);
-    setLaunchProgress({ pct: 0, text: "重启" });
-    setInstances(prev => prev.map(t => t.id === lastLaunchParams.id ? { ...t, status: "running" } : t));
+    setLaunchProgress({ pct: 0, text: operationPurpose === "create" ? "重新创建" : "重新启动" });
+    if (operationPurpose === "launch") {
+      setInstances(prev => prev.map(t => t.id === lastLaunchParams.id ? { ...t, status: "running" } : t));
+    }
     setLaunchingId(lastLaunchParams.id);
     try {
-      await doLaunch(lastLaunchParams);
+      if (operationPurpose === "create") {
+        await provisionCreatedInstance(lastLaunchParams);
+        setTimeout(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 1100);
+      } else {
+        const result = await doLaunch(lastLaunchParams);
+        setInstances(prev => prev.map(t => t.id === lastLaunchParams.id ? { ...t, status: "running", port: result.port } : t));
+        setTimeout(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 800);
+      }
     } catch (err: any) {
       const msg = err?.message || String(err);
       setLaunchError(msg);
       setLaunchProgress(null);
       setLaunchLogs(prev => [...prev, { msg: `重试失败: ${msg}`, level: "error" }]);
-      setInstances(prev => prev.map(t => t.id === lastLaunchParams.id ? { ...t, status: "error" } : t));
+      if (operationPurpose === "launch") {
+        setInstances(prev => prev.map(t => t.id === lastLaunchParams.id ? { ...t, status: "error" } : t));
+      }
     } finally {
       setLaunchingId(null);
     }
-  }, [lastLaunchParams, doLaunch]);
+  }, [lastLaunchParams, operationPurpose, doLaunch, provisionCreatedInstance]);
 
   /** 终端拖拽调整大小(同时支持鼠标与触屏)。 */
   const startResize = (clientX: number, clientY: number) => {
@@ -728,6 +954,40 @@ function SillyClientLauncher() {
     setIsCardMenuClosing(true);
     setTimeout(() => { setActiveCardMenu(null); setIsCardMenuClosing(false); }, 200);
   }, []);
+
+  const confirmDeleteInstance = useCallback(async () => {
+    if (!pendingDelete || isDeletingInstance) return;
+    setIsDeletingInstance(true);
+    setDeleteInstanceError(null);
+
+    try {
+      let freedBytes = 0;
+      if (pendingDelete.type === "local") {
+        if (pendingDelete.status === "running") {
+          await TarvenEnv.closeTavern();
+        }
+        const result = await TarvenEnv.uninstallInstance({
+          instanceId: pendingDelete.installDir || pendingDelete.id,
+        });
+        if (!result.success) throw new Error("原生端未能删除实例文件");
+        freedBytes = result.freedBytes || 0;
+      }
+
+      setInstances(prev => prev.filter(instance => instance.id !== pendingDelete.id));
+      setTerminalLogs(prev => [...prev, {
+        msg: freedBytes > 0
+          ? `已删除 ${pendingDelete.subtitle || pendingDelete.name}，释放 ${(freedBytes / 1048576).toFixed(1)}MB`
+          : `已移除 ${pendingDelete.subtitle || pendingDelete.name}`,
+        level: "success",
+      }]);
+      setPendingDelete(null);
+      setActiveSlide(current => Math.max(0, Math.min(current, instances.length - 1)));
+    } catch (err: any) {
+      setDeleteInstanceError(err?.message || String(err));
+    } finally {
+      setIsDeletingInstance(false);
+    }
+  }, [instances.length, isDeletingInstance, pendingDelete]);
 
   /** 更新当前管理面板实例的 config 字段。 */
   const updateManagedConfig = (patch: Partial<InstanceConfig>) => {
@@ -1003,7 +1263,7 @@ function SillyClientLauncher() {
           )}>
             <div className="flex items-center gap-2">
               <Terminal className={cn("w-3.5 h-3.5", isLight ? "text-[#1a1625]/40" : "text-white/40")} />
-              <span className={cn("text-xs font-medium", isLight ? "text-[#1a1625]/50" : "text-white/50")}>终端</span>
+              <span className={cn("text-xs font-medium", isLight ? "text-[#1a1625]/50" : "text-white/50")}>{terminalTitle}</span>
             </div>
             <div className="flex items-center gap-2">
               {/* iOS 横向滚轮 — 字号调节 */}
@@ -1049,7 +1309,7 @@ function SillyClientLauncher() {
             className={cn("flex-1 font-mono leading-relaxed p-4 overflow-y-auto scrollbar-subtle", isLight ? "bg-[#1e1e2e]/90 text-[#cdd6f4]" : "bg-[#0d0d14]/90 text-[#cdd6f4]")}
             style={{ fontSize: `${terminalFontSize}px` }}
           >
-            <div className="opacity-50 mb-1">SillyClient Launcher v2.1.0</div>
+            <div className="opacity-50 mb-1">{terminalBanner}</div>
             {terminalLogs.map((log, i) => (
               <div key={i} className={cn(
                 "mb-0.5 whitespace-pre-wrap break-all",
@@ -1057,7 +1317,7 @@ function SillyClientLauncher() {
               )}>{log.msg}</div>
             ))}
             <div className="flex gap-2 mt-1">
-              <span className="text-emerald-400/70 select-none">~ $</span>
+              <span className="text-emerald-400/70 select-none">{terminalPrompt}</span>
               <input
                 type="text"
                 value={terminalInput}
@@ -1065,13 +1325,13 @@ function SillyClientLauncher() {
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && terminalInput.trim()) {
                     const cmd = terminalInput.trim();
-                    setTerminalLogs(prev => [...prev, { msg: `~ $ ${cmd}`, level: "info" }]);
+                    setTerminalLogs(prev => [...prev, { msg: `${terminalPrompt} ${cmd}`, level: "info" }]);
                     TarvenEnv.sendCommand({ text: cmd }).catch(() => {});
                     setTerminalInput("");
                   }
                 }}
                 className="flex-1 bg-transparent outline-none text-[#cdd6f4] border-none"
-                placeholder="输入命令(termux 式)"
+                placeholder={terminalPlaceholder}
                 autoCapitalize="none"
                 autoCorrect="off"
                 spellCheck={false}
@@ -1263,9 +1523,13 @@ function SillyClientLauncher() {
         {/* 实例卡片轮播 */}
         <div className="w-full max-w-6xl mx-auto px-6 md:px-8">
           <div className="relative">
-            <div ref={carouselRef} className="flex gap-5 overflow-x-auto snap-x snap-mandatory pb-3" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+            <div
+              ref={carouselRef}
+              className="carousel-scrollbar-hidden flex gap-5 overflow-x-auto snap-x snap-mandatory px-1 py-1 -mx-1"
+              style={{ scrollbarWidth: 'none', msOverflowStyle: 'none', scrollPaddingInline: '1px' }}
+            >
 
-              <div className="flex-shrink-0 w-[calc(50vw-120px)]" aria-hidden />
+              <div className="flex-shrink-0 w-[calc(50%-120px)]" aria-hidden />
 
               {/* 新建实例 */}
               <button
@@ -1276,21 +1540,23 @@ function SillyClientLauncher() {
                   setNewInstanceDir("");
                   setNewInstanceUrl("http://");
                   setNewInstanceVersion("stable");
+                  setNewInstanceLocalZip(null);
+                  setNewInstanceError(null);
                   setShowNewInstancePanel(true);
-                }}
-                className={cn(
-                  "flex-shrink-0 w-60 h-[320px] rounded-[18px] overflow-hidden snap-center transition-all duration-300 group relative",
-                  isLight ? "bg-black/[0.03] border border-black/[0.08] hover:border-black/15" : "bg-white/[0.04] border border-white/[0.06] hover:border-white/15"
-                )}
-                data-card-index="0"
-              >
-                <div className="relative h-full flex flex-col justify-between p-3.5">
-                  <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center transition-transform duration-300 group-hover:scale-110", isLight ? "bg-black/[0.06]" : "bg-white/[0.08]")}>
-                    <Play className={cn("w-3.5 h-3.5", isLight ? "text-[#1a1625]/40" : "text-white/40")} />
-                  </div>
-                  <div>
-                    <div className={cn("text-base font-semibold mb-0.5", isLight ? "text-[#1a1625]" : "text-white")}>{isWeb ? "下载 APK" : "新建实例"}</div>
-                    <div className={cn("text-xs", isLight ? "text-[#1a1625]/40" : "text-white/40")}>{isWeb ? "获取最新版本" : "设置新的酒馆环境"}</div>
+                  }}
+                  className={cn(
+                    "flex-shrink-0 w-60 h-[320px] rounded-[18px] overflow-hidden snap-center transition-all duration-300 group relative",
+                    isLight ? "bg-black/[0.03] border border-black/[0.08] hover:border-black/15" : "bg-white/[0.04] border border-white/[0.06] hover:border-white/15"
+                  )}
+                  data-card-index="0"
+                >
+                  <div className="relative h-full flex flex-col justify-between p-3.5">
+                    <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center transition-transform duration-300 group-hover:scale-110", isLight ? "bg-black/[0.06]" : "bg-white/[0.08]")}>
+                      <Play className={cn("w-3.5 h-3.5", isLight ? "text-[#1a1625]/40" : "text-white/40")} />
+                    </div>
+                    <div>
+                      <div className={cn("text-base font-semibold mb-0.5", isLight ? "text-[#1a1625]" : "text-white")}>{isWeb ? "下载 APK" : "新建实例"}</div>
+                      <div className={cn("text-xs", isLight ? "text-[#1a1625]/40" : "text-white/40")}>{isWeb ? "获取最新版本" : "设置新的酒馆环境"}</div>
                   </div>
                 </div>
               </button>
@@ -1298,20 +1564,20 @@ function SillyClientLauncher() {
               {/* 实例卡片 */}
               {instances.map((instance, index) => (
                 <div
-                  key={instance.id}
-                  data-card-index={String(index + 1)}
-                  className={cn(
-                    "flex-shrink-0 w-60 h-[320px] rounded-[18px] snap-center transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] relative group border",
-                    isLight
-                      ? cn("border-black/[0.08]", hoveredCard === instance.id && "border-black/15 z-20", activeCardMenu === instance.id && "border-black/25 ring-1 ring-black/10 z-30")
-                      : cn("border-white/[0.06]", hoveredCard === instance.id && "border-white/15 z-20", activeCardMenu === instance.id && "border-white/25 ring-1 ring-white/10 z-30")
-                  )}
+                    key={instance.id}
+                    data-card-index={String(index + 1)}
+                    className={cn(
+                      "flex-shrink-0 w-60 h-[320px] rounded-[18px] snap-center transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] relative group border",
+                      isLight
+                        ? cn("border-black/[0.08]", hoveredCard === instance.id && "border-black/15 z-20", activeCardMenu === instance.id && "border-black/25 ring-1 ring-black/10 z-30")
+                        : cn("border-white/[0.06]", hoveredCard === instance.id && "border-white/15 z-20", activeCardMenu === instance.id && "border-white/25 ring-1 ring-white/10 z-30")
+                    )}
                   onClick={(e) => {
                     if ((e.target as HTMLElement).closest('button')) return;
                     setHoveredCard(hoveredCard === instance.id ? null : instance.id);
                   }}
                 >
-                  <div className="absolute inset-0 rounded-[20px] overflow-hidden">
+                    <div className="absolute inset-0 rounded-[20px] overflow-hidden">
                     <img src={instance.cover || "./tavern-logo.png"} alt="" className="w-full h-full object-cover" loading="lazy" />
                     <div className="absolute inset-0" style={{
                       background: isLight
@@ -1320,14 +1586,14 @@ function SillyClientLauncher() {
                     }} />
                   </div>
 
-                  <div className={cn(
-                    "absolute inset-0 rounded-[20px] transition-opacity duration-700",
+                    <div className={cn(
+                      "absolute inset-0 rounded-[20px] transition-opacity duration-700",
                     hoveredCard === instance.id
                       ? "bg-gradient-to-t from-black/80 via-black/50 to-black/20"
                       : isLight ? "bg-gradient-to-t from-white/70 via-white/35 to-white/5" : "bg-gradient-to-t from-black/75 via-black/40 to-black/10"
                   )} />
 
-                  <div className="relative h-full flex flex-col p-3.5 overflow-hidden">
+                    <div className="relative h-full flex flex-col p-3.5 overflow-hidden">
                     <span className={cn(
                       "self-start px-2 py-0.5 rounded-md text-[10px] font-semibold tracking-wide border backdrop-blur-md w-fit",
                       isLight ? "bg-black/[0.06] text-[#1a1625]/55 border-black/[0.08]" : "bg-white/[0.08] text-white/50 border-white/[0.08]"
@@ -1414,8 +1680,7 @@ function SillyClientLauncher() {
                     </div>
 
                   </div>
-
-                  {/* 三点菜单 */}
+                    {/* 三点菜单 */}
                   {(activeCardMenu === instance.id || (isCardMenuClosing && activeCardMenu === instance.id)) && (
                     <>
                       <div className={cn(
@@ -1465,14 +1730,22 @@ function SillyClientLauncher() {
                           } catch (err) { console.error('[pickImage]', err); }
                         }} className={cn("w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-[#1a1625]/50 hover:text-[#1a1625]/80" : "text-white/50 hover:text-white/80")}>更换插图</button>
                         <div className={cn("my-1 h-px", isLight ? "bg-black/[0.06]" : "bg-white/[0.06]")} />
-                        <button onClick={async (e) => { e.stopPropagation(); closeCardMenu(); try { await TarvenEnv.uninstallInstance({ instanceId: instance.installDir || instance.id }); } catch (err) { console.error('[uninstall]', err); } finally { setInstances(prev => prev.filter(t => t.id !== instance.id)); } }} className={cn("w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-red-900/40 hover:text-red-900/70" : "text-red-400/40 hover:text-red-400/70")}>卸载</button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            closeCardMenu();
+                            setDeleteInstanceError(null);
+                            setPendingDelete(instance);
+                          }}
+                          className={cn("w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-red-900/50 hover:text-red-900/80" : "text-red-400/55 hover:text-red-300/90")}
+                        >删除实例</button>
                       </div>
                     </>
                   )}
                 </div>
               ))}
 
-              <div className="flex-shrink-0 w-[calc(50vw-120px)]" aria-hidden />
+              <div className="flex-shrink-0 w-[calc(50%-120px)]" aria-hidden />
             </div>
 
             {/* 指示器 + 方向键 */}
@@ -1502,34 +1775,6 @@ function SillyClientLauncher() {
           </div>
         </div>
 
-        {/* Web 环境: 产品信息区 */}
-        {isWeb && (
-          <div className="w-full max-w-md mx-auto px-6 mt-10 mb-8">
-            {/* 一句话 */}
-            <p className={cn("text-center text-[13px] leading-relaxed mb-5", isLight ? "text-[#1a1625]/35" : "text-white/35")}>
-              SillyTavern 跨平台启动器 · 安装即用
-            </p>
-
-            {/* 特性 — 横向标签 */}
-            <div className={cn("flex items-center justify-center gap-2 flex-wrap mb-5")}>
-              {["一键启动", "多实例管理", "沉浸式界面", "跨平台"].map((t, i) => (
-                <span key={t}>
-                  {i > 0 && <span className={cn("mx-2", isLight ? "text-[#1a1625]/15" : "text-white/15")}>·</span>}
-                  <span className={cn("text-[13px] font-medium", isLight ? "text-[#1a1625]/50" : "text-white/50")}>{t}</span>
-                </span>
-              ))}
-            </div>
-
-            {/* 底部链接 */}
-            <div className={cn("flex items-center justify-center gap-3 text-[11px]", isLight ? "text-[#1a1625]/25" : "text-white/25")}>
-              <span>MIT</span>
-              <span className={cn(isLight ? "text-[#1a1625]/10" : "text-white/10")}>·</span>
-              <a href="https://github.com/CAPTCHAAAAA/SillyClient" target="_blank" rel="noopener" className={cn("transition-colors", isLight ? "hover:text-[#1a1625]/50" : "hover:text-white/50")}>GitHub</a>
-              <span className={cn(isLight ? "text-[#1a1625]/10" : "text-white/10")}>·</span>
-              <a href="https://github.com/CAPTCHAAAAA/SillyClient/releases" target="_blank" rel="noopener" className={cn("transition-colors", isLight ? "hover:text-[#1a1625]/50" : "hover:text-white/50")}>Releases</a>
-            </div>
-          </div>
-        )}
       </main>
 
       {/* 重命名弹窗 */}
@@ -1567,12 +1812,95 @@ function SillyClientLauncher() {
         </>
       )}
 
+      {/* 删除实例二次确认 */}
+      {pendingDelete && (
+        <>
+          <div
+            className="fixed inset-0 z-[73] bg-black/15 backdrop-blur-[2px] overlay-backdrop"
+            onClick={() => { if (!isDeletingInstance) { setPendingDelete(null); setDeleteInstanceError(null); } }}
+          />
+          <div className={cn(
+            "fixed z-[74] overflow-hidden rounded-2xl backdrop-blur-[40px] saturate-180 animate-clone-panel",
+            glassBg
+          )} style={{
+            top: "50%",
+            left: "50%",
+            transform: "translate(-50%, -50%)",
+            width: "min(380px, calc(100vw - 2rem))",
+          }}>
+            <div className={cn("flex h-12 items-center justify-between border-b px-5", isLight ? "border-black/[0.06]" : "border-white/[0.06]")}>
+              <span className={cn("text-sm font-semibold", isLight ? "text-[#1a1625]" : "text-white")}>删除实例</span>
+              <button
+                type="button"
+                disabled={isDeletingInstance}
+                onClick={() => { setPendingDelete(null); setDeleteInstanceError(null); }}
+                className={cn(
+                  "rounded-lg p-1.5 transition-colors disabled:pointer-events-none disabled:opacity-30",
+                  isLight ? "text-[#1a1625]/30 hover:bg-black/5" : "text-white/30 hover:bg-white/5"
+                )}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="px-5 py-5">
+              <p className={cn("text-[15px] font-medium", isLight ? "text-[#1a1625]/85" : "text-white/85")}>
+                确定删除“{pendingDelete.subtitle || pendingDelete.name}”？
+              </p>
+              <p className={cn("mt-2 text-[12px] leading-relaxed", isLight ? "text-[#1a1625]/40" : "text-white/40")}>
+                {pendingDelete.type === "local"
+                  ? "实例目录、配置与封面会从设备中永久删除，且无法恢复。"
+                  : "只会移除这条远程连接，不会影响远程服务器上的数据。"}
+              </p>
+              {pendingDelete.type === "local" && (
+                <p className={cn("mt-3 text-[10px] font-medium", isLight ? "text-[#a12c4c]/70" : "text-[#e88ca5]/65")}>
+                  此操作无法撤销
+                </p>
+              )}
+              {deleteInstanceError && (
+                <div className={cn(
+                  "mt-4 flex items-start gap-2 rounded-xl border px-3 py-2 text-[11px] leading-relaxed",
+                  isLight ? "border-[#a12c4c]/10 bg-[#a12c4c]/[0.04] text-[#783047]/65" : "border-[#e88ca5]/10 bg-white/[0.025] text-[#e8a2b5]/75"
+                )}>
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                  <span>{deleteInstanceError}</span>
+                </div>
+              )}
+            </div>
+            <div className={cn("flex items-center justify-end gap-2 border-t px-5 py-3", isLight ? "border-black/[0.06]" : "border-white/[0.06]")}>
+              <button
+                type="button"
+                disabled={isDeletingInstance}
+                onClick={() => { setPendingDelete(null); setDeleteInstanceError(null); }}
+                className={cn(
+                  "h-8 rounded-xl px-4 text-[11px] font-medium transition-all active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40",
+                  isLight ? "bg-black/[0.05] text-[#1a1625]/45 hover:bg-black/[0.08]" : "bg-white/[0.06] text-white/45 hover:bg-white/10"
+                )}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingInstance}
+                onClick={confirmDeleteInstance}
+                className={cn(
+                  "flex h-8 items-center justify-center gap-1.5 rounded-xl px-4 text-[11px] font-semibold transition-all active:scale-[0.97] disabled:pointer-events-none disabled:opacity-60",
+                  isLight ? "bg-[#1a1625] text-[#f5f3ef] hover:bg-[#1a1625]/90" : "bg-white/90 text-[#1a1625] hover:bg-white"
+                )}
+              >
+                {isDeletingInstance && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
+                {isDeletingInstance ? "正在删除" : "删除"}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
       {/* 启动进度面板 */}
       {showLaunchPanel && (
         <>
           <div className="fixed inset-0 z-[60] bg-black/25 backdrop-blur-[4px]" />
           <div className={cn(
-            "fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[61] w-[360px] rounded-3xl overflow-hidden backdrop-blur-[40px] saturate-180",
+            "fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[61] w-[min(360px,calc(100vw-2rem))] rounded-3xl overflow-hidden backdrop-blur-[40px] saturate-180",
             "shadow-[0_24px_80px_rgba(0,0,0,0.4),0_0_0_0.5px_rgba(255,255,255,0.06),inset_0_0.5px_0_rgba(255,255,255,0.08)]",
             glassBg
           )}>
@@ -1580,7 +1908,9 @@ function SillyClientLauncher() {
             <div className="px-6 pt-6 pb-4">
               <div className="flex items-center justify-between">
                 <h3 className={cn("text-[17px] font-bold tracking-tight", isLight ? "text-[#1a1625]" : "text-white")}>
-                  {launchError ? "启动失败" : "启动中"}
+                  {launchError
+                    ? operationPurpose === "create" ? "创建失败" : "启动失败"
+                    : operationPurpose === "create" ? "正在创建实例" : "启动中"}
                 </h3>
                 {launchProgress && !launchError && (
                   <span className={cn("text-[14px] font-mono tabular-nums font-semibold", isLight ? "text-[#8b3a52]" : "text-[#c4788e]")}>{launchProgress.pct}%</span>
@@ -1667,15 +1997,27 @@ function SillyClientLauncher() {
                   </button>
                 </>
               ) : (
-                <button
-                  onClick={() => { setShowLaunchPanel(false); setLaunchProgress(null); }}
-                  className={cn(
-                    "w-full h-10 rounded-xl text-[13px] font-semibold transition-all active:scale-95",
-                    isLight ? "bg-black/[0.05] text-[#1a1625]/40 hover:bg-black/[0.08]" : "bg-white/[0.08] text-white/40 hover:bg-white/[0.12]"
-                  )}
-                >
-                  隐藏
-                </button>
+                operationPurpose === "create" ? (
+                  <div className={cn(
+                    "w-full h-10 rounded-xl flex items-center justify-center gap-2 text-[12px] font-medium",
+                    isLight ? "bg-black/[0.04] text-[#1a1625]/45" : "bg-white/[0.06] text-white/45"
+                  )}>
+                    {launchProgress?.pct === 100
+                      ? <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                      : <LoaderCircle className="h-4 w-4 animate-spin" />}
+                    {launchProgress?.pct === 100 ? "已确认实例可运行" : "完成前请保持应用打开"}
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => { setShowLaunchPanel(false); setLaunchProgress(null); }}
+                    className={cn(
+                      "w-full h-10 rounded-xl text-[13px] font-semibold transition-all active:scale-95",
+                      isLight ? "bg-black/[0.05] text-[#1a1625]/40 hover:bg-black/[0.08]" : "bg-white/[0.08] text-white/40 hover:bg-white/[0.12]"
+                    )}
+                  >
+                    隐藏
+                  </button>
+                )
               )}
             </div>
           </div>
@@ -1753,7 +2095,13 @@ function SillyClientLauncher() {
           <div className={cn(
             "fixed inset-0 z-[60] bg-black/15 backdrop-blur-[2px] overlay-backdrop",
             isNewInstancePanelClosing && "overlay-backdrop-exit"
-          )} onClick={() => { setShowNewInstancePanel(false); setIsNewInstancePanelClosing(false); setVerDropdownOpen(false); }} />
+          )} onClick={() => {
+            if (!isCreatingInstance) {
+              setShowNewInstancePanel(false);
+              setIsNewInstancePanelClosing(false);
+              setVerDropdownOpen(false);
+            }
+          }} />
           <div className={cn(
             "fixed z-[62] rounded-2xl flex flex-col overflow-hidden backdrop-blur-[40px] saturate-180",
             glassBg,
@@ -1768,7 +2116,7 @@ function SillyClientLauncher() {
             {/* 头部 */}
             <div className={cn("flex items-center justify-between px-5 h-12 flex-shrink-0 border-b", isLight ? "border-black/[0.06]" : "border-white/[0.06]")}>
               <span className={cn("text-sm font-semibold", isLight ? "text-[#1a1625]" : "text-white")}>新建实例</span>
-              <button onClick={() => { setIsNewInstancePanelClosing(true); setTimeout(() => { setShowNewInstancePanel(false); setIsNewInstancePanelClosing(false); setVerDropdownOpen(false); }, 250); }} className={cn("p-1.5 rounded-lg transition-colors", isLight ? "hover:bg-black/5 text-[#1a1625]/30" : "hover:bg-white/5 text-white/30")}>
+              <button disabled={isCreatingInstance} onClick={() => { setIsNewInstancePanelClosing(true); setTimeout(() => { setShowNewInstancePanel(false); setIsNewInstancePanelClosing(false); setVerDropdownOpen(false); }, 250); }} className={cn("p-1.5 rounded-lg transition-colors disabled:pointer-events-none disabled:opacity-30", isLight ? "hover:bg-black/5 text-[#1a1625]/30" : "hover:bg-white/5 text-white/30")}>
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -1942,41 +2290,34 @@ function SillyClientLauncher() {
             </div>
 
             {/* 底部按钮 */}
-            <div className={cn("flex items-center justify-end gap-2 px-5 py-3 border-t flex-shrink-0", isLight ? "border-black/[0.06]" : "border-white/[0.06]")}>
-              <button onClick={() => { setIsNewInstancePanelClosing(true); setTimeout(() => { setShowNewInstancePanel(false); setIsNewInstancePanelClosing(false); }, 250); }} className={cn(
+            <div className={cn("px-5 py-3 border-t flex-shrink-0", isLight ? "border-black/[0.06]" : "border-white/[0.06]")}>
+              {newInstanceError && (
+                <div className={cn(
+                  "mb-3 flex items-start gap-2 rounded-xl border px-3 py-2 text-[11px] leading-relaxed",
+                  isLight ? "border-red-900/10 bg-red-900/[0.04] text-red-900/65" : "border-red-400/10 bg-red-400/[0.05] text-red-300/75"
+                )}>
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                  <span>{newInstanceError}</span>
+                </div>
+              )}
+              <div className="flex items-center justify-end gap-2">
+              <button disabled={isCreatingInstance} onClick={() => { setIsNewInstancePanelClosing(true); setTimeout(() => { setShowNewInstancePanel(false); setIsNewInstancePanelClosing(false); }, 250); }} className={cn(
                 "px-4 h-8 rounded-xl text-[11px] font-medium transition-all active:scale-[0.97]",
+                "disabled:pointer-events-none disabled:opacity-40",
                 isLight ? "bg-black/[0.05] text-[#1a1625]/45 hover:bg-black/[0.08]" : "bg-white/[0.06] text-white/45 hover:bg-white/10"
               )}>取消</button>
               <button
-                onClick={() => {
-                  const name = newInstanceName.trim() || "新实例";
-                  // 选中 release 时取其 tag/zipballUrl;否则用默认 stable(走预打包)
-                  const selRelease = releases.find(r => r.tag === newInstanceVersion);
-                  const newInstance: TavernInstance = {
-                    id: `new-${Date.now()}`,
-                    name: "SillyTavern",
-                    subtitle: name,
-                    version: newInstanceVersion === "stable" ? "stable" : newInstanceVersion,
-                    type: newInstanceMode,
-                    status: newInstanceMode === "local" ? "stopped" : "offline",
-                    icon: newInstanceMode === "local" ? <Folder className="w-5 h-5" /> : <Cloud className="w-5 h-5" />,
-                    color: "#6366f1",
-                    createdAt: new Date().toISOString().slice(0, 10),
-                    lastUsed: "—",
-                    totalUsage: "0h",
-                    ...(newInstanceMode === "local"
-                      ? { port: 8000 + instances.filter(t => t.type === "local").length, installDir: newInstanceDir || `local-${Date.now()}`, zipballUrl: newInstanceLocalZip ? undefined : selRelease?.zipballUrl, localZipPath: newInstanceLocalZip || undefined, config: { ...DEFAULT_CONFIG } }
-                      : { url: newInstanceUrl }),
-                  };
-                  setInstances(prev => [...prev, newInstance]);
-                  setIsNewInstancePanelClosing(true);
-                  setTimeout(() => { setShowNewInstancePanel(false); setIsNewInstancePanelClosing(false); setNewInstanceName(""); setNewInstanceDir(""); setNewInstanceUrl("http://"); setNewInstanceVersion("stable"); setNewInstanceLocalZip(null); }, 250);
-                }}
+                onClick={createInstance}
+                disabled={isCreatingInstance}
                 className={cn(
-                  "px-4 h-8 rounded-xl text-[11px] font-semibold transition-all active:scale-[0.97]",
+                  "px-4 h-8 rounded-xl text-[11px] font-semibold transition-all active:scale-[0.97] disabled:pointer-events-none disabled:opacity-60 flex items-center gap-1.5",
                   isLight ? "bg-[#1a1625] text-[#f5f3ef] hover:bg-[#1a1625]/90" : "bg-white/90 text-[#1a1625] hover:bg-white"
                 )}
-              >创建</button>
+              >
+                {isCreatingInstance && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
+                {isCreatingInstance ? "获取当前版本" : "创建"}
+              </button>
+              </div>
             </div>
           </div>
         </>

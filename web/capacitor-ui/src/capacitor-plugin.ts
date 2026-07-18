@@ -93,7 +93,7 @@ export interface TarvenEnvPlugin {
   /** 读取实例详情(关于页真实数据)。 */
   getInstanceInfo(options: { instanceId: string; port?: number }): Promise<InstanceInfo>
 
-  /** 向运行中的 Node 进程 stdin 发送命令(termux 式终端输入)。 */
+  /** 在当前平台的原生控制台中执行命令。 */
   sendCommand(options: { text: string }): Promise<void>
 
   /** 刷新酒馆 WebView。 */

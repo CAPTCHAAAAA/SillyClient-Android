@@ -144,9 +144,20 @@
     border-radius: 1.5px;
   }
 
-  ::-webkit-scrollbar-thumb:hover {
-    background: oklch(0.6 0 0 / 0.4);
-  }
+::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.6 0 0 / 0.4);
+}
+
+.carousel-scrollbar-hidden {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.carousel-scrollbar-hidden::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
 }
 
 /* 玻璃面板 - Liquid Glass */
@@ -770,4 +781,3 @@ select option {
     0 0.5px 2px oklch(0 0 0 / 0.1),
     inset 0 0.5px 0 oklch(1 0 0 / 0.4);
 }
-

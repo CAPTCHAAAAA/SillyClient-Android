@@ -339,6 +339,7 @@ class MainActivity : BridgeActivity() {
     fun getTavernUrl(): String = tavernUrl
 
     fun provisionAndStart(port: Int = 8000, instanceId: String = "default", version: String = "stable", config: InstanceConfig = InstanceConfig(), zipballUrl: String? = null, localZipPath: String? = null) {
+        serverReady = false
         tavernPort = port
         tavernUrl = "http://127.0.0.1:$port/"
         Thread {
@@ -355,12 +356,12 @@ class MainActivity : BridgeActivity() {
             if (!hasServer) {
                 appendLog("> Provisioning [$instanceId]...")
                 updateProgress(2, "Initializing")
-                // 清理之前安装失败的残留
-                if (serverJs.exists() && !nodeModules.exists()) {
-                    appendLog("> 清理之前安装失败的残留...")
+                // 未完成的事务不能被下次扫描成一个实例。
+                if (targetServerDir.exists()) {
+                    appendLog("> 清理未完成的安装残留...")
                     targetServerDir.deleteRecursively()
-                    targetServerDir.mkdirs()
                 }
+                targetServerDir.mkdirs()
                 appendLog("> Extracting rootfs-libs.zip...")
                 extractNativeLibs(paths)
                 updateProgress(8, "Runtime ready")
@@ -411,6 +412,7 @@ class MainActivity : BridgeActivity() {
                 updateProgress(95, "Server source ready")
                 if (!ok) {
                     appendLog("[ERR] 所有安装方式均失败")
+                    targetServerDir.deleteRecursively()
                     setStatus("Install failed")
                     pushError("安装失败: 无法获取 SillyTavern 源码。请尝试从本地导入 zip 文件,或检查网络后重试。")
                     return@Thread
@@ -430,6 +432,7 @@ class MainActivity : BridgeActivity() {
             val started = startServer(paths, targetServerDir)
             if (!started) {
                 appendLog("[ERR] Server start failed")
+                if (!hasServer) targetServerDir.deleteRecursively()
                 setStatus("Start failed")
                 pushError("Node.js 服务启动失败,请重试或检查实例完整性")
                 return@Thread
@@ -591,7 +594,7 @@ class MainActivity : BridgeActivity() {
         tavernUrl = ""
         // tavernRunning=false：前端置 stopped
         pushMode("launcher", tavernRunning = false)
-        pushReady(true)
+        pushReady(false)
     }
 
     private fun clearSystemGestureExclusions() {
@@ -961,7 +964,7 @@ class MainActivity : BridgeActivity() {
                             if (!entry.isDirectory) {
                                 val name = entry.name.substringAfter('/', entry.name)
                                 if (name.isNotEmpty()) {
-                                    val out = File(targetServerDir, name)
+                                    val out = safeZipOutputFile(targetServerDir, name)
                                     out.parentFile?.mkdirs()
                                     FileOutputStream(out).use { zis.copyTo(it) }
                                     entryCount++
@@ -1014,7 +1017,7 @@ class MainActivity : BridgeActivity() {
                     if (!entry.isDirectory) {
                         val name = if (hasInnerDir) entry.name.substringAfter('/', entry.name) else entry.name
                         if (name.isNotEmpty()) {
-                            val out = File(destDir, name)
+                            val out = safeZipOutputFile(destDir, name)
                             out.parentFile?.mkdirs()
                             FileOutputStream(out).use { zis.copyTo(it) }
                             entryCount++
@@ -1032,6 +1035,14 @@ class MainActivity : BridgeActivity() {
             android.util.Log.e(TAG, "extractLocalZip", e)
             false
         }
+    }
+
+    private fun safeZipOutputFile(destination: File, entryName: String): File {
+        val root = destination.canonicalFile
+        val output = File(root, entryName).canonicalFile
+        val rootPrefix = root.path + File.separator
+        require(output.path.startsWith(rootPrefix)) { "ZIP entry escapes instance directory: $entryName" }
+        return output
     }
 
     /** 运行 npm install(若运行时含 npm)。返回是否成功。 */
