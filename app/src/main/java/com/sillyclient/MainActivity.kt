@@ -32,7 +32,6 @@ import com.getcapacitor.JSObject
 import com.sillyclient.runtime.RuntimePaths
 import com.sillyclient.runtime.RuntimeFileUtils
 import com.sillyclient.runtime.TarvenProcessRunner
-import com.sillyclient.ui.HybridUiHost
 import com.sillyclient.ui.TopScrimBar
 import java.io.BufferedInputStream
 import java.io.File
@@ -59,9 +58,6 @@ class MainActivity : BridgeActivity() {
     // 顶部状态栏手势区 — 左右滑动返回启动页
     private lateinit var topGestureZone: View
     private lateinit var topGestureDetector: GestureDetector
-
-    // ---- Hybrid UI host (web dashboard / console / bridge) ----
-    private lateinit var hybridHost: HybridUiHost
 
     /** 本地实例运行配置(对应前端管理面板设置项)。 */
     data class InstanceConfig(
@@ -129,42 +125,6 @@ class MainActivity : BridgeActivity() {
 
         val wasServerReady = savedInstanceState?.getBoolean(STATE_SERVER_READY, false) ?: false
         val wasWebViewVisible = savedInstanceState?.getBoolean(STATE_WEBVIEW_VISIBLE, false) ?: false
-
-        // ---- Hybrid web dashboard = primary content ----
-        hybridHost = HybridUiHost(this)
-        hybridHost.callback = object : HybridUiHost.Callback {
-            override fun onEnter() = enterTavern()
-            override fun onExit() = exitTavern()
-            override fun onDiagnose() = runDiagnostics()
-            override fun onCopyLogs(text: String) {
-                val cm = getSystemService(android.content.ClipboardManager::class.java)
-                cm.setPrimaryClip(android.content.ClipData.newPlainText("Tarven logs", text))
-            }
-            override fun onGoBack() { if (webView.canGoBack()) webView.goBack() }
-            override fun onGoForward() { if (webView.canGoForward()) webView.goForward() }
-            override fun onSetZoom(pct: Int) { webView.settings.textZoom = pct.coerceIn(50, 200) }
-            override fun onSetDark(on: Boolean) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
-                    webView.settings.forceDark =
-                        if (on) android.webkit.WebSettings.FORCE_DARK_ON else android.webkit.WebSettings.FORCE_DARK_OFF
-            }
-            override fun onSetJs(on: Boolean) { webView.settings.javaScriptEnabled = on }
-            override fun onSetCookies(on: Boolean) { CookieManager.getInstance().setAcceptCookie(on) }
-            override fun onSetUa(value: String) { /* TODO: map ua preset → userAgentString */ }
-            override fun onRefreshLogs() = refreshLogToCompose()
-            override fun onClearLogs() {}
-            override fun onExportLogs(text: String) = onCopyLogs(text)
-            override fun onOpenExternal(url: String) {
-                startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
-            }
-            override fun onRequestState() = pushCurrentStateToWeb()
-            override fun onSetTheme(t: String) = hybridHost.setTheme(t)
-        }
-        hybridHost.onPageReady = { pushCurrentStateToWeb() }
-        // ponytail: Capacitor WebView is now primary (loaded by BridgeActivity.load()). 
-        // HybridUiHost is kept for provisionAndStart status dispatch (no-ops until wired).
-        // setContentView(hybridHost.webView, FrameLayout.LayoutParams(MATCH, MATCH))
-        // hybridHost.loadDashboard()
 
         // ---- Native overlay for WebView + FCC (hidden until entering tavern) ----
         root = FrameLayout(this).apply {
@@ -462,49 +422,6 @@ class MainActivity : BridgeActivity() {
      * ║  combo is the only stable approach found for HyperOS.           ║
      * ╚══════════════════════════════════════════════════════════════════╝
      */
-    private fun runDiagnostics() {
-        appendLog("> Diagnostics...")
-        pushProgress(0f)
-        Thread {
-            val paths = RuntimePaths.from(this)
-            // 1. Node binary
-            val nodeOk = paths.nodeBin.exists()
-            pushLog(if (nodeOk) "  Node v24.17.0 ready" else "  Node binary missing!")
-            pushProgress(30f)
-            // 2. Bionic libs
-            val libCount = paths.usrLibDir.listFiles()?.size ?: 0
-            pushLog(if (libCount > 50) "  $libCount libs loaded" else "  $libCount libs — need rootfs")
-            pushProgress(60f)
-            // 3. Server source
-            val serverJs = File(paths.serverDir, "server.js")
-            val serverOk = serverJs.exists() && File(paths.serverDir, "node_modules").isDirectory
-            pushLog(if (serverOk) "  Server source ready" else "  Server source missing!")
-            pushProgress(80f)
-            // 4. Fix if needed
-            if (!nodeOk || libCount < 50 || !serverOk) {
-                appendLog("> Issues found — fixing...")
-                if (libCount < 50) try {
-                    paths.usrDir.mkdirs()
-                    assets.open("bootstrap/rootfs/rootfs-libs.zip").use { RuntimeFileUtils.unzipStream(it, paths.usrDir) }
-                    val n = paths.usrLibDir.listFiles()?.size ?: 0
-                    pushLog("  $n libs (re-extracted)")
-                } catch (_: Exception) {
-                    pushLog("  Extraction failed")
-                }
-            }
-            // 5. HTTP check
-            val httpOk = tryConnect(tavernUrl)
-            if (httpOk) {
-                pushLog("  $tavernUrl — online")
-                pushReady(true)
-                pushProgress(100f, "All systems ready")
-                serverReady = true
-            } else {
-                pushProgress(100f, "Check complete — tap ENTER to start")
-            }
-        }.start()
-    }
-
     fun enterTavern(targetUrl: String? = null) {
         // 远程实例:直接进入(无需 serverReady);本地实例:需 serverReady
         if (targetUrl != null) {
@@ -1400,15 +1317,6 @@ class MainActivity : BridgeActivity() {
             val lines = logFile.readLines().takeLast(30)
             for (l in lines) pushLog(l)
         }.start()
-    }
-
-    /** Push current boot state to Capacitor JS. */
-    private fun pushCurrentStateToWeb() {
-        if (serverReady) {
-            pushProgress(100f, "Ready")
-            pushReady(true)
-        }
-        refreshLogToCompose()
     }
 
     private fun post(r: Runnable) { handler.post(r) }

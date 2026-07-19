@@ -22,5 +22,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Tarven++"
+rootProject.name = "SillyClient"
 include(":app")

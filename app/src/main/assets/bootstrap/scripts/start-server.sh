@@ -1,7 +1,7 @@
 #!/system/bin/sh
 set -eu
 
-echo "[Tarven++] Starting SillyTavern server..."
+echo "[SillyClient] Starting SillyTavern server..."
 
 : "${TARVEN_SERVER_DIR:?TARVEN_SERVER_DIR missing}"
 : "${TARVEN_USR:?TARVEN_USR missing}"
@@ -17,7 +17,7 @@ export LD_LIBRARY_PATH="$TARVEN_USR/lib:$TARVEN_NATIVE_LIB_DIR:${LD_LIBRARY_PATH
 export NODE_ENV=production
 
 if [ ! -f "server.js" ]; then
-  echo "[Tarven++] server.js not found in $TARVEN_SERVER_DIR"
+  echo "[SillyClient] server.js not found in $TARVEN_SERVER_DIR"
   exit 11
 fi
 
@@ -34,8 +34,8 @@ dataRoot: ./data
 port: 8000
 CONFIG
 
-echo "[Tarven++] node=$TARVEN_NODE"
-echo "[Tarven++] server=$TARVEN_SERVER_DIR/server.js"
-echo "[Tarven++] url=http://127.0.0.1:8000/"
+echo "[SillyClient] node=$TARVEN_NODE"
+echo "[SillyClient] server=$TARVEN_SERVER_DIR/server.js"
+echo "[SillyClient] url=http://127.0.0.1:8000/"
 
 exec "$TARVEN_NODE" server.js

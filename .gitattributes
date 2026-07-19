@@ -1,0 +1,13 @@
+* text=auto eol=lf
+gradlew text eol=lf
+gradlew.bat text eol=crlf
+*.jar binary
+*.so binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ttf binary
+*.otf binary
+*.pdf binary
+*.zip binary
+*.apk binary
