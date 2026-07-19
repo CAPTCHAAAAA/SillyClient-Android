@@ -1,11 +1,11 @@
 [versions]
-agp = "9.2.1"
+agp = "9.3.0"
 kotlin = "2.1.0"
 coreKtx = "1.19.0"
-activity = "1.9.3"
-appcompat = "1.7.0"
+activity = "1.13.0"
+appcompat = "1.7.1"
 junit = "4.13.2"
-capacitor = "7.2.0"
+capacitor = "7.6.8"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
