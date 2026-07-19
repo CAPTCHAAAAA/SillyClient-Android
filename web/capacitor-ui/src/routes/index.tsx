@@ -173,6 +173,11 @@ function ToggleSwitch({ defaultOn = false, on, onChange, isLight }: { defaultOn?
 
 function SillyClientLauncher() {
   const isWeb = !Capacitor.isNativePlatform();
+  const showcaseParams = new URLSearchParams(window.location.search);
+  const isShowcase = showcaseParams.get("showcase") === "1";
+  const showcaseSafeTop = isShowcase
+    ? Math.max(0, Number(showcaseParams.get("safeTop")) || 52)
+    : 0;
   const isWindows = typeof window !== "undefined"
     && (window as typeof window & { __SILLYCLIENT_PLATFORM__?: string }).__SILLYCLIENT_PLATFORM__ === "windows";
   const terminalTitle = isWindows ? "Windows 控制台" : "Android 终端";
@@ -181,7 +186,7 @@ function SillyClientLauncher() {
     ? "SillyClient 1.5.0 · Windows · cmd.exe"
     : "SillyClient 1.5.0 · Android shell";
   const terminalPlaceholder = isWindows ? "输入 Windows 命令" : "输入 Android shell 命令";
-  const [instances, setInstances] = useState<TavernInstance[]>(loadInstances);
+  const [instances, setInstances] = useState<TavernInstance[]>(() => isShowcase ? [] : loadInstances());
   const [showBgPanel, setShowBgPanel] = useState(false);
   const [isPanelClosing, setIsPanelClosing] = useState(false);
   const [bgMode, setBgMode] = useState<BgMode>("dynamic");
@@ -248,7 +253,7 @@ function SillyClientLauncher() {
   // 关于页真实数据
   const [aboutInfo, setAboutInfo] = useState<{ version: string; path: string; sizeBytes: number; createdAt: string; status: string } | null>(null);
   // 安全 insets(挖孔避让)
-  const [safeInsetTop, setSafeInsetTop] = useState(0);
+  const [safeInsetTop, setSafeInsetTop] = useState(showcaseSafeTop);
   // APP 设置:下拉刷新
   const [pullToRefresh, setPullToRefresh] = useState(false);
   const [verDropdownOpen, setVerDropdownOpen] = useState(false);
@@ -384,6 +389,7 @@ function SillyClientLauncher() {
 
   // 自检:启动时扫描本地已存在的酒馆实例,自动添加卡片
   useEffect(() => {
+    if (isShowcase) return;
     (async () => {
       try {
         const { instances } = await TarvenEnv.scanInstances();
@@ -413,10 +419,11 @@ function SillyClientLauncher() {
         });
       } catch { /* 非 Capacitor 环境 */ }
     })();
-  }, []);
+  }, [isShowcase]);
 
   // 原生进程被系统结束后，持久化的 running 状态可能已经失效。
   useEffect(() => {
+    if (isShowcase) return;
     (async () => {
       try {
         const status = await TarvenEnv.getStatus();
@@ -432,11 +439,12 @@ function SillyClientLauncher() {
         /* 浏览器环境没有原生运行状态。 */
       }
     })();
-  }, []);
+  }, [isShowcase]);
 
   // 安全 insets(挖孔避让) — 原生返回物理像素,需除以 devicePixelRatio 转为 CSS 像素
   // 用 useLayoutEffect + 轮询确保 insets 就绪(首次 mount 时可能返回 0)
   useEffect(() => {
+    if (isShowcase) return;
     let cancelled = false;
     const fetchInsets = async () => {
       try {
@@ -451,7 +459,7 @@ function SillyClientLauncher() {
     };
     fetchInsets();
     return () => { cancelled = true; };
-  }, []);
+  }, [isShowcase]);
 
   // 管理面板打开且切到关于页时,拉取真实实例数据
   useEffect(() => {
@@ -485,7 +493,9 @@ function SillyClientLauncher() {
   useEffect(() => { document.documentElement.classList.add('dark'); }, []);
 
   // 实例列表持久化到 localStorage
-  useEffect(() => { saveInstances(instances); }, [instances]);
+  useEffect(() => {
+    if (!isShowcase) saveInstances(instances);
+  }, [instances, isShowcase]);
 
   // 远程实例在线状态检测(用原生 pingUrl 绕过 WebView CORS)
   const checkRemoteStatus = useCallback(async () => {
@@ -563,6 +573,7 @@ function SillyClientLauncher() {
 
   // 监听原生插件事件:日志 / 就绪 / 模式变化
   useEffect(() => {
+    if (isShowcase) return;
     let logHandle: any, readyHandle: any, modeHandle: any, progressHandle: any;
     (async () => {
       try {
@@ -598,7 +609,7 @@ function SillyClientLauncher() {
       readyHandle?.remove?.();
       modeHandle?.remove?.();
     };
-  }, []);
+  }, [isShowcase]);
 
   // 配置并启动本地实例。创建流程只在确认服务可访问后写入卡片。
   const doLaunch = useCallback(async (instance: TavernInstance, enterWhenReady = true) => {
@@ -1459,7 +1470,7 @@ function SillyClientLauncher() {
       <main
         className="pb-12 px-6 min-h-screen flex flex-col items-center"
         style={{
-          paddingTop: `calc(env(safe-area-inset-top) + 68px)`,
+          paddingTop: `calc(max(env(safe-area-inset-top), ${safeInsetTop}px) + 68px)`,
           transform: `translateY(${pullDistance}px)`,
           transition: isPulling.current || isRefreshing ? 'none' : 'transform 0.4s cubic-bezier(0.22, 1, 0.36, 1)',
         }}
@@ -1555,8 +1566,8 @@ function SillyClientLauncher() {
                       <Play className={cn("w-3.5 h-3.5", isLight ? "text-[#1a1625]/40" : "text-white/40")} />
                     </div>
                     <div>
-                      <div className={cn("text-base font-semibold mb-0.5", isLight ? "text-[#1a1625]" : "text-white")}>{isWeb ? "下载 APK" : "新建实例"}</div>
-                      <div className={cn("text-xs", isLight ? "text-[#1a1625]/40" : "text-white/40")}>{isWeb ? "获取最新版本" : "设置新的酒馆环境"}</div>
+                      <div className={cn("text-base font-semibold mb-0.5", isLight ? "text-[#1a1625]" : "text-white")}>{isWeb && !isShowcase ? "下载 APK" : "新建实例"}</div>
+                      <div className={cn("text-xs", isLight ? "text-[#1a1625]/40" : "text-white/40")}>{isWeb && !isShowcase ? "获取最新版本" : "设置新的酒馆环境"}</div>
                   </div>
                 </div>
               </button>
