@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   frontend:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6
@@ -26,9 +26,9 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build frontend
         working-directory: web/capacitor-ui
-        run: pnpm run build:android
-      - name: Check committed Android assets
-        run: git diff --exit-code -- app/src/main/assets/public
+        run: pnpm run build
+      - name: Verify committed Android assets
+        run: node scripts/verify-frontend-assets.mjs
 
   android:
     runs-on: ubuntu-latest
