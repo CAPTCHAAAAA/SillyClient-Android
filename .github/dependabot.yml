@@ -8,7 +8,10 @@ updates:
       frontend-minor-and-patch:
         patterns: ["*"]
         update-types: [minor, patch]
-    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: [version-update:semver-major]
+    open-pull-requests-limit: 1
 
   - package-ecosystem: gradle
     directory: /
@@ -18,10 +21,20 @@ updates:
       android-minor-and-patch:
         patterns: ["*"]
         update-types: [minor, patch]
-    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: [version-update:semver-major]
+    open-pull-requests-limit: 1
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
-    open-pull-requests-limit: 3
+    groups:
+      actions-minor-and-patch:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "*"
+        update-types: [version-update:semver-major]
+    open-pull-requests-limit: 1
