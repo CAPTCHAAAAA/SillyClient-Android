@@ -160,7 +160,8 @@ pushMode("launcher", tavernRunning = false) // 真正关闭
 |------|------|
 | [SillyClient](https://github.com/CAPTCHAAAAA/SillyClient) | 主仓库：项目入口、文档、Release |
 | [SillyClient-Windows](https://github.com/CAPTCHAAAAA/SillyClient-Windows) | Windows 端：Electron + TypeScript |
-| [SillyClient-Frontend](https://github.com/CAPTCHAAAAA/SillyClient-Frontend) | 共享前端：启动页 / 状态栏 UI 源码 |
+
+共享前端不再使用独立仓库，唯一源码位于本仓库的 `web/capacitor-ui/`。Windows 和 GitHub Pages 都使用这里生成的同一份 `dist`。
 
 ## License
 
