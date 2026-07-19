@@ -7,19 +7,13 @@ data class RuntimePaths(
     val appFilesDir: File,
     val tarvenHome: File,
     val bootstrapDir: File,
-    val scriptsDir: File,
-    val serverDir: File,
-    val rootfsDir: File,
+    val serversDir: File,
     val usrDir: File,
     val usrLibDir: File,
     val tmpDir: File,
     val logsDir: File,
     val nativeLibDir: File,
-    val nodeBin: File,
-    val shBin: File,
-    val gitBin: File,
-    val gitRemoteHttpBin: File,
-    val curlBin: File
+    val nodeBin: File
 ) {
     companion object {
         fun from(context: Context): RuntimePaths {
@@ -33,19 +27,13 @@ data class RuntimePaths(
                 appFilesDir = files,
                 tarvenHome = home,
                 bootstrapDir = bootstrap,
-                scriptsDir = File(bootstrap, "scripts"),
-                serverDir = File(bootstrap, "server"),
-                rootfsDir = File(bootstrap, "rootfs"),
+                serversDir = File(bootstrap, "servers"),
                 usrDir = usr,
                 usrLibDir = File(usr, "lib"),
                 tmpDir = File(home, "tmp"),
                 logsDir = File(home, "logs"),
                 nativeLibDir = native,
-                nodeBin = File(native, "libtarven-node.so"),
-                shBin = File(native, "libtarven-sh.so"),
-                gitBin = File(native, "libtarven-git.so"),
-                gitRemoteHttpBin = File(native, "libtarven-git-remote-http.so"),
-                curlBin = File(native, "libtarven-curl.so")
+                nodeBin = File(native, "libtarven-node.so")
             )
         }
     }
@@ -54,27 +42,23 @@ data class RuntimePaths(
         listOf(
             tarvenHome,
             bootstrapDir,
-            scriptsDir,
-            serverDir,
-            rootfsDir,
+            serversDir,
             usrDir,
             tmpDir,
             logsDir
         ).forEach { it.mkdirs() }
-        // 多实例目录根
-        File(bootstrapDir, "servers").mkdirs()
     }
 
     /** 多实例:返回指定 instanceId 的独立 server 目录。 */
-    fun serverDirFor(instanceId: String): File {
+    fun serverDirFor(instanceId: String, create: Boolean = true): File {
         val safeId = instanceId
             .trim()
             .replace(Regex("[^\\p{L}\\p{N}._-]+"), "-")
             .trim('.', '_', '-')
             .take(80)
             .ifBlank { "default" }
-        val dir = File(File(bootstrapDir, "servers"), safeId)
-        dir.mkdirs()
+        val dir = File(serversDir, safeId)
+        if (create) dir.mkdirs()
         return dir
     }
 }

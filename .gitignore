@@ -3,21 +3,13 @@
 .kotlin
 /local.properties
 local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
 /build/
 /app/build/
 /captures
-.externalNativeBuild
-.cxx
+.externalNativeBuild/
+.cxx/
 
-# web 模块产物与依赖（仅源码入库，dist 由 vite 重新生成）
+# Frontend dependencies and generated output
 node_modules/
 web/*/dist/
 web/*/.vite-temp/
@@ -25,27 +17,11 @@ web/*/.microcompact/
 web/*/.todo/
 web/*/.plan/
 
-# 游离截图（根目录）
-/*.png
-
-# Builder 大文件与缓存（不入库）
-Builder/cache/
-Builder/work/
-Builder/.cache/
-Builder/artifacts/
-
-# 杂项
+# Local tools and editor state
+.idea/
+.vscode/
+local.properties
 *.log
 *.hprof
-
-SillyClient-v1.1.0.apk
-
-# Junk
-build_old/
-.idea/
-.gradle/
-.kotlin/
-build/
-local.properties
 *.apk
 

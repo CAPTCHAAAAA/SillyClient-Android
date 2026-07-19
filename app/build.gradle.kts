@@ -49,6 +49,4 @@ dependencies {
     implementation(libs.capacitor.android)
 
     testImplementation(libs.junit)
-    androidTestImplementation(libs.androidx.espresso.core)
-    androidTestImplementation(libs.androidx.junit)
 }

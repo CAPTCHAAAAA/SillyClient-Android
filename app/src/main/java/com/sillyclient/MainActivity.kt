@@ -24,6 +24,7 @@ import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import com.getcapacitor.BridgeActivity
 import com.sillyclient.plugin.TarvenEnvPlugin
+import androidx.activity.OnBackPressedCallback
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -31,7 +32,6 @@ import androidx.core.graphics.Insets
 import com.getcapacitor.JSObject
 import com.sillyclient.runtime.RuntimePaths
 import com.sillyclient.runtime.RuntimeFileUtils
-import com.sillyclient.runtime.TarvenProcessRunner
 import com.sillyclient.ui.TopScrimBar
 import java.io.BufferedInputStream
 import java.io.File
@@ -70,7 +70,6 @@ class MainActivity : BridgeActivity() {
     )
 
     // ---- State ----
-    private lateinit var runner: TarvenProcessRunner
     private var serverReady = false
     private var isWebViewVisible = false
     private var statusBarFixedPx = 0  // fixed physical pixels, never changes
@@ -87,6 +86,9 @@ class MainActivity : BridgeActivity() {
 
     private var fullscreenView: View? = null
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
+    private val fullscreenBackCallback = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() = exitFullscreen()
+    }
 
     companion object {
         private const val TAG = "SillyClient"
@@ -102,6 +104,7 @@ class MainActivity : BridgeActivity() {
         // ---- Capacitor: register plugin BEFORE super so BridgeActivity picks it up ----
         registerPlugin(TarvenEnvPlugin::class.java)
         super.onCreate(savedInstanceState)
+        onBackPressedDispatcher.addCallback(this, fullscreenBackCallback)
 
         // ╔══════════════════════════════════════════════════════════════╗
         // ║  DO NOT CHANGE — Fullscreen immersion foundation.           ║
@@ -120,7 +123,6 @@ class MainActivity : BridgeActivity() {
         }
         // Match window background to Compose BG — eliminates native flash
         window.decorView.setBackgroundColor(BG)
-        runner = TarvenProcessRunner()
         statusBarFixedPx = readStatusBarFixedPx()
 
         val wasServerReady = savedInstanceState?.getBoolean(STATE_SERVER_READY, false) ?: false
@@ -152,6 +154,8 @@ class MainActivity : BridgeActivity() {
         //   酒馆模式：滑动 → exitTavern()（回启动器，不停服务）
         //   启动器模式：滑动 → returnToTavern()（回酒馆，如果还在跑）
         topGestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean = true
+
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
                 if (e1 == null) return false
                 val dx = e2.x - e1.x
@@ -178,8 +182,9 @@ class MainActivity : BridgeActivity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 statusBarFixedPx
             ).apply { gravity = Gravity.TOP }
-            setOnTouchListener { _, event ->
+            setOnTouchListener { view, event ->
                 topGestureDetector.onTouchEvent(event)
+                if (event.action == MotionEvent.ACTION_UP) view.performClick()
                 true
             }
         }
@@ -227,6 +232,7 @@ class MainActivity : BridgeActivity() {
                     fullscreenView?.let { root.removeView(it) }
                     fullscreenView = v
                     fullscreenCallback = cb
+                    fullscreenBackCallback.isEnabled = v != null
                     v?.let {
                         root.addView(it, FrameLayout.LayoutParams(MATCH, MATCH))
                         webViewScreen.visibility = View.GONE
@@ -597,7 +603,6 @@ class MainActivity : BridgeActivity() {
     // ║  com.sillyclient.ui.TopColor；渲染见 com.sillyclient.ui.TopScrimBar。║
     // ╚══════════════════════════════════════════════════════════════════╝
     private fun sampleTopColor(onResult: (Int?) -> Unit) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) { onResult(null); return }
         val w = webView.width
         if (w <= 0 || !webView.isShown) { onResult(null); return }  // 未绘制/无 surface 时跳过
         val loc = IntArray(2)
@@ -652,6 +657,7 @@ class MainActivity : BridgeActivity() {
                     pullReadyToReload = pullToRefreshEnabled && webView.scrollY == 0
                 }
                 MotionEvent.ACTION_UP -> {
+                    webView.performClick()
                     // 下拉刷新:从顶部向下拉超过 120px 时刷新
                     if (pullReadyToReload && (event.rawY - pullStartY) > 120) {
                         webView.reload()
@@ -671,6 +677,7 @@ class MainActivity : BridgeActivity() {
     private fun exitFullscreen() {
         fullscreenView?.let { root.removeView(it) }
         fullscreenView = null
+        fullscreenBackCallback.isEnabled = false
         fullscreenCallback?.onCustomViewHidden()
         fullscreenCallback = null
         webViewScreen.visibility = View.VISIBLE
@@ -682,7 +689,6 @@ class MainActivity : BridgeActivity() {
 
     private fun extractNativeLibs(paths: RuntimePaths) {
         setStatus("Extracting runtime...")
-        val nativeDir = paths.nativeLibDir
         val bootstrapDir = paths.bootstrapDir
         bootstrapDir.mkdirs()
 
@@ -711,21 +717,6 @@ class MainActivity : BridgeActivity() {
             android.util.Log.e(TAG, "npm extraction failed", e)
         }
 
-        // Copy native SO files from lib dir to bootstrap for scripts
-        val soFiles = listOf(
-            "libtarven-sh.so",
-            "libtarven-git.so",
-            "libtarven-git-remote-http.so",
-            "libtarven-curl.so"
-        )
-        for (so in soFiles) {
-            val src = File(nativeDir, so)
-            val dst = File(bootstrapDir, so)
-            if (src.exists() && !dst.exists()) {
-                src.copyTo(dst)
-                RuntimeFileUtils.chmodExecutable(dst)
-            }
-        }
     }
 
     private fun startServer(paths: RuntimePaths, targetServerDir: File): Boolean {
@@ -1039,7 +1030,7 @@ class MainActivity : BridgeActivity() {
     /** 实例详情:version, path, sizeBytes, createdAt, status。 */
     fun getInstanceInfo(instanceId: String, port: Int): Quint<String, String, Long, String, String> {
         val paths = RuntimePaths.from(this)
-        val dir = File(paths.bootstrapDir, "servers/$instanceId")
+        val dir = paths.serverDirFor(instanceId, create = false)
         if (!dir.exists()) return Quint("unknown", dir.absolutePath, 0L, "", "未安装")
         val hasServer = File(dir, "server.js").exists()
         val version = parsePackageVersion(dir)
@@ -1153,7 +1144,7 @@ class MainActivity : BridgeActivity() {
         val paths = RuntimePaths.from(this)
         var freed = 0L
         // 删除安装目录
-        val serverDir = File(paths.bootstrapDir, "servers/$instanceId")
+        val serverDir = paths.serverDirFor(instanceId, create = false)
         if (serverDir.exists()) {
             freed += dirSize(serverDir)
             serverDir.deleteRecursively()
@@ -1348,15 +1339,10 @@ class MainActivity : BridgeActivity() {
         return dp(24)
     }
 
-    override fun onBackPressed() {
-        if (fullscreenView != null) exitFullscreen()
-        else super.onBackPressed()
-    }
-
-
     override fun onDestroy() {
         handler.removeCallbacks(topColorPoll)
-        if (serverReady) runner.stop()
+        serverProcess?.destroy()
+        serverProcess = null
         webView.destroy()
         super.onDestroy()
     }

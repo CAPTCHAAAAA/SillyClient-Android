@@ -1,5 +1,5 @@
 ﻿<resources>
-    <style name="Theme.TarvenPlus" parent="android:style/Theme.Material.NoActionBar">
+    <style name="Theme.SillyClient" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans-serif</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/black</item>

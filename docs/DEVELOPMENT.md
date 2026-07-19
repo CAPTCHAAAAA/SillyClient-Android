@@ -19,6 +19,7 @@ cd ../..
 pnpm --dir web/capacitor-ui run typecheck
 pnpm --dir web/capacitor-ui run build
 ./gradlew testDebugUnitTest :app:assembleDebug
+./gradlew lintDebug
 git diff --check
 ```
 

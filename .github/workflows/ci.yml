@@ -42,4 +42,4 @@ jobs:
         with:
           cache-provider: basic
       - name: Test and assemble debug APK
-        run: ./gradlew testDebugUnitTest :app:assembleDebug --no-daemon
+        run: ./gradlew testDebugUnitTest lintDebug :app:assembleDebug --no-daemon

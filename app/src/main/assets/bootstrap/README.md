@@ -1,8 +1,7 @@
 # Android runtime assets
 
-This directory contains the startup script and compressed runtime files copied into the app package.
+This directory contains the compressed runtime files copied into the app package.
 
-- `scripts/start-server.sh` starts SillyTavern with the bundled Bionic Node.js runtime.
 - `rootfs/rootfs-usr.zip` contains the runtime userland.
 - `rootfs/rootfs-libs.zip` contains the required shared libraries.
 

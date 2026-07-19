@@ -30,6 +30,8 @@ flowchart TD
 
 `runtime/` 负责路径、解压、配置、进程和日志。应用只使用打包的 Bionic Node.js，不调用 Termux。所有实例 ID 在进入文件系统前都要归一化，zip 解压必须防止路径越界。
 
+`app/src/main/assets/bootstrap/rootfs/` 中的两个压缩包提供 npm 与 Bionic 共享库，`app/src/main/jniLibs/arm64-v8a/libtarven-node.so` 是 Node.js 可执行入口。它们虽然是大文件，但都是 APK 的直接构建输入；更新时必须同时记录来源、架构、校验和与实机结果。
+
 ## 创建实例
 
 1. 校验实例 ID、版本和目标端口。
