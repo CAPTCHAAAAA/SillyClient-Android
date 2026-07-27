@@ -40,7 +40,6 @@
 .sc-onboarding-panel {
   position: relative;
   width: min(34rem, calc(100vw - 1.25rem));
-  min-height: min(34.5rem, calc(100dvh - 1.25rem));
   max-height: calc(100dvh - 1.25rem);
   padding: 1rem;
   overflow: auto;
@@ -55,10 +54,15 @@
   backdrop-filter: blur(32px) saturate(120%);
   -webkit-backdrop-filter: blur(32px) saturate(120%);
   animation: sc-guide-enter 220ms ease-out both;
+  transition: height 300ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .sc-onboarding-panel::-webkit-scrollbar {
   display: none;
+}
+
+.sc-onboarding-panel-content {
+  min-width: 0;
 }
 
 .sc-onboarding-header,
@@ -390,6 +394,10 @@
   .sc-onboarding-panel,
   .sc-onboarding-step {
     animation: none;
+  }
+
+  .sc-onboarding-panel {
+    transition: none;
   }
 
   .sc-onboarding-backdrop {

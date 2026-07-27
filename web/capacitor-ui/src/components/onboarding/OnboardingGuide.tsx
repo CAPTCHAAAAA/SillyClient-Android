@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import "./OnboardingGuide.css";
 
@@ -103,6 +103,10 @@ export default function OnboardingGuide({
   const [transitionDirection, setTransitionDirection] = useState<"forward" | "backward">("forward");
   const [isStepLeaving, setIsStepLeaving] = useState(false);
   const [isClosing, setIsClosing] = useState(false);
+  const [panelHeight, setPanelHeight] = useState<number | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const panelContentRef = useRef<HTMLDivElement>(null);
   const stepTimerRef = useRef<number | null>(null);
   const closeTimerRef = useRef<number | null>(null);
   const step = guideSteps[currentStep];
@@ -162,6 +166,43 @@ export default function OnboardingGuide({
     };
   }, []);
 
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    const panel = panelRef.current;
+    const content = panelContentRef.current;
+    if (!root || !panel || !content) return;
+
+    const measure = () => {
+      const rootStyle = window.getComputedStyle(root);
+      const panelStyle = window.getComputedStyle(panel);
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      const rootInsets =
+        Number.parseFloat(rootStyle.paddingTop) +
+        Number.parseFloat(rootStyle.paddingBottom);
+      const panelChrome =
+        Number.parseFloat(panelStyle.paddingTop) +
+        Number.parseFloat(panelStyle.paddingBottom) +
+        Number.parseFloat(panelStyle.borderTopWidth) +
+        Number.parseFloat(panelStyle.borderBottomWidth);
+      const contentHeight = content.getBoundingClientRect().height;
+      const availableHeight = Math.max(0, viewportHeight - rootInsets);
+
+      setPanelHeight(Math.ceil(Math.min(contentHeight + panelChrome, availableHeight)));
+    };
+
+    measure();
+    const resizeObserver = new ResizeObserver(measure);
+    resizeObserver.observe(content);
+    window.addEventListener("resize", measure);
+    window.visualViewport?.addEventListener("resize", measure);
+
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", measure);
+      window.visualViewport?.removeEventListener("resize", measure);
+    };
+  }, [currentStep, currentView]);
+
   const goNext = () => {
     if (currentStep === guideSteps.length - 1) {
       requestClose(onComplete);
@@ -172,74 +213,81 @@ export default function OnboardingGuide({
 
   return (
     <div
+      ref={rootRef}
       className={`sc-onboarding ${isLight ? "is-light" : "is-dark"} ${isClosing ? "is-closing" : ""}`}
       role="dialog"
       aria-modal="true"
       aria-label="SillyClient 使用引导"
     >
       <div className="sc-onboarding-backdrop" aria-hidden />
-      <div className="sc-onboarding-panel">
-        <header className="sc-onboarding-header">
-          <div>
-            <strong>SillyClient</strong>
-            <span>使用引导</span>
-          </div>
-          <button type="button" onClick={() => requestClose(onSkip)}>跳过</button>
-        </header>
+      <div
+        ref={panelRef}
+        className="sc-onboarding-panel"
+        style={panelHeight === null ? undefined : { height: `${panelHeight}px` }}
+      >
+        <div ref={panelContentRef} className="sc-onboarding-panel-content">
+          <header className="sc-onboarding-header">
+            <div>
+              <strong>SillyClient</strong>
+              <span>使用引导</span>
+            </div>
+            <button type="button" onClick={() => requestClose(onSkip)}>跳过</button>
+          </header>
 
-        <div
-          className={`sc-onboarding-step is-${transitionDirection} ${isStepLeaving ? "is-leaving" : ""}`}
-          key={`${currentStep}-${currentView}`}
-        >
-          <figure className={`sc-onboarding-shot ${view.imageClass}`}>
-            <img src={view.image} alt={view.imageAlt} />
-          </figure>
-          {step.views.length > 1 && (
-            <div className="sc-onboarding-subnav" aria-label={`${step.title}详细页面`}>
-              {step.views.map((item, index) => (
+          <div
+            className={`sc-onboarding-step is-${transitionDirection} ${isStepLeaving ? "is-leaving" : ""}`}
+            key={`${currentStep}-${currentView}`}
+          >
+            <figure className={`sc-onboarding-shot ${view.imageClass}`}>
+              <img src={view.image} alt={view.imageAlt} />
+            </figure>
+            {step.views.length > 1 && (
+              <div className="sc-onboarding-subnav" aria-label={`${step.title}详细页面`}>
+                {step.views.map((item, index) => (
+                  <button
+                    type="button"
+                    key={item.label}
+                    className={index === currentView ? "is-current" : ""}
+                    aria-current={index === currentView ? "page" : undefined}
+                    onClick={() => transitionTo(currentStep, index)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="sc-onboarding-copy">
+              <span>{String(currentStep + 1).padStart(2, "0")}</span>
+              <h2>{step.title}</h2>
+              <p>{view.description}</p>
+            </div>
+          </div>
+
+          <footer className="sc-onboarding-footer">
+            <div className="sc-onboarding-dots" aria-label={`第 ${currentStep + 1} 步，共 ${guideSteps.length} 步`}>
+              {guideSteps.map((item, index) => (
                 <button
                   type="button"
-                  key={item.label}
-                  className={index === currentView ? "is-current" : ""}
-                  aria-current={index === currentView ? "page" : undefined}
-                  onClick={() => transitionTo(currentStep, index)}
-                >
-                  {item.label}
-                </button>
+                  key={item.title}
+                  className={index === currentStep ? "is-current" : ""}
+                  aria-label={`查看第 ${index + 1} 步：${item.title}`}
+                  aria-current={index === currentStep ? "step" : undefined}
+                  onClick={() => transitionTo(index, 0)}
+                />
               ))}
             </div>
-          )}
-          <div className="sc-onboarding-copy">
-            <span>{String(currentStep + 1).padStart(2, "0")}</span>
-            <h2>{step.title}</h2>
-            <p>{view.description}</p>
-          </div>
-        </div>
-
-        <footer className="sc-onboarding-footer">
-          <div className="sc-onboarding-dots" aria-label={`第 ${currentStep + 1} 步，共 ${guideSteps.length} 步`}>
-            {guideSteps.map((item, index) => (
-              <button
-                type="button"
-                key={item.title}
-                className={index === currentStep ? "is-current" : ""}
-                aria-label={`查看第 ${index + 1} 步：${item.title}`}
-                aria-current={index === currentStep ? "step" : undefined}
-                onClick={() => transitionTo(index, 0)}
-              />
-            ))}
-          </div>
-          <div className="sc-onboarding-actions">
-            {currentStep > 0 && (
-              <button type="button" className="is-back" onClick={() => transitionTo(currentStep - 1, 0)}>
-                上一步
+            <div className="sc-onboarding-actions">
+              {currentStep > 0 && (
+                <button type="button" className="is-back" onClick={() => transitionTo(currentStep - 1, 0)}>
+                  上一步
+                </button>
+              )}
+              <button type="button" className="is-next" onClick={goNext}>
+                {currentStep === guideSteps.length - 1 ? "完成" : "下一步"}
               </button>
-            )}
-            <button type="button" className="is-next" onClick={goNext}>
-              {currentStep === guideSteps.length - 1 ? "完成" : "下一步"}
-            </button>
-          </div>
-        </footer>
+            </div>
+          </footer>
+        </div>
       </div>
     </div>
   );
