@@ -24,7 +24,8 @@ import {
 import { cn } from "@/lib/utils";
 import { Capacitor } from "@capacitor/core";
 import { TarvenEnv, DEFAULT_CONFIG } from "@/capacitor-plugin";
-import type { InstanceConfig, GithubRelease } from "@/capacitor-plugin";
+import type { ContentOpenMode, InstanceConfig, GithubRelease } from "@/capacitor-plugin";
+import OnboardingGuide from "@/components/onboarding/OnboardingGuide";
 
 export const Route = createFileRoute("/")({
   component: SillyClientLauncher,
@@ -60,6 +61,8 @@ interface TavernInstance {
 
 const INSTANCES_KEY = "sillyclient.instances";
 const INSTANCES_VERSION_KEY = "sillyclient.instances.version";
+const ONBOARDING_KEY = "sillyclient.onboarding.version";
+const ONBOARDING_VERSION = "1";
 const CURRENT_VERSION = 2;
 
 /** 从 localStorage 读取已持久化的实例列表;版本不匹配时清空旧数据。 */
@@ -183,9 +186,12 @@ function SillyClientLauncher() {
   const terminalTitle = isWindows ? "Windows 控制台" : "Android 终端";
   const terminalPrompt = isWindows ? "C:\\>" : "~ $";
   const terminalBanner = isWindows
-    ? "SillyClient 1.5.0 · Windows · cmd.exe"
-    : "SillyClient 1.5.0 · Android shell";
+    ? "SillyClient 1.6.0 · Windows · cmd.exe"
+    : "SillyClient 1.6.0 · Android shell";
   const terminalPlaceholder = isWindows ? "输入 Windows 命令" : "输入 Android shell 命令";
+  const [showOnboarding, setShowOnboarding] = useState(
+    () => (!isWeb || isWindows) && !isShowcase && localStorage.getItem(ONBOARDING_KEY) !== ONBOARDING_VERSION,
+  );
   const [instances, setInstances] = useState<TavernInstance[]>(() => isShowcase ? [] : loadInstances());
   const [showBgPanel, setShowBgPanel] = useState(false);
   const [isPanelClosing, setIsPanelClosing] = useState(false);
@@ -256,6 +262,7 @@ function SillyClientLauncher() {
   const [safeInsetTop, setSafeInsetTop] = useState(showcaseSafeTop);
   // APP 设置:下拉刷新
   const [pullToRefresh, setPullToRefresh] = useState(false);
+  const [contentOpenMode, setContentOpenMode] = useState<ContentOpenMode>("webview");
   const [verDropdownOpen, setVerDropdownOpen] = useState(false);
   const [verDropdownPos, setVerDropdownPos] = useState({ top: 0, left: 0, width: 0 });
   const carouselRef = useRef<HTMLDivElement>(null);
@@ -290,6 +297,13 @@ function SillyClientLauncher() {
 
   const isLight = bgMode === "custom" && themeStyle === "light";
   const isDynamic = bgMode === "dynamic";
+
+  useEffect(() => {
+    if (!isWindows) return;
+    TarvenEnv.getContentOpenMode()
+      .then(({ mode }) => setContentOpenMode(mode))
+      .catch(() => setContentOpenMode("webview"));
+  }, [isWindows]);
 
   // 液态玻璃底色:动态模式微偏红,黑夜模式蓝紫,白天模式白色
   const glassBg = isLight
@@ -1011,6 +1025,11 @@ function SillyClientLauncher() {
     setTimeout(() => { setShowAppMenu(false); setIsAppMenuClosing(false); }, 300);
   }, []);
 
+  const dismissOnboarding = useCallback(() => {
+    localStorage.setItem(ONBOARDING_KEY, ONBOARDING_VERSION);
+    setShowOnboarding(false);
+  }, []);
+
   const closeManagePanel = useCallback(() => {
     setIsManagePanelClosing(true);
     setTimeout(() => { setShowManagePanel(null); setIsManagePanelClosing(false); setManageTab("general"); }, 250);
@@ -1407,6 +1426,28 @@ function SillyClientLauncher() {
                 </div>
               </div>
 
+              {isWindows && (
+                <div>
+                  <div className={cn("text-[10px] font-semibold tracking-wide uppercase mb-3", isLight ? "text-[#1a1625]/25" : "text-white/25")}>打开方式</div>
+                  <ManageItem
+                    label="使用系统浏览器"
+                    desc="关闭时在 SillyClient 应用窗口中打开"
+                    isLight={isLight}
+                  >
+                    <ToggleSwitch
+                      on={contentOpenMode === "browser"}
+                      onChange={(useBrowser) => {
+                        const previous = contentOpenMode;
+                        const mode: ContentOpenMode = useBrowser ? "browser" : "webview";
+                        setContentOpenMode(mode);
+                        TarvenEnv.setContentOpenMode({ mode }).catch(() => setContentOpenMode(previous));
+                      }}
+                      isLight={isLight}
+                    />
+                  </ManageItem>
+                </div>
+              )}
+
               {/* 常用操作 */}
               <div>
                 <div className={cn("text-[10px] font-semibold tracking-wide uppercase mb-3", isLight ? "text-[#1a1625]/25" : "text-white/25")}>常用操作</div>
@@ -1432,6 +1473,13 @@ function SillyClientLauncher() {
                     "w-full px-4 py-2.5 rounded-xl text-xs font-medium text-left transition-all border",
                     isLight ? "bg-black/[0.03] border-black/[0.06] text-[#1a1625]/60 hover:bg-black/[0.06] hover:text-[#1a1625]/80" : "bg-white/[0.03] border-white/[0.06] text-white/60 hover:bg-white/[0.06] hover:text-white/80"
                   )}>清空浏览器数据</button>
+                  <button onClick={() => {
+                    closeAppMenu();
+                    setTimeout(() => setShowOnboarding(true), 320);
+                  }} className={cn(
+                    "w-full px-4 py-2.5 rounded-xl text-xs font-medium text-left transition-all border",
+                    isLight ? "bg-black/[0.03] border-black/[0.06] text-[#1a1625]/60 hover:bg-black/[0.06] hover:text-[#1a1625]/80" : "bg-white/[0.03] border-white/[0.06] text-white/60 hover:bg-white/[0.06] hover:text-white/80"
+                  )}>重新查看使用引导</button>
                 </div>
               </div>
 
@@ -2350,7 +2398,7 @@ function SillyClientLauncher() {
             overscrollBehavior: "contain",
           }}>
             {[
-              { value: "stable", label: "稳定版", sublabel: "预打包, 无需额外下载", zipballUrl: undefined },
+              { value: "stable", label: "稳定版", sublabel: "自动获取最新正式版", zipballUrl: undefined },
               ...releases.slice(0, 20).map(r => ({
                 value: r.tag,
                 label: r.tag,
@@ -2445,7 +2493,7 @@ function SillyClientLauncher() {
               {manageTab === "general" && (
                 <>
                   <ManageItem label="启动端口" desc="宿主 WebView 和本地服务都会使用这个端口" isLight={isLight}>
-                    <input type="number" value={draftPort} onChange={(e) => {
+                    <input type="text" inputMode="numeric" pattern="[0-9]*" value={draftPort} onChange={(e) => {
                       setDraftPort(parseInt(e.target.value) || 8000);
                     }} className={cn("w-20 h-7 px-2 rounded-lg text-xs text-center border focus:outline-none focus:ring-0 transition-colors",
                       isLight ? "bg-black/[0.04] border-black/[0.08] text-[#1a1625] focus:border-[#1a1625]/20" : "bg-white/[0.04] border-white/[0.08] text-white focus:border-white/20"
@@ -2464,7 +2512,7 @@ function SillyClientLauncher() {
                     <ToggleSwitch on={draftConfig.dnsIpv6} onChange={(v) => setDraftConfig(prev => ({ ...prev, dnsIpv6: v }))} isLight={isLight} />
                   </ManageItem>
                   <ManageItem label="心跳写入间隔" desc="单位秒，填 0 关闭心跳文件" isLight={isLight}>
-                    <input type="number" value={draftConfig.heartbeat} onChange={(e) => {
+                    <input type="text" inputMode="numeric" pattern="[0-9]*" value={draftConfig.heartbeat} onChange={(e) => {
                       const heartbeat = parseInt(e.target.value) || 0;
                       setDraftConfig(prev => ({ ...prev, heartbeat }));
                     }} className={cn("w-20 h-7 px-2 rounded-lg text-xs text-center border focus:outline-none focus:ring-0 transition-colors",
@@ -2545,6 +2593,14 @@ function SillyClientLauncher() {
         </>
         );
       })()}
+
+      {showOnboarding && (
+        <OnboardingGuide
+          isLight={isLight}
+          onComplete={dismissOnboarding}
+          onSkip={dismissOnboarding}
+        />
+      )}
 
     </div>
   );

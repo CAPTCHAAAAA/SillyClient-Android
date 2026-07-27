@@ -33,6 +33,8 @@ export interface GithubRelease {
   prerelease: boolean
 }
 
+export type ContentOpenMode = 'webview' | 'browser'
+
 /** 自检发现的本地实例。 */
 export interface ScannedInstance {
   instanceId: string
@@ -107,6 +109,10 @@ export interface TarvenEnvPlugin {
 
   /** 启用/禁用酒馆 WebView 下拉刷新。 */
   setPullToRefresh(options: { enabled: boolean }): Promise<void>
+
+  /** Windows: 获取和保存酒馆内容的全局打开方式。 */
+  getContentOpenMode(): Promise<{ mode: ContentOpenMode }>
+  setContentOpenMode(options: { mode: ContentOpenMode }): Promise<{ mode: ContentOpenMode }>
 
   /** 探测远程实例是否在线(原生 HEAD 请求,绕过 WebView CORS)。 */
   pingUrl(options: { url: string }): Promise<{ online: boolean; statusCode?: number; error?: string }>
