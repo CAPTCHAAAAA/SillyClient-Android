@@ -77,9 +77,16 @@
   --glass-border: oklch(0 0 0 / 0.06);
 
   /* 动效 */
-  --transition-fast: 180ms ease;
-  --transition-normal: 300ms ease;
-  --transition-spring: 400ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  --motion-press: 90ms;
+  --motion-fast: 160ms;
+  --motion-base: 240ms;
+  --motion-layout: 280ms;
+  --motion-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --motion-ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --transition-fast: var(--motion-fast) var(--motion-ease-out);
+  --transition-normal: var(--motion-base) var(--motion-ease-out);
+  --transition-spring: var(--motion-layout) var(--motion-ease-in-out);
 
 }
 
@@ -485,10 +492,25 @@ textarea:focus-visible {
   border-color: oklch(0.72 0.18 150) !important;
 }
 
-/* 按钮按压反馈 — 统一缩放 */
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 按钮按压反馈：短促压缩，松手后从当前值自然回到原位。 */
 button:active:not(:disabled) {
-  transform: scale(0.97);
-  transition: transform 0.1s ease;
+  filter: brightness(0.96) saturate(0.96);
+  transform: scale(0.985);
+  transition: transform var(--motion-press) var(--motion-ease-out), filter var(--motion-press) ease-out;
+}
+
+.motion-control {
+  transition-property: transform, filter, color, background-color, border-color, box-shadow, opacity;
+  transition-duration: var(--motion-fast);
+  transition-timing-function: var(--motion-ease-out);
+}
+
+.motion-control:active:not(:disabled) {
+  transform: translateY(0) scale(0.985);
 }
 
 /* 搜索栏 — iOS Search Bar 风格 */
@@ -563,7 +585,7 @@ header span[class*="truncate"] {
 @keyframes popover-in {
   0% {
     opacity: 0;
-    transform: var(--popover-origin, translateY(-50%)) scale(0.96);
+    transform: var(--popover-origin, translateY(-50%)) scale(0.985);
   }
   100% {
     opacity: 1;
@@ -582,7 +604,7 @@ header span[class*="truncate"] {
   }
   100% {
     opacity: 0;
-    transform: var(--popover-origin, translateY(-50%)) scale(0.96);
+    transform: var(--popover-origin, translateY(-50%)) scale(0.985);
   }
 }
 
@@ -595,7 +617,7 @@ header span[class*="truncate"] {
 @keyframes clone-panel-in {
   0% {
     opacity: 0;
-    transform: translate(-50%, -50%) scale(0.92);
+    transform: translate(-50%, -50%) scale(0.975);
   }
   100% {
     opacity: 1;
@@ -614,7 +636,7 @@ header span[class*="truncate"] {
   }
   100% {
     opacity: 0;
-    transform: translate(-50%, -50%) scale(0.94);
+    transform: translate(-50%, -50%) scale(0.98);
   }
 }
 
@@ -627,7 +649,7 @@ header span[class*="truncate"] {
 @keyframes dropdown-in {
   0% {
     opacity: 0;
-    transform: translateY(-8px) scaleY(0.96);
+    transform: translateY(-4px) scaleY(0.985);
   }
   60% {
     opacity: 1;
@@ -642,6 +664,147 @@ header span[class*="truncate"] {
   animation: dropdown-in 0.35s cubic-bezier(0.32, 0.72, 0, 1) forwards;
 }
 
+@keyframes dropdown-out {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scaleY(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-3px) scaleY(0.99);
+  }
+}
+
+.animate-dropdown-exit {
+  animation: dropdown-out 0.2s cubic-bezier(0.32, 0.72, 0, 1) forwards;
+  pointer-events: none;
+}
+
+@keyframes dropdown-up-in {
+  0% {
+    opacity: 0;
+    transform: translateY(4px) scaleY(0.985);
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scaleY(1);
+  }
+}
+
+@keyframes dropdown-up-out {
+  0% {
+    opacity: 1;
+    transform: translateY(0) scaleY(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(3px) scaleY(0.99);
+  }
+}
+
+.animate-dropdown-up {
+  animation: dropdown-up-in 0.35s cubic-bezier(0.32, 0.72, 0, 1) forwards;
+}
+
+.animate-dropdown-up-exit {
+  animation: dropdown-up-out 0.2s cubic-bezier(0.32, 0.72, 0, 1) forwards;
+  pointer-events: none;
+}
+
+/* 实例卡片仅通过材质变化表达状态，避免 transform 改变固定菜单的定位基准。 */
+.motion-instance-card {
+  isolation: isolate;
+  background-clip: padding-box;
+  -webkit-backdrop-filter: blur(8px) saturate(1.06);
+  backdrop-filter: blur(8px) saturate(1.06);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.055),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.06),
+    0 0 16px rgba(7, 5, 10, 0.09),
+    0 2px 5px rgba(7, 5, 10, 0.055);
+  transition:
+    border-color var(--motion-fast) ease,
+    box-shadow var(--motion-layout) var(--motion-ease-out),
+    filter var(--motion-fast) ease;
+}
+
+.motion-instance-card img {
+  transition: filter var(--motion-base) ease;
+}
+
+.motion-instance-card.is-expanded {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.065),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.07),
+    0 0 26px rgba(0, 0, 0, 0.14),
+    0 3px 10px rgba(0, 0, 0, 0.07);
+}
+
+.motion-instance-card:active {
+  filter: brightness(0.97);
+  transition-duration: var(--motion-press);
+}
+
+/* 高度未知的内容使用 grid 行连续展开，允许中途反向。 */
+.motion-accordion {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translateY(2px);
+  transition:
+    grid-template-rows 280ms var(--motion-ease-in-out),
+    opacity var(--motion-fast) ease-out,
+    transform 280ms var(--motion-ease-in-out);
+}
+
+.motion-accordion.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.motion-accordion-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+@keyframes section-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.motion-section-enter,
+.motion-tab-content {
+  animation: section-reveal 220ms var(--motion-ease-out) both;
+}
+
+.motion-menu-item {
+  transition: color var(--motion-fast) ease, background-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease, opacity var(--motion-fast) ease;
+}
+
+@keyframes menu-row-in {
+  from { opacity: 0; transform: translateY(1px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.motion-menu-list > button {
+  animation: menu-row-in 170ms var(--motion-ease-out) both;
+}
+
+.motion-menu-list > button:nth-of-type(2) { animation-delay: 16ms; }
+.motion-menu-list > button:nth-of-type(3) { animation-delay: 32ms; }
+.motion-menu-list > button:nth-of-type(4) { animation-delay: 48ms; }
+.motion-menu-list > button:nth-of-type(n + 5) { animation-delay: 64ms; }
+
 /* iOS 原生拟真毛玻璃按钮 — 扁平色差 + 边缘高光凹凸质感 */
 .ios-glass-btn {
   position: relative;
@@ -653,7 +816,7 @@ header span[class*="truncate"] {
     inset 0 1px 0 oklch(1 0 0 / 0.25),
     inset 0 -1px 0 oklch(0 0 0 / 0.08),
     0 0.5px 0 oklch(1 0 0 / 0.08);
-  transition: all 0.2s ease;
+  transition: transform var(--motion-fast) var(--motion-ease-out), box-shadow var(--motion-fast) ease, background-color var(--motion-fast) ease;
 }
 
 .ios-glass-btn:hover {
@@ -664,10 +827,49 @@ header span[class*="truncate"] {
 }
 
 .ios-glass-btn:active {
-  transform: scale(0.96);
+  transform: scale(0.985);
   box-shadow:
     inset 0 1px 0 oklch(0 0 0 / 0.08),
     inset 0 -1px 0 oklch(1 0 0 / 0.20);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bg-panel-enter,
+  .bg-panel-exit,
+  .animate-terminal-enter,
+  .animate-terminal-exit,
+  .animate-popover,
+  .animate-popover-exit,
+  .animate-clone-panel,
+  .animate-clone-panel-exit,
+  .animate-dropdown,
+  .animate-dropdown-exit,
+  .animate-dropdown-up,
+  .animate-dropdown-up-exit,
+  .motion-section-enter,
+  .motion-tab-content,
+  .motion-menu-list > button {
+    animation: none !important;
+  }
+
+  .motion-control,
+  .motion-instance-card,
+  .motion-instance-card img,
+  .motion-accordion,
+  .overlay-backdrop {
+    transition-duration: 1ms !important;
+  }
+
+  .motion-instance-card,
+  .motion-instance-card.is-expanded,
+  .motion-instance-card:active,
+  .motion-control,
+  .motion-control:hover,
+  .motion-control:active:not(:disabled),
+  button:active:not(:disabled) {
+    filter: none;
+    transform: none;
+  }
 }
 
 /* iOS 横向滚轮 — 字号调节 slider */
@@ -780,4 +982,521 @@ select option {
   box-shadow:
     0 0.5px 2px oklch(0 0 0 / 0.1),
     inset 0 0.5px 0 oklch(1 0 0 / 0.4);
+}
+
+/* Floating menus share the lighter, more transparent material used by the time menu. */
+.ios-floating-menu {
+  background: var(--glass) !important;
+  border: 0.5px solid rgba(255, 255, 255, 0.035) !important;
+  backdrop-filter: blur(32px) saturate(1.55);
+  -webkit-backdrop-filter: blur(32px) saturate(1.55);
+  box-shadow:
+    0 12px 34px rgba(0, 0, 0, 0.2),
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.075),
+    inset 0 -0.5px 0 rgba(0, 0, 0, 0.1);
+}
+
+.dark .ios-floating-menu {
+  box-shadow:
+    0 12px 34px rgba(0, 0, 0, 0.2),
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.075),
+    inset 0 -0.5px 0 rgba(0, 0, 0, 0.1);
+}
+
+.ios-floating-menu.is-light {
+  background: rgba(255, 255, 255, 0.5) !important;
+  border-color: rgba(28, 18, 24, 0.035) !important;
+  box-shadow:
+    0 12px 30px rgba(30, 18, 25, 0.1),
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.68),
+    inset 0 -0.5px 0 rgba(28, 18, 24, 0.055);
+}
+
+.ios-floating-menu button.border {
+  border-color: transparent !important;
+  box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.025);
+}
+
+.ios-floating-menu.is-light button.border {
+  box-shadow: 0 0 0 0.5px rgba(28, 18, 24, 0.025);
+}
+
+.ios-floating-menu .ios-choice-control[aria-pressed="false"] {
+  box-shadow:
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.065),
+    inset 0 -0.5px 0 rgba(0, 0, 0, 0.09),
+    0 1px 3px rgba(0, 0, 0, 0.045);
+}
+
+.ios-floating-menu.is-light .ios-choice-control[aria-pressed="false"] {
+  box-shadow:
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.58),
+    inset 0 -0.5px 0 rgba(28, 18, 24, 0.045),
+    0 1px 3px rgba(28, 18, 24, 0.035);
+}
+
+.ios-floating-menu .ios-choice-control[aria-pressed="true"] {
+  box-shadow:
+    inset 0 1px 3px rgba(0, 0, 0, 0.11),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.035),
+    0 0.5px 0 rgba(255, 255, 255, 0.018);
+}
+
+.ios-floating-menu.is-light .ios-choice-control[aria-pressed="true"] {
+  box-shadow:
+    inset 0 1px 3px rgba(28, 18, 24, 0.07),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.62),
+    0 0.5px 0 rgba(255, 255, 255, 0.3);
+}
+
+.ios-floating-menu .motion-menu-item {
+  border-radius: 0.75rem;
+}
+
+/* Instance actions use text-only feedback; the glass surface itself stays still. */
+.instance-card-menu .motion-menu-item,
+.instance-card-menu .motion-menu-item:hover {
+  background: transparent !important;
+  box-shadow: none !important;
+  transition-property: color, opacity;
+}
+
+.instance-card-menu .motion-menu-item:hover,
+.instance-card-menu .motion-menu-item:focus,
+.instance-card-menu .motion-menu-item:focus-visible {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.instance-card-menu .motion-menu-item:active {
+  background: transparent !important;
+  box-shadow: none !important;
+  filter: none !important;
+  transform: none !important;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .ios-floating-menu .motion-menu-item:hover {
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .ios-floating-menu.is-light .motion-menu-item:hover {
+    background: rgba(28, 18, 24, 0.045);
+  }
+}
+
+/* Task surfaces use restrained edge lighting with recessed fields and raised actions. */
+.ios-task-surface {
+  isolation: isolate;
+  border: 0;
+  box-shadow:
+    0 22px 62px rgba(0, 0, 0, 0.28),
+    0 7px 18px rgba(0, 0, 0, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.065),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.14);
+}
+
+.ios-task-surface::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  padding: 0.5px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    150deg,
+    rgba(255, 255, 255, 0.13) 0%,
+    rgba(255, 255, 255, 0.04) 26%,
+    rgba(255, 255, 255, 0.01) 58%,
+    rgba(0, 0, 0, 0.12) 100%
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0.3;
+}
+
+.ios-task-surface.is-light {
+  box-shadow:
+    0 22px 58px rgba(30, 18, 25, 0.12),
+    0 6px 16px rgba(30, 18, 25, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -1px 0 rgba(28, 18, 24, 0.06);
+}
+
+.ios-task-surface.is-light::before {
+  background: linear-gradient(
+    150deg,
+    rgba(255, 255, 255, 0.62) 0%,
+    rgba(255, 255, 255, 0.2) 28%,
+    rgba(20, 12, 18, 0.02) 68%,
+    rgba(20, 12, 18, 0.07) 100%
+  );
+  opacity: 0.28;
+}
+
+/* Sections separate through spacing and tonal shifts, never visible rules. */
+.ios-task-surface .border-b,
+.ios-task-surface .border-t {
+  border-color: transparent !important;
+}
+
+.ios-task-surface .border-b {
+  background-image: none;
+}
+
+.ios-task-surface .border-b::after,
+.ios-task-surface .border-t::before {
+  content: none;
+}
+
+/* Relief is reserved for fields and explicit choice controls. */
+.ios-task-surface input.border,
+.ios-task-surface button.border {
+  border-color: transparent !important;
+  transition:
+    transform var(--motion-fast) var(--motion-ease-out),
+    background-color var(--motion-fast) ease,
+    box-shadow var(--motion-fast) ease,
+    color var(--motion-fast) ease;
+}
+
+.ios-task-surface input.border {
+  box-shadow:
+    inset 0 1px 3px rgba(0, 0, 0, 0.1),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.035),
+    0 0.5px 0 rgba(255, 255, 255, 0.018);
+}
+
+.ios-task-surface button.border:not(.ios-choice-control):not(.ios-field-control) {
+  box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.022);
+}
+
+.ios-task-surface.is-light input.border {
+  box-shadow:
+    inset 0 1px 3px rgba(28, 18, 24, 0.06),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.58),
+    0 0.5px 0 rgba(255, 255, 255, 0.32);
+}
+
+.ios-task-surface.is-light button.border:not(.ios-choice-control):not(.ios-field-control) {
+  box-shadow: 0 0 0 0.5px rgba(28, 18, 24, 0.022);
+}
+
+.ios-task-surface .ios-field-control {
+  box-shadow:
+    inset 0 1px 3px rgba(0, 0, 0, 0.1),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.035),
+    0 0.5px 0 rgba(255, 255, 255, 0.018);
+}
+
+.ios-task-surface.is-light .ios-field-control {
+  box-shadow:
+    inset 0 1px 3px rgba(28, 18, 24, 0.06),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.58),
+    0 0.5px 0 rgba(255, 255, 255, 0.32);
+}
+
+.ios-task-surface .ios-field-control:hover {
+  transform: none;
+}
+
+.ios-task-surface .ios-choice-control[aria-pressed="false"] {
+  box-shadow:
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.07),
+    inset 0 -0.5px 0 rgba(0, 0, 0, 0.095),
+    0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.ios-task-surface.is-light .ios-choice-control[aria-pressed="false"] {
+  box-shadow:
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.62),
+    inset 0 -0.5px 0 rgba(28, 18, 24, 0.045),
+    0 1px 3px rgba(28, 18, 24, 0.035);
+}
+
+.ios-task-surface .ios-choice-control[aria-pressed="true"] {
+  box-shadow:
+    inset 0 1px 3px rgba(0, 0, 0, 0.11),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.035),
+    0 0.5px 0 rgba(255, 255, 255, 0.018);
+}
+
+.ios-task-surface.is-light .ios-choice-control[aria-pressed="true"] {
+  box-shadow:
+    inset 0 1px 3px rgba(28, 18, 24, 0.065),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.6),
+    0 0.5px 0 rgba(255, 255, 255, 0.3);
+}
+
+.ios-floating-menu .ios-choice-control,
+.ios-task-surface .ios-choice-control {
+  color: rgba(255, 255, 255, 0.52) !important;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.ios-floating-menu .ios-choice-control[aria-pressed="false"],
+.ios-task-surface .ios-choice-control[aria-pressed="false"] {
+  background-color: rgba(255, 255, 255, 0.04) !important;
+}
+
+.ios-floating-menu .ios-choice-control[aria-pressed="true"],
+.ios-task-surface .ios-choice-control[aria-pressed="true"] {
+  background-color: rgba(0, 0, 0, 0.09) !important;
+  color: rgba(255, 255, 255, 0.88) !important;
+  font-weight: 600;
+}
+
+.ios-floating-menu.is-light .ios-choice-control,
+.ios-task-surface.is-light .ios-choice-control {
+  color: rgba(26, 22, 37, 0.5) !important;
+}
+
+.ios-floating-menu.is-light .ios-choice-control[aria-pressed="false"],
+.ios-task-surface.is-light .ios-choice-control[aria-pressed="false"] {
+  background-color: rgba(255, 255, 255, 0.34) !important;
+}
+
+.ios-floating-menu.is-light .ios-choice-control[aria-pressed="true"],
+.ios-task-surface.is-light .ios-choice-control[aria-pressed="true"] {
+  background-color: rgba(28, 18, 24, 0.055) !important;
+  color: rgba(26, 22, 37, 0.84) !important;
+}
+
+.ios-task-surface input.border,
+.ios-task-surface .ios-field-control {
+  color: rgba(255, 255, 255, 0.82) !important;
+}
+
+.ios-task-surface input.border::placeholder {
+  color: rgba(255, 255, 255, 0.26) !important;
+}
+
+.ios-task-surface.is-light input.border,
+.ios-task-surface.is-light .ios-field-control {
+  color: rgba(26, 22, 37, 0.8) !important;
+}
+
+.ios-task-surface.is-light input.border::placeholder {
+  color: rgba(26, 22, 37, 0.26) !important;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .ios-floating-menu .ios-choice-control[aria-pressed="false"]:hover,
+  .ios-task-surface .ios-choice-control[aria-pressed="false"]:hover {
+    background-color: rgba(255, 255, 255, 0.055) !important;
+    box-shadow:
+      inset 0 0.5px 0 rgba(255, 255, 255, 0.085),
+      inset 0 -0.5px 0 rgba(0, 0, 0, 0.1),
+      0 2px 5px rgba(0, 0, 0, 0.055);
+  }
+
+  .ios-floating-menu.is-light .ios-choice-control[aria-pressed="false"]:hover,
+  .ios-task-surface.is-light .ios-choice-control[aria-pressed="false"]:hover {
+    background-color: rgba(255, 255, 255, 0.46) !important;
+  }
+}
+
+.ios-task-surface input.border:focus,
+.ios-task-surface input.border:focus-visible {
+  border-color: transparent !important;
+  box-shadow:
+    inset 0 1px 3px rgba(0, 0, 0, 0.1),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.04),
+    0 0 0 0.5px rgba(232, 54, 93, 0.16),
+    0 0 0 2px rgba(232, 54, 93, 0.035) !important;
+}
+
+.ios-task-surface.is-light input.border:focus,
+.ios-task-surface.is-light input.border:focus-visible {
+  box-shadow:
+    inset 0 1px 3px rgba(28, 18, 24, 0.06),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.62),
+    0 0 0 0.5px rgba(139, 58, 82, 0.14),
+    0 0 0 2px rgba(139, 58, 82, 0.03) !important;
+}
+
+/* APP settings reuse the same surface and control geometry as New Instance. */
+
+.app-settings-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.app-settings-tabs {
+  margin-bottom: 14px;
+}
+
+.app-settings-tab {
+  outline: none;
+}
+
+.app-settings-tab:active {
+  transform: scale(0.985);
+}
+
+.app-settings-body {
+  min-height: 0;
+}
+
+.app-settings-tab-panel {
+  min-height: 100%;
+}
+
+.app-settings-list {
+  display: grid;
+  gap: 5px;
+}
+
+.app-settings-row {
+  min-width: 0;
+  min-height: 65px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 9px 3px;
+}
+
+.app-settings-copy {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.app-settings-label {
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.76);
+  font-size: 12.5px;
+  font-weight: 620;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-settings-desc {
+  overflow: hidden;
+  margin-top: 5px;
+  color: rgba(255, 255, 255, 0.31);
+  font-size: 10px;
+  font-weight: 420;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ios-task-surface.is-light .app-settings-label {
+  color: rgba(26, 22, 37, 0.76);
+}
+
+.ios-task-surface.is-light .app-settings-desc {
+  color: rgba(26, 22, 37, 0.36);
+}
+
+.app-settings-control,
+.app-settings-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.app-settings-actions {
+  gap: 7px;
+}
+
+.app-settings-action {
+  min-width: 55px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.ios-task-surface.is-light .app-settings-action {
+  color: rgba(26, 22, 37, 0.5);
+}
+
+.app-settings-action.is-warning {
+  background: rgba(255, 255, 255, 0.045);
+  color: rgba(235, 182, 108, 0.62);
+}
+
+.app-settings-action.is-danger {
+  background: rgba(255, 255, 255, 0.045);
+  color: rgba(238, 127, 151, 0.64);
+}
+
+.app-settings-row.is-pending {
+  cursor: default;
+  justify-content: flex-start;
+}
+
+.app-settings-pending {
+  color: rgba(255, 255, 255, 0.25);
+  font-size: 10.5px;
+  font-weight: 560;
+}
+
+.ios-task-surface.is-light .app-settings-pending {
+  color: rgba(26, 22, 37, 0.31);
+}
+
+.app-settings-link-row {
+  width: 100%;
+  cursor: pointer;
+  text-align: left;
+}
+
+.app-settings-link-row .app-settings-copy,
+.app-settings-link-row .app-settings-label,
+.app-settings-link-row .app-settings-desc {
+  display: block;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .app-settings-link-row:hover .app-settings-label {
+    color: rgba(255, 255, 255, 0.9);
+  }
+
+  .ios-task-surface.is-light .app-settings-link-row:hover .app-settings-label {
+    color: rgba(26, 22, 37, 0.9);
+  }
+
+  .app-settings-action:hover {
+    background: rgba(255, 255, 255, 0.04);
+    color: rgba(255, 255, 255, 0.68);
+  }
+
+  .ios-task-surface.is-light .app-settings-action:hover {
+    background: rgba(0, 0, 0, 0.04);
+    color: rgba(26, 22, 37, 0.68);
+  }
+
+  .app-settings-action.is-warning:hover {
+    background: rgba(226, 170, 98, 0.11);
+    color: rgba(244, 194, 124, 0.94);
+  }
+
+  .app-settings-action.is-danger:hover {
+    background: rgba(232, 113, 139, 0.11);
+    color: rgba(246, 145, 166, 0.95);
+  }
+}
+
+.app-settings-action:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+@media (max-width: 420px) {
+  .app-settings-row {
+    min-height: 60px;
+    gap: 14px;
+  }
+
+  .app-settings-action {
+    min-width: 48px;
+    padding-inline: 13px;
+  }
 }

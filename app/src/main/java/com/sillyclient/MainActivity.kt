@@ -18,6 +18,7 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.webkit.CookieManager
+import android.webkit.HttpAuthHandler
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -32,6 +33,7 @@ import androidx.core.graphics.Insets
 import com.getcapacitor.JSObject
 import com.sillyclient.runtime.RuntimePaths
 import com.sillyclient.runtime.RuntimeFileUtils
+import com.sillyclient.ui.TavernGestureHint
 import com.sillyclient.ui.TopScrimBar
 import java.io.BufferedInputStream
 import java.io.File
@@ -52,6 +54,7 @@ class MainActivity : BridgeActivity() {
     // ---- Views ----
     private lateinit var root: FrameLayout
     private lateinit var topScrimBar: TopScrimBar     // 酒馆顶框 scrim 条（渐变+光泽+色波）
+    private lateinit var tavernGestureHint: TavernGestureHint
     private lateinit var webViewScreen: FrameLayout
     private lateinit var webView: WebView
 
@@ -76,6 +79,9 @@ class MainActivity : BridgeActivity() {
     // 启动器支持多实例:目标 URL 与端口由前端实例数据决定,不再硬编码 8000
     private var tavernUrl = "http://127.0.0.1:8000/"
     private var tavernPort = 8000
+    private var tavernAuthHost: String? = null
+    private var tavernAuthUsername: String? = null
+    private var tavernAuthPassword: String? = null
     /** 当前 Node 服务进程(用于终端 stdin 输入)。 */
     private var serverProcess: Process? = null
     /** 酒馆 WebView 下拉刷新开关。 */
@@ -220,6 +226,28 @@ class MainActivity : BridgeActivity() {
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
 
             webViewClient = object : WebViewClient() {
+                override fun onReceivedHttpAuthRequest(
+                    view: WebView?,
+                    handler: HttpAuthHandler?,
+                    host: String?,
+                    realm: String?
+                ) {
+                    val username = tavernAuthUsername
+                    val password = tavernAuthPassword
+                    val expectedHost = tavernAuthHost
+                    if (
+                        handler != null &&
+                        username != null &&
+                        password != null &&
+                        expectedHost != null &&
+                        expectedHost.equals(host, ignoreCase = true)
+                    ) {
+                        handler.proceed(username, password)
+                        return
+                    }
+                    super.onReceivedHttpAuthRequest(view, handler, host, realm)
+                }
+
                 override fun onPageFinished(v: WebView?, url: String?) {
                     super.onPageFinished(v, url)
                     android.util.Log.i(TAG, "Page loaded: $url")
@@ -246,6 +274,9 @@ class MainActivity : BridgeActivity() {
 
         webViewScreen.addView(webView, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(webViewScreen, FrameLayout.LayoutParams(MATCH, MATCH))
+        tavernGestureHint = TavernGestureHint(this).also {
+            it.attach(root, statusBarFixedPx)
+        }
 
         // IME 适配：输入法弹出时，给 webViewScreen 加底部 padding，让内容不被遮挡
         // setDecorFitsSystemWindows(false) + CONSUMED 会吞掉所有 insets，
@@ -308,6 +339,7 @@ class MainActivity : BridgeActivity() {
         serverReady = false
         tavernPort = port
         tavernUrl = "http://127.0.0.1:$port/"
+        clearTavernBasicAuth()
         Thread {
             val paths = RuntimePaths.from(this)
             paths.ensureDirs()
@@ -428,13 +460,26 @@ class MainActivity : BridgeActivity() {
      * ║  combo is the only stable approach found for HyperOS.           ║
      * ╚══════════════════════════════════════════════════════════════════╝
      */
-    fun enterTavern(targetUrl: String? = null) {
+    fun enterTavern(
+        targetUrl: String? = null,
+        basicAuthUsername: String? = null,
+        basicAuthPassword: String? = null,
+        instanceId: String? = null,
+        showGestureHint: Boolean = false
+    ): Boolean {
         // 远程实例:直接进入(无需 serverReady);本地实例:需 serverReady
         if (targetUrl != null) {
             tavernUrl = targetUrl
+            if (!basicAuthUsername.isNullOrBlank() && basicAuthPassword != null) {
+                tavernAuthHost = runCatching { URL(targetUrl).host }.getOrNull()
+                tavernAuthUsername = basicAuthUsername
+                tavernAuthPassword = basicAuthPassword
+            } else {
+                clearTavernBasicAuth()
+            }
             if (!isLocalUrl(targetUrl)) serverReady = true
         }
-        if (!serverReady || isWebViewVisible) return
+        if (!serverReady || isWebViewVisible) return false
         if (targetUrl != null || webView.url == null || webView.url.isNullOrBlank()) {
             webView.loadUrl(tavernUrl)
         }
@@ -444,10 +489,12 @@ class MainActivity : BridgeActivity() {
         webViewScreen.layoutParams = lp
         enterImmersive()
         switchToWebView(true)
+        if (showGestureHint) tavernGestureHint.show(instanceId)
         // 顶条带自动取色由 installChameleonProbes 驱动（控制台转向 Capacitor 接入）
         // 页面若已加载，onPageFinished 不会重触发，故在此 kick 轮询。
         handler.removeCallbacks(topColorPoll)
         handler.postDelayed(topColorPoll, 350)
+        return true
     }
 
     /** 判断是否本地回环地址(127.0.0.1 / localhost)。 */
@@ -460,6 +507,7 @@ class MainActivity : BridgeActivity() {
      */
     fun exitTavern() {
         if (!isWebViewVisible) return
+        tavernGestureHint.dismiss()
         handler.removeCallbacks(topColorPoll)
         topScrimBar.reset()
         clearSystemGestureExclusions()
@@ -494,6 +542,7 @@ class MainActivity : BridgeActivity() {
      * 由前端"停止"按钮调用。
      */
     fun closeTavern() {
+        tavernGestureHint.dismiss()
         if (isWebViewVisible) {
             handler.removeCallbacks(topColorPoll)
             topScrimBar.reset()
@@ -515,9 +564,16 @@ class MainActivity : BridgeActivity() {
         serverProcess = null
         serverReady = false
         tavernUrl = ""
+        clearTavernBasicAuth()
         // tavernRunning=false：前端置 stopped
         pushMode("launcher", tavernRunning = false)
         pushReady(false)
+    }
+
+    private fun clearTavernBasicAuth() {
+        tavernAuthHost = null
+        tavernAuthUsername = null
+        tavernAuthPassword = null
     }
 
     private fun clearSystemGestureExclusions() {
@@ -1341,6 +1397,7 @@ class MainActivity : BridgeActivity() {
 
     override fun onDestroy() {
         handler.removeCallbacks(topColorPoll)
+        if (::tavernGestureHint.isInitialized) tavernGestureHint.dismiss()
         serverProcess?.destroy()
         serverProcess = null
         webView.destroy()

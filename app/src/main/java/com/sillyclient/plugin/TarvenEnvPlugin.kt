@@ -2,6 +2,7 @@ package com.sillyclient.plugin
 
 import android.content.Intent
 import android.net.Uri
+import android.util.Base64
 import androidx.activity.result.ActivityResult
 import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
@@ -11,6 +12,7 @@ import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.ActivityCallback
 import com.sillyclient.MainActivity
+import com.sillyclient.auth.RemoteBasicAuthStore
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -84,8 +86,31 @@ class TarvenEnvPlugin : Plugin() {
         val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
         val url = call.data.optString("url", "")
         val target = if (url.isEmpty()) null else url
-        act.runOnUiThread { act.enterTavern(target) }
-        call.resolve()
+        val instanceId = call.data.optString("instanceId", "").ifBlank { null }
+        val showGestureHint = call.data.optBoolean("showGestureHint", false)
+        try {
+            val credentials = instanceId?.let { RemoteBasicAuthStore(context).load(it) }
+            act.runOnUiThread {
+                try {
+                    val entered = act.enterTavern(
+                        targetUrl = target,
+                        basicAuthUsername = credentials?.username,
+                        basicAuthPassword = credentials?.password,
+                        instanceId = instanceId,
+                        showGestureHint = showGestureHint
+                    )
+                    if (entered) {
+                        call.resolve()
+                    } else {
+                        call.reject("酒馆暂时无法打开")
+                    }
+                } catch (error: Exception) {
+                    call.reject(error.message ?: "无法打开酒馆页面", error)
+                }
+            }
+        } catch (error: Exception) {
+            call.reject(error.message ?: "无法读取远程连接凭据", error)
+        }
     }
 
     @PluginMethod
@@ -349,24 +374,106 @@ class TarvenEnvPlugin : Plugin() {
         call.resolve()
     }
 
+    @PluginMethod
+    fun setRemoteBasicAuth(call: PluginCall) {
+        val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
+        val username = call.getString("username") ?: ""
+        val password = if (call.data.has("password")) call.data.optString("password", "") else null
+        try {
+            val credentials = RemoteBasicAuthStore(context).save(instanceId, username, password)
+            val ret = JSObject()
+            ret.put("configured", true)
+            ret.put("username", credentials.username)
+            call.resolve(ret)
+        } catch (error: Exception) {
+            call.reject(error.message ?: "无法保存远程连接凭据", error)
+        }
+    }
+
+    @PluginMethod
+    fun getRemoteBasicAuthStatus(call: PluginCall) {
+        val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
+        try {
+            val credentials = RemoteBasicAuthStore(context).load(instanceId)
+            val ret = JSObject()
+            ret.put("configured", credentials != null)
+            credentials?.let { ret.put("username", it.username) }
+            call.resolve(ret)
+        } catch (error: Exception) {
+            call.reject(error.message ?: "无法读取远程连接凭据", error)
+        }
+    }
+
+    @PluginMethod
+    fun clearRemoteBasicAuth(call: PluginCall) {
+        val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
+        RemoteBasicAuthStore(context).remove(instanceId)
+        val ret = JSObject()
+        ret.put("success", true)
+        call.resolve(ret)
+    }
+
     /** 探测远程实例是否在线(HEAD 请求,5s 超时)。绕过 WebView 的 CORS/mixed-content 限制。 */
     @PluginMethod
     fun pingUrl(call: PluginCall) {
         val urlStr = call.getString("url") ?: run { call.reject("url required"); return }
+        val instanceId = call.data.optString("instanceId", "").ifBlank { null }
         Thread {
             try {
-                val url = URL(urlStr)
-                val conn = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "HEAD"
-                    connectTimeout = 5000
-                    readTimeout = 5000
-                    instanceFollowRedirects = true
+                val hasTransientCredentials = call.data.has("username") && call.data.has("password")
+                val credentials = if (hasTransientCredentials) {
+                    RemoteBasicAuthStore.Credentials(
+                        call.data.optString("username", ""),
+                        call.data.optString("password", "")
+                    )
+                } else {
+                    instanceId?.let { RemoteBasicAuthStore(context).load(it) }
                 }
-                val code = conn.responseCode
-                conn.disconnect()
+                val initialUrl = URL(urlStr)
+                require(initialUrl.protocol == "http" || initialUrl.protocol == "https") {
+                    "连接地址必须使用 HTTP 或 HTTPS"
+                }
+                val authOrigin = urlOrigin(initialUrl)
+                var currentUrl = initialUrl
+                var code = 0
+
+                for (redirectCount in 0..5) {
+                    val conn = (currentUrl.openConnection() as HttpURLConnection).apply {
+                        requestMethod = "HEAD"
+                        connectTimeout = 5000
+                        readTimeout = 5000
+                        instanceFollowRedirects = false
+                        if (credentials != null && urlOrigin(currentUrl) == authOrigin) {
+                            val token = Base64.encodeToString(
+                                "${credentials.username}:${credentials.password}".toByteArray(Charsets.UTF_8),
+                                Base64.NO_WRAP
+                            )
+                            setRequestProperty("Authorization", "Basic $token")
+                        }
+                    }
+                    code = conn.responseCode
+                    val location = conn.getHeaderField("Location")
+                    conn.disconnect()
+                    if (code in 300..399 && !location.isNullOrBlank() && redirectCount < 5) {
+                        currentUrl = URL(currentUrl, location)
+                    } else {
+                        break
+                    }
+                }
+
                 val ret = JSObject()
-                ret.put("online", code in 200..499) // 2xx/3xx/4xx 都算可达(服务在跑)
                 ret.put("statusCode", code)
+                if (code == HttpURLConnection.HTTP_UNAUTHORIZED) {
+                    ret.put("online", false)
+                    ret.put("authRequired", true)
+                    ret.put(
+                        "error",
+                        if (credentials == null) "该地址需要 Basic Auth 账号和密码"
+                        else "Basic Auth 验证失败，请检查账号和密码"
+                    )
+                } else {
+                    ret.put("online", code in 200..499)
+                }
                 call.resolve(ret)
             } catch (e: Exception) {
                 val ret = JSObject()
@@ -375,6 +482,11 @@ class TarvenEnvPlugin : Plugin() {
                 call.resolve(ret)
             }
         }.start()
+    }
+
+    private fun urlOrigin(url: URL): String {
+        val port = if (url.port >= 0) url.port else url.defaultPort
+        return "${url.protocol.lowercase()}://${url.host.lowercase()}:$port"
     }
 
     /** 卸载实例:删除安装目录 + 封面图。 */

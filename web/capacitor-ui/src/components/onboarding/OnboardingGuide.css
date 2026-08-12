@@ -107,6 +107,7 @@
 }
 
 .sc-onboarding-step {
+  opacity: 1;
   will-change: opacity, transform, filter;
 }
 
@@ -278,30 +279,36 @@
 @keyframes sc-guide-enter {
   from {
     opacity: 0;
-    transform: translateY(5px) scale(0.99);
+    transform: translateY(3px) scale(0.995);
   }
 }
 
 @keyframes sc-guide-in-forward {
   from {
-    opacity: 0;
-    transform: translateX(9px);
+    transform: translateX(5px);
     filter: blur(2px);
+  }
+  to {
+    transform: translateX(0);
+    filter: blur(0);
   }
 }
 
 @keyframes sc-guide-in-backward {
   from {
-    opacity: 0;
-    transform: translateX(-9px);
+    transform: translateX(-5px);
     filter: blur(2px);
+  }
+  to {
+    transform: translateX(0);
+    filter: blur(0);
   }
 }
 
 @keyframes sc-guide-out-forward {
   to {
     opacity: 0;
-    transform: translateX(-7px);
+    transform: translateX(-4px);
     filter: blur(1.5px);
   }
 }
@@ -309,7 +316,7 @@
 @keyframes sc-guide-out-backward {
   to {
     opacity: 0;
-    transform: translateX(7px);
+    transform: translateX(4px);
     filter: blur(1.5px);
   }
 }
@@ -317,7 +324,7 @@
 @keyframes sc-guide-exit {
   to {
     opacity: 0;
-    transform: translateY(5px) scale(0.99);
+    transform: translateY(3px) scale(0.995);
     filter: blur(3px);
   }
 }

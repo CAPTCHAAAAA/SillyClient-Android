@@ -16,6 +16,8 @@ interface GuideView {
   imageClass: string;
 }
 
+const STEP_EXIT_MS = 150;
+
 interface GuideStep {
   title: string;
   views: GuideView[];
@@ -34,7 +36,7 @@ const guideSteps: GuideStep[] = [
       },
       {
         label: "创建面板",
-        description: "填写实例名称并选择运行方式。本地实例会在下载和校验完成后加入首页。",
+        description: "填写名称并选择本地或远程连接。本地版本可直接获取，也可从版本一栏右侧导入 ZIP。",
         image: "./onboarding/create-open.webp",
         imageAlt: "展开后的新建实例面板",
         imageClass: "is-panel",
@@ -84,7 +86,7 @@ const guideSteps: GuideStep[] = [
       },
       {
         label: "设置内容",
-        description: "打开方式、刷新选项、数据迁移与清理工具都集中在这里，使用引导也可随时重播。",
+        description: "设置按通用、数据与维护分类。重新演示引导位于通用页，需要时可随时再次打开。",
         image: "./onboarding/settings-open.webp",
         imageAlt: "展开后的 APP 设置面板",
         imageClass: "is-panel",
@@ -124,11 +126,12 @@ export default function OnboardingGuide({
     const nextOrder = nextStep * 10 + nextView;
     setTransitionDirection(nextOrder >= currentOrder ? "forward" : "backward");
     setIsStepLeaving(true);
+    if (stepTimerRef.current !== null) window.clearTimeout(stepTimerRef.current);
     stepTimerRef.current = window.setTimeout(() => {
       setCurrentStep(nextStep);
       setCurrentView(nextView);
       setIsStepLeaving(false);
-    }, 150);
+    }, STEP_EXIT_MS);
   }, [currentStep, currentView, isStepLeaving]);
 
   useEffect(() => {
@@ -184,20 +187,24 @@ export default function OnboardingGuide({
         Number.parseFloat(panelStyle.paddingBottom) +
         Number.parseFloat(panelStyle.borderTopWidth) +
         Number.parseFloat(panelStyle.borderBottomWidth);
-      const contentHeight = content.getBoundingClientRect().height;
+      const contentHeight = Math.max(content.getBoundingClientRect().height, content.scrollHeight);
       const availableHeight = Math.max(0, viewportHeight - rootInsets);
 
       setPanelHeight(Math.ceil(Math.min(contentHeight + panelChrome, availableHeight)));
     };
 
-    measure();
+    const frame = window.requestAnimationFrame(measure);
     const resizeObserver = new ResizeObserver(measure);
     resizeObserver.observe(content);
+    const images = Array.from(content.querySelectorAll("img"));
+    images.forEach((image) => image.addEventListener("load", measure));
     window.addEventListener("resize", measure);
     window.visualViewport?.addEventListener("resize", measure);
 
     return () => {
       resizeObserver.disconnect();
+      window.cancelAnimationFrame(frame);
+      images.forEach((image) => image.removeEventListener("load", measure));
       window.removeEventListener("resize", measure);
       window.visualViewport?.removeEventListener("resize", measure);
     };

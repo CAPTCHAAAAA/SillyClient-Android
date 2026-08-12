@@ -71,7 +71,11 @@ export interface TarvenEnvPlugin {
     config: InstanceConfig
   }): Promise<{ ready: boolean }>
 
-  enterImmersive(options: { url: string }): Promise<void>
+  enterImmersive(options: {
+    url: string
+    instanceId?: string
+    showGestureHint?: boolean
+  }): Promise<void>
   exitImmersive(): Promise<void>
   returnToTavern(): Promise<void>
   closeTavern(): Promise<void>
@@ -114,8 +118,28 @@ export interface TarvenEnvPlugin {
   getContentOpenMode(): Promise<{ mode: ContentOpenMode }>
   setContentOpenMode(options: { mode: ContentOpenMode }): Promise<{ mode: ContentOpenMode }>
 
+  /** 将远程实例的 Basic Auth 凭据写入平台安全存储。password 省略时保留现有密码。 */
+  setRemoteBasicAuth(options: {
+    instanceId: string
+    username: string
+    password?: string
+  }): Promise<{ configured: boolean; username: string }>
+
+  /** 查询远程实例是否已经配置 Basic Auth，不返回密码。 */
+  getRemoteBasicAuthStatus(options: {
+    instanceId: string
+  }): Promise<{ configured: boolean; username?: string }>
+
+  /** 删除远程实例对应的 Basic Auth 凭据。 */
+  clearRemoteBasicAuth(options: { instanceId: string }): Promise<{ success: boolean }>
+
   /** 探测远程实例是否在线(原生 HEAD 请求,绕过 WebView CORS)。 */
-  pingUrl(options: { url: string }): Promise<{ online: boolean; statusCode?: number; error?: string }>
+  pingUrl(options: {
+    url: string
+    instanceId?: string
+    username?: string
+    password?: string
+  }): Promise<{ online: boolean; statusCode?: number; authRequired?: boolean; error?: string }>
 
   /** 卸载实例:删除安装目录和封面图。 */
   uninstallInstance(options: { instanceId: string }): Promise<{ success: boolean; freedBytes: number }>

@@ -26,6 +26,12 @@ flowchart TD
 
 `MainActivity.kt` 管理两个界面：Capacitor 控制台和 SillyTavern WebView。返回控制台不等于停止实例；停止操作必须显式结束 Node.js 进程。
 
+### 远程连接认证
+
+远程实例可以配置 HTTP Basic Auth。React 控制台只保存“已配置”状态和用户名，不保存密码；密码由 `RemoteBasicAuthStore` 使用 Android Keystore 中的 AES/GCM 密钥加密后写入应用私有存储。`pingUrl` 先在原生层验证连接，认证头只会发送给初始地址及其同源重定向；`MainActivity` 仅在目标主机发起 WebView 认证挑战时提交对应凭据。
+
+删除远程实例会同步删除安全存储中的凭据。连接地址、日志和 `localStorage` 不得包含密码；公网地址应优先使用 HTTPS，Basic Auth 本身不提供传输加密。
+
 ### 运行时
 
 `runtime/` 负责路径、解压、配置、进程和日志。应用只使用打包的 Bionic Node.js，不调用 Termux。所有实例 ID 在进入文件系统前都要归一化，zip 解压必须防止路径越界。

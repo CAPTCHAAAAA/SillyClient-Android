@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import {
   Menu,
   ChevronDown,
@@ -47,6 +48,10 @@ interface TavernInstance {
   port?: number;
   /** 远程实例地址(type=remote 时有效) */
   url?: string;
+  /** 远程实例的 Basic Auth 元数据；密码只保存在平台安全存储中。 */
+  basicAuth?: {
+    username: string;
+  };
   /** 安装目录标识(本地实例,用于多实例隔离) */
   installDir?: string;
   /** GitHub release zipball 下载地址(本地实例首次安装时下载) */
@@ -57,13 +62,19 @@ interface TavernInstance {
   cover?: string;
   /** 本地实例运行配置(映射管理面板设置) */
   config?: InstanceConfig;
+  /** Android 新建实例首次进入酒馆时显示顶部返回手势提示。 */
+  pendingTavernGestureHint?: boolean;
 }
 
 const INSTANCES_KEY = "sillyclient.instances";
 const INSTANCES_VERSION_KEY = "sillyclient.instances.version";
 const ONBOARDING_KEY = "sillyclient.onboarding.version";
-const ONBOARDING_VERSION = "1";
+const ONBOARDING_VERSION = "2";
 const CURRENT_VERSION = 2;
+const BACKGROUND_PANEL_EXIT_MS = 300;
+const PANEL_EXIT_MS = 300;
+const POPOVER_EXIT_MS = 200;
+const MANAGE_PANEL_OPEN_GAP_MS = 32;
 
 /** 从 localStorage 读取已持久化的实例列表;版本不匹配时清空旧数据。 */
 function loadInstances(): TavernInstance[] {
@@ -149,23 +160,87 @@ function ManageItem({ label, desc, isLight, children }: { label: string; desc?: 
   );
 }
 
+function AppSettingsRow({ label, desc, children }: { label: string; desc: string; children: React.ReactNode }) {
+  return (
+    <div className="app-settings-row">
+      <div className="app-settings-copy">
+        <div className="app-settings-label">{label}</div>
+        <div className="app-settings-desc">{desc}</div>
+      </div>
+      <div className="app-settings-control">{children}</div>
+    </div>
+  );
+}
+
+function AppSettingsPlaceholder() {
+  return (
+    <div className="app-settings-row is-pending" aria-disabled="true">
+      <span className="app-settings-pending">等待后续添加</span>
+    </div>
+  );
+}
+
+function AppSettingsLinkRow({
+  label,
+  desc,
+  onClick,
+}: {
+  label: string;
+  desc: string;
+  onClick: () => void;
+}) {
+  return (
+    <button type="button" className="app-settings-row app-settings-link-row" onClick={onClick}>
+      <span className="app-settings-copy">
+        <span className="app-settings-label">{label}</span>
+        <span className="app-settings-desc">{desc}</span>
+      </span>
+    </button>
+  );
+}
+
+function AppSettingsAction({
+  children,
+  onClick,
+  tone = "default",
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  tone?: "default" | "warning" | "danger";
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "app-settings-action motion-control h-9 px-3 rounded-xl text-[11px] font-medium border flex-shrink-0",
+        tone !== "default" && `is-${tone}`
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
 function ToggleSwitch({ defaultOn = false, on, onChange, isLight }: { defaultOn?: boolean; on?: boolean; onChange?: (v: boolean) => void; isLight: boolean }) {
   const [internal, setInternal] = useState(defaultOn);
   const isControlled = on !== undefined;
   const value = isControlled ? on! : internal;
   return (
     <button
+      type="button"
+      aria-pressed={value}
       onClick={() => { if (!isControlled) setInternal(!internal); onChange?.(!value); }}
       className={cn(
-        "relative w-10 h-[22px] rounded-full transition-colors duration-200",
+        "relative w-10 h-[22px] rounded-full transition-colors duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
         value
           ? isLight ? "bg-[#1a1625]/60" : "bg-white/30"
           : isLight ? "bg-black/[0.08]" : "bg-white/[0.08]"
       )}
     >
       <div className={cn(
-        "absolute top-[2px] w-[18px] h-[18px] rounded-full shadow-sm transition-all duration-200",
-        value ? "left-[calc(100%-20px)]" : "left-[2px]",
+        "absolute left-[2px] top-[2px] w-[18px] h-[18px] rounded-full shadow-sm transition-[transform,background-color,box-shadow] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
+        value && "translate-x-[18px]",
         isLight
           ? "bg-white shadow-black/10"
           : value ? "bg-white shadow-white/20" : "bg-white/50 shadow-black/15"
@@ -183,11 +258,12 @@ function SillyClientLauncher() {
     : 0;
   const isWindows = typeof window !== "undefined"
     && (window as typeof window & { __SILLYCLIENT_PLATFORM__?: string }).__SILLYCLIENT_PLATFORM__ === "windows";
+  const isAndroid = Capacitor.getPlatform() === "android";
   const terminalTitle = isWindows ? "Windows 控制台" : "Android 终端";
   const terminalPrompt = isWindows ? "C:\\>" : "~ $";
   const terminalBanner = isWindows
-    ? "SillyClient 1.6.0 · Windows · cmd.exe"
-    : "SillyClient 1.6.0 · Android shell";
+    ? "SillyClient 1.7.0 · Windows · cmd.exe"
+    : "SillyClient 1.7.0 · Android shell";
   const terminalPlaceholder = isWindows ? "输入 Windows 命令" : "输入 Android shell 命令";
   const [showOnboarding, setShowOnboarding] = useState(
     () => (!isWeb || isWindows) && !isShowcase && localStorage.getItem(ONBOARDING_KEY) !== ONBOARDING_VERSION,
@@ -237,6 +313,7 @@ function SillyClientLauncher() {
   const [manageTab, setManageTab] = useState("general");
   const [showAppMenu, setShowAppMenu] = useState(false);
   const [isAppMenuClosing, setIsAppMenuClosing] = useState(false);
+  const [appSettingsTab, setAppSettingsTab] = useState<"general" | "data" | "maintenance">("general");
   const [hoveredCard, setHoveredCard] = useState<string | null>(null);
   const [activeSlide, setActiveSlide] = useState(0);
   const [showNewInstancePanel, setShowNewInstancePanel] = useState(false);
@@ -245,6 +322,9 @@ function SillyClientLauncher() {
   const [newInstanceName, setNewInstanceName] = useState("");
   const [newInstanceDir, setNewInstanceDir] = useState("");
   const [newInstanceUrl, setNewInstanceUrl] = useState("http://");
+  const [newRemoteAuthEnabled, setNewRemoteAuthEnabled] = useState(false);
+  const [newRemoteAuthUsername, setNewRemoteAuthUsername] = useState("");
+  const [newRemoteAuthPassword, setNewRemoteAuthPassword] = useState("");
   const [newInstanceVersion, setNewInstanceVersion] = useState("stable");
   const [newInstanceLocalZip, setNewInstanceLocalZip] = useState<string | null>(null);
   const [newInstanceError, setNewInstanceError] = useState<string | null>(null);
@@ -264,10 +344,15 @@ function SillyClientLauncher() {
   const [pullToRefresh, setPullToRefresh] = useState(false);
   const [contentOpenMode, setContentOpenMode] = useState<ContentOpenMode>("webview");
   const [verDropdownOpen, setVerDropdownOpen] = useState(false);
-  const [verDropdownPos, setVerDropdownPos] = useState({ top: 0, left: 0, width: 0 });
+  const [isVerDropdownClosing, setIsVerDropdownClosing] = useState(false);
+  const [verDropdownPos, setVerDropdownPos] = useState({ bottom: 0, left: 0, width: 0, maxHeight: 360 });
   const carouselRef = useRef<HTMLDivElement>(null);
+  const versionDropdownRef = useRef<HTMLDivElement>(null);
   const terminalBtnRef = useRef<HTMLButtonElement>(null);
-    const settingsBtnRef = useRef<HTMLButtonElement>(null);
+  const settingsBtnRef = useRef<HTMLButtonElement>(null);
+  const cardMenuCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const managePanelOpenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const managePanelCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
   const [terminalPos, setTerminalPos] = useState({ left: 16, right: 16 });
 
@@ -287,6 +372,12 @@ function SillyClientLauncher() {
   // 管理面板 draftConfig/draftPort(保存前不写入 instances)
   const [draftConfig, setDraftConfig] = useState<InstanceConfig>(DEFAULT_CONFIG);
   const [draftPort, setDraftPort] = useState(8000);
+  const [draftRemoteAuthEnabled, setDraftRemoteAuthEnabled] = useState(false);
+  const [draftRemoteAuthUsername, setDraftRemoteAuthUsername] = useState("");
+  const [draftRemoteAuthPassword, setDraftRemoteAuthPassword] = useState("");
+  const [storedRemoteAuthUsername, setStoredRemoteAuthUsername] = useState("");
+  const [manageSaveError, setManageSaveError] = useState<string | null>(null);
+  const [isSavingManagePanel, setIsSavingManagePanel] = useState(false);
   // 清理垃圾
   const [showCleanPanel, setShowCleanPanel] = useState(false);
   const [garbageItems, setGarbageItems] = useState<any[]>([]);
@@ -297,6 +388,12 @@ function SillyClientLauncher() {
 
   const isLight = bgMode === "custom" && themeStyle === "light";
   const isDynamic = bgMode === "dynamic";
+
+  useEffect(() => () => {
+    if (cardMenuCloseTimerRef.current) clearTimeout(cardMenuCloseTimerRef.current);
+    if (managePanelOpenTimerRef.current) clearTimeout(managePanelOpenTimerRef.current);
+    if (managePanelCloseTimerRef.current) clearTimeout(managePanelCloseTimerRef.current);
+  }, []);
 
   useEffect(() => {
     if (!isWindows) return;
@@ -493,7 +590,7 @@ function SillyClientLauncher() {
   const toggleBgPanel = () => {
     if (showBgPanel) {
       setIsPanelClosing(true);
-      setTimeout(() => { setShowBgPanel(false); setIsPanelClosing(false); }, 250);
+      setTimeout(() => { setShowBgPanel(false); setIsPanelClosing(false); }, BACKGROUND_PANEL_EXIT_MS);
     } else {
       setShowBgPanel(true);
     }
@@ -517,7 +614,7 @@ function SillyClientLauncher() {
     if (remotes.length === 0) return;
     const results = await Promise.all(remotes.map(async (r) => {
       try {
-        const res = await TarvenEnv.pingUrl({ url: r.url! });
+        const res = await TarvenEnv.pingUrl({ url: r.url!, instanceId: r.id });
         return { id: r.id, online: res.online };
       } catch {
         return { id: r.id, online: false };
@@ -528,7 +625,7 @@ function SillyClientLauncher() {
       if (!res || t.type !== "remote") return t;
       return { ...t, status: res.online ? "online" : "offline" };
     }));
-  }, [instances.filter(t => t.type === "remote").map(t => t.id + t.url).join(",")]);
+  }, [instances.filter(t => t.type === "remote").map(t => `${t.id}${t.url}${t.basicAuth?.username || ""}`).join(",")]);
 
   // 启动时 + 每15s 轮询
   useEffect(() => {
@@ -624,6 +721,12 @@ function SillyClientLauncher() {
       modeHandle?.remove?.();
     };
   }, [isShowcase]);
+
+  const consumeTavernGestureHint = useCallback((instanceId: string) => {
+    setInstances(prev => prev.map(instance => instance.id === instanceId
+      ? { ...instance, pendingTavernGestureHint: undefined }
+      : instance));
+  }, []);
 
   // 配置并启动本地实例。创建流程只在确认服务可访问后写入卡片。
   const doLaunch = useCallback(async (instance: TavernInstance, enterWhenReady = true) => {
@@ -727,7 +830,12 @@ function SillyClientLauncher() {
         level: "success",
       }]);
       if (enterWhenReady) {
-        await TarvenEnv.enterImmersive({ url: resolvedUrl });
+        await TarvenEnv.enterImmersive({
+          url: resolvedUrl,
+          instanceId: instance.id,
+          showGestureHint: instance.pendingTavernGestureHint === true,
+        });
+        if (instance.pendingTavernGestureHint) consumeTavernGestureHint(instance.id);
       }
       return { url: resolvedUrl, port: resolvedPort };
     } finally {
@@ -739,13 +847,41 @@ function SillyClientLauncher() {
       logHandle?.remove?.();
       errorHandle?.remove?.();
     }
-  }, []);
+  }, [consumeTavernGestureHint]);
+
+  const openRemoteInstance = useCallback(async (instance: TavernInstance) => {
+    const url = instance.url || "http://127.0.0.1:8000";
+    setLaunchLogs([{ msg: `检查 ${url}`, level: "info" }]);
+    setLaunchProgress({ pct: 25, text: "正在验证远程连接" });
+    const result = await TarvenEnv.pingUrl({ url, instanceId: instance.id });
+    if (!result.online) {
+      throw new Error(result.error || "远程实例当前不可访问");
+    }
+
+    setLaunchLogs(prev => [...prev, {
+      msg: instance.basicAuth ? "远程认证已确认" : "远程实例连接正常",
+      level: instance.basicAuth ? "info" : "success",
+    }]);
+    if (contentOpenMode === "browser" && instance.basicAuth) {
+      setLaunchLogs(prev => [...prev, { msg: "系统浏览器可能会再次请求账号和密码", level: "info" }]);
+    }
+    setLaunchProgress({ pct: 75, text: "正在打开远程实例" });
+    await TarvenEnv.enterImmersive({
+      url,
+      instanceId: instance.id,
+      showGestureHint: instance.pendingTavernGestureHint === true,
+    });
+    if (instance.pendingTavernGestureHint) consumeTavernGestureHint(instance.id);
+    setLaunchProgress({ pct: 100, text: "远程实例已打开" });
+  }, [consumeTavernGestureHint, contentOpenMode]);
 
   // 启动实例入口
   const launchTavern = useCallback(async (instance: TavernInstance) => {
     if (launchingId) return;
     setLaunchingId(instance.id);
-    setInstances(prev => prev.map(t => t.id === instance.id ? { ...t, status: "running" } : t));
+    if (instance.type === "local") {
+      setInstances(prev => prev.map(t => t.id === instance.id ? { ...t, status: "running" } : t));
+    }
     setShowLaunchPanel(true);
     setOperationPurpose("launch");
     setLastLaunchParams(instance);
@@ -755,10 +891,8 @@ function SillyClientLauncher() {
         setInstances(prev => prev.map(t => t.id === instance.id ? { ...t, status: "running", port: result.port } : t));
         setTimeout(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 800);
       } else {
-        const url = instance.url || "http://127.0.0.1:8000";
-        setLaunchLogs([{ msg: `连接 ${url}`, level: "info" }]);
-        setLaunchProgress({ pct: 100, text: "连接中" });
-        await TarvenEnv.enterImmersive({ url });
+        await openRemoteInstance(instance);
+        setInstances(prev => prev.map(t => t.id === instance.id ? { ...t, status: "online" } : t));
         setTimeout(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 500);
       }
     } catch (err: any) {
@@ -771,17 +905,20 @@ function SillyClientLauncher() {
     } finally {
       setLaunchingId(null);
     }
-  }, [launchingId, doLaunch]);
+  }, [launchingId, doLaunch, openRemoteInstance]);
 
   const provisionCreatedInstance = useCallback(async (instance: TavernInstance) => {
     if (instance.type === "remote") {
       const url = instance.url || "";
       setLaunchProgress({ pct: 20, text: "正在检查远程连接" });
       setLaunchLogs([{ msg: `检查 ${url}`, level: "info" }]);
-      const result = await TarvenEnv.pingUrl({ url });
+      const result = await TarvenEnv.pingUrl({ url, instanceId: instance.id });
       if (!result.online) throw new Error(result.error || "远程实例当前不可访问");
       setLaunchProgress({ pct: 100, text: "连接可用，创建完成" });
-      setLaunchLogs(prev => [...prev, { msg: "远程实例连接正常", level: "success" }]);
+      setLaunchLogs(prev => [...prev, {
+        msg: instance.basicAuth ? "远程认证已确认" : "远程实例连接正常",
+        level: instance.basicAuth ? "info" : "success",
+      }]);
       setInstances(prev => prev.some(t => t.id === instance.id) ? prev : [...prev, { ...instance, status: "online" }]);
       return;
     }
@@ -797,9 +934,13 @@ function SillyClientLauncher() {
     setNewInstanceError(null);
     setIsCreatingInstance(true);
     let operationStarted = false;
+    let remoteCredentialsSaved = false;
+    let pendingInstanceId: string | null = null;
 
     try {
       const now = Date.now();
+      const instanceId = `new-${now}`;
+      pendingInstanceId = instanceId;
       const subtitle = newInstanceName.trim() || "新实例";
       const installDir = normalizeInstanceId(newInstanceDir, `local-${now}`);
       let selectedVersion = newInstanceVersion;
@@ -828,11 +969,25 @@ function SillyClientLauncher() {
       if (newInstanceMode === "remote") {
         const parsed = new URL(remoteUrl);
         if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("连接地址必须使用 HTTP 或 HTTPS");
+        if (parsed.username || parsed.password) {
+          throw new Error("请不要把账号密码写入连接地址，改用下方的 Basic Auth 配置");
+        }
         remoteUrl = parsed.toString();
+        if (newRemoteAuthEnabled) {
+          if (!newRemoteAuthUsername.trim()) throw new Error("请输入 Basic Auth 用户名");
+          if (!newRemoteAuthPassword) throw new Error("请输入 Basic Auth 密码");
+        }
+        const preflight = await TarvenEnv.pingUrl({
+          url: remoteUrl,
+          ...(newRemoteAuthEnabled
+            ? { username: newRemoteAuthUsername.trim(), password: newRemoteAuthPassword }
+            : {}),
+        });
+        if (!preflight.online) throw new Error(preflight.error || "远程实例当前不可访问");
       }
 
       const instance: TavernInstance = {
-        id: `new-${now}`,
+        id: instanceId,
         name: "SillyTavern",
         subtitle,
         version: newInstanceLocalZip ? "local" : selectedVersion,
@@ -843,6 +998,7 @@ function SillyClientLauncher() {
         createdAt: new Date().toISOString().slice(0, 10),
         lastUsed: "—",
         totalUsage: "0h",
+        pendingTavernGestureHint: isAndroid || undefined,
         ...(newInstanceMode === "local"
           ? {
               port,
@@ -851,8 +1007,22 @@ function SillyClientLauncher() {
               localZipPath: newInstanceLocalZip || undefined,
               config: { ...DEFAULT_CONFIG },
             }
-          : { url: remoteUrl }),
+          : {
+              url: remoteUrl,
+              basicAuth: newRemoteAuthEnabled
+                ? { username: newRemoteAuthUsername.trim() }
+                : undefined,
+            }),
       };
+
+      if (newInstanceMode === "remote" && newRemoteAuthEnabled) {
+        await TarvenEnv.setRemoteBasicAuth({
+          instanceId,
+          username: newRemoteAuthUsername.trim(),
+          password: newRemoteAuthPassword,
+        });
+        remoteCredentialsSaved = true;
+      }
 
       setShowNewInstancePanel(false);
       setIsNewInstancePanelClosing(false);
@@ -872,12 +1042,18 @@ function SillyClientLauncher() {
         setNewInstanceName("");
         setNewInstanceDir("");
         setNewInstanceUrl("http://");
+        setNewRemoteAuthEnabled(false);
+        setNewRemoteAuthUsername("");
+        setNewRemoteAuthPassword("");
         setNewInstanceVersion("stable");
         setNewInstanceLocalZip(null);
       }, 1100);
     } catch (err: any) {
       const message = err?.message || String(err);
       if (!operationStarted) {
+        if (remoteCredentialsSaved && pendingInstanceId) {
+          try { await TarvenEnv.clearRemoteBasicAuth({ instanceId: pendingInstanceId }); } catch {}
+        }
         setNewInstanceError(message);
       } else {
         setLaunchError(message);
@@ -890,6 +1066,7 @@ function SillyClientLauncher() {
     }
   }, [
     instances,
+    isAndroid,
     isCreatingInstance,
     launchingId,
     newInstanceDir,
@@ -898,6 +1075,9 @@ function SillyClientLauncher() {
     newInstanceName,
     newInstanceUrl,
     newInstanceVersion,
+    newRemoteAuthEnabled,
+    newRemoteAuthPassword,
+    newRemoteAuthUsername,
     provisionCreatedInstance,
     releases,
   ]);
@@ -907,7 +1087,7 @@ function SillyClientLauncher() {
     if (!lastLaunchParams) return;
     setLaunchError(null);
     setLaunchProgress({ pct: 0, text: operationPurpose === "create" ? "重新创建" : "重新启动" });
-    if (operationPurpose === "launch") {
+    if (operationPurpose === "launch" && lastLaunchParams.type === "local") {
       setInstances(prev => prev.map(t => t.id === lastLaunchParams.id ? { ...t, status: "running" } : t));
     }
     setLaunchingId(lastLaunchParams.id);
@@ -915,6 +1095,10 @@ function SillyClientLauncher() {
       if (operationPurpose === "create") {
         await provisionCreatedInstance(lastLaunchParams);
         setTimeout(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 1100);
+      } else if (lastLaunchParams.type === "remote") {
+        await openRemoteInstance(lastLaunchParams);
+        setInstances(prev => prev.map(t => t.id === lastLaunchParams.id ? { ...t, status: "online" } : t));
+        setTimeout(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 500);
       } else {
         const result = await doLaunch(lastLaunchParams);
         setInstances(prev => prev.map(t => t.id === lastLaunchParams.id ? { ...t, status: "running", port: result.port } : t));
@@ -931,7 +1115,7 @@ function SillyClientLauncher() {
     } finally {
       setLaunchingId(null);
     }
-  }, [lastLaunchParams, operationPurpose, doLaunch, provisionCreatedInstance]);
+  }, [lastLaunchParams, operationPurpose, doLaunch, openRemoteInstance, provisionCreatedInstance]);
 
   /** 终端拖拽调整大小(同时支持鼠标与触屏)。 */
   const startResize = (clientX: number, clientY: number) => {
@@ -976,9 +1160,61 @@ function SillyClientLauncher() {
   };
 
   const closeCardMenu = useCallback(() => {
+    if (cardMenuCloseTimerRef.current) clearTimeout(cardMenuCloseTimerRef.current);
     setIsCardMenuClosing(true);
-    setTimeout(() => { setActiveCardMenu(null); setIsCardMenuClosing(false); }, 200);
+    cardMenuCloseTimerRef.current = setTimeout(() => {
+      setActiveCardMenu(null);
+      setIsCardMenuClosing(false);
+      cardMenuCloseTimerRef.current = null;
+    }, POPOVER_EXIT_MS);
   }, []);
+
+  const openManagePanel = useCallback((instance: TavernInstance) => {
+    if (managePanelOpenTimerRef.current) {
+      clearTimeout(managePanelOpenTimerRef.current);
+      managePanelOpenTimerRef.current = null;
+    }
+    if (managePanelCloseTimerRef.current) {
+      clearTimeout(managePanelCloseTimerRef.current);
+      managePanelCloseTimerRef.current = null;
+      setShowManagePanel(null);
+    }
+    if (cardMenuCloseTimerRef.current) clearTimeout(cardMenuCloseTimerRef.current);
+
+    setIsManagePanelClosing(false);
+    setManageTab("general");
+    setIsCardMenuClosing(true);
+
+    cardMenuCloseTimerRef.current = setTimeout(() => {
+      setActiveCardMenu(null);
+      setIsCardMenuClosing(false);
+      cardMenuCloseTimerRef.current = null;
+
+      // Let WebView release the popover's backdrop layer before mounting the larger panel.
+      managePanelOpenTimerRef.current = setTimeout(() => {
+        setShowManagePanel(instance);
+        managePanelOpenTimerRef.current = null;
+      }, MANAGE_PANEL_OPEN_GAP_MS);
+    }, POPOVER_EXIT_MS);
+  }, []);
+
+  const closeVersionDropdown = useCallback(() => {
+    if (!verDropdownOpen || isVerDropdownClosing) return;
+    setIsVerDropdownClosing(true);
+    setTimeout(() => {
+      setVerDropdownOpen(false);
+      setIsVerDropdownClosing(false);
+    }, POPOVER_EXIT_MS);
+  }, [isVerDropdownClosing, verDropdownOpen]);
+
+  useEffect(() => {
+    if (!verDropdownOpen || isVerDropdownClosing) return;
+    const frame = requestAnimationFrame(() => {
+      const menu = versionDropdownRef.current;
+      if (menu) menu.scrollTop = menu.scrollHeight;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [isVerDropdownClosing, releases.length, verDropdownOpen]);
 
   const confirmDeleteInstance = useCallback(async () => {
     if (!pendingDelete || isDeletingInstance) return;
@@ -996,6 +1232,8 @@ function SillyClientLauncher() {
         });
         if (!result.success) throw new Error("原生端未能删除实例文件");
         freedBytes = result.freedBytes || 0;
+      } else {
+        await TarvenEnv.clearRemoteBasicAuth({ instanceId: pendingDelete.id });
       }
 
       setInstances(prev => prev.filter(instance => instance.id !== pendingDelete.id));
@@ -1020,26 +1258,151 @@ function SillyClientLauncher() {
     setInstances(prev => prev.map(t => t.id === showManagePanel.id ? { ...t, config: { ...(t.config ?? DEFAULT_CONFIG), ...patch } } : t));
   };
 
+  const closeManagePanel = useCallback(() => {
+    if (!showManagePanel || isManagePanelClosing) return;
+    if (managePanelOpenTimerRef.current) {
+      clearTimeout(managePanelOpenTimerRef.current);
+      managePanelOpenTimerRef.current = null;
+    }
+    if (managePanelCloseTimerRef.current) clearTimeout(managePanelCloseTimerRef.current);
+    setIsManagePanelClosing(true);
+    managePanelCloseTimerRef.current = setTimeout(() => {
+      setShowManagePanel(null);
+      setIsManagePanelClosing(false);
+      setManageTab("general");
+      managePanelCloseTimerRef.current = null;
+    }, PANEL_EXIT_MS);
+  }, [isManagePanelClosing, showManagePanel]);
+
+  const dismissLaunchPanel = useCallback(async () => {
+    if (
+      operationPurpose === "create" &&
+      lastLaunchParams?.type === "remote" &&
+      !instances.some(instance => instance.id === lastLaunchParams.id)
+    ) {
+      try { await TarvenEnv.clearRemoteBasicAuth({ instanceId: lastLaunchParams.id }); } catch {}
+      setShowNewInstancePanel(true);
+    }
+    setShowLaunchPanel(false);
+    setLaunchError(null);
+    setLaunchProgress(null);
+  }, [instances, lastLaunchParams, operationPurpose]);
+
+  const saveManagedInstance = useCallback(async () => {
+    if (!showManagePanel || isSavingManagePanel) return;
+    setManageSaveError(null);
+    setIsSavingManagePanel(true);
+    try {
+      if (showManagePanel.type === "remote") {
+        const username = draftRemoteAuthUsername.trim();
+        if (draftRemoteAuthEnabled) {
+          if (!username) throw new Error("请输入 Basic Auth 用户名");
+          if (!draftRemoteAuthPassword && storedRemoteAuthUsername && username !== storedRemoteAuthUsername) {
+            throw new Error("更改 Basic Auth 用户名时，请重新输入密码");
+          }
+          const verification = await TarvenEnv.pingUrl({
+            url: showManagePanel.url || "",
+            instanceId: showManagePanel.id,
+            ...(draftRemoteAuthPassword ? { username, password: draftRemoteAuthPassword } : {}),
+          });
+          if (!verification.online) {
+            throw new Error(verification.error || "Basic Auth 验证失败");
+          }
+          await TarvenEnv.setRemoteBasicAuth({
+            instanceId: showManagePanel.id,
+            username,
+            ...(draftRemoteAuthPassword ? { password: draftRemoteAuthPassword } : {}),
+          });
+        } else {
+          await TarvenEnv.clearRemoteBasicAuth({ instanceId: showManagePanel.id });
+        }
+
+        const result = await TarvenEnv.pingUrl({
+          url: showManagePanel.url || "",
+          instanceId: showManagePanel.id,
+        });
+        setInstances(prev => prev.map(instance => instance.id === showManagePanel.id
+          ? {
+              ...instance,
+              basicAuth: draftRemoteAuthEnabled ? { username } : undefined,
+              status: result.online ? "online" : "offline",
+            }
+          : instance));
+      } else {
+        updateManagedConfig(draftConfig);
+        setInstances(prev => prev.map(instance => instance.id === showManagePanel.id
+          ? { ...instance, port: draftPort }
+          : instance));
+      }
+      closeManagePanel();
+    } catch (error: any) {
+      setManageSaveError(error?.message || String(error));
+    } finally {
+      setIsSavingManagePanel(false);
+    }
+  }, [
+    closeManagePanel,
+    draftConfig,
+    draftPort,
+    draftRemoteAuthEnabled,
+    draftRemoteAuthPassword,
+    draftRemoteAuthUsername,
+    isSavingManagePanel,
+    showManagePanel,
+    storedRemoteAuthUsername,
+  ]);
+
   const closeAppMenu = useCallback(() => {
     setIsAppMenuClosing(true);
-    setTimeout(() => { setShowAppMenu(false); setIsAppMenuClosing(false); }, 300);
+    setTimeout(() => {
+      setShowAppMenu(false);
+      setIsAppMenuClosing(false);
+      setAppSettingsTab("general");
+    }, PANEL_EXIT_MS);
   }, []);
+
+  const openProjectPage = useCallback(() => {
+    const url = "https://captchaaaaa.github.io/SillyClient/";
+    closeAppMenu();
+    if (isWeb) {
+      window.open(url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    setTimeout(() => {
+      TarvenEnv.enterImmersive({ url }).catch(() => {});
+    }, PANEL_EXIT_MS);
+  }, [closeAppMenu, isWeb]);
+
+  const replayOnboarding = useCallback(() => {
+    closeAppMenu();
+    setTimeout(() => setShowOnboarding(true), PANEL_EXIT_MS + 20);
+  }, [closeAppMenu]);
 
   const dismissOnboarding = useCallback(() => {
     localStorage.setItem(ONBOARDING_KEY, ONBOARDING_VERSION);
     setShowOnboarding(false);
   }, []);
 
-  const closeManagePanel = useCallback(() => {
-    setIsManagePanelClosing(true);
-    setTimeout(() => { setShowManagePanel(null); setIsManagePanelClosing(false); setManageTab("general"); }, 250);
-  }, []);
-
-  // 管理面板打开时初始化 draftConfig/draftPort
+  // 管理面板打开时初始化本地配置或远程认证状态。
   useEffect(() => {
     if (showManagePanel) {
       setDraftConfig(showManagePanel.config ?? DEFAULT_CONFIG);
       setDraftPort(showManagePanel.port ?? 8000);
+      setManageSaveError(null);
+      setDraftRemoteAuthEnabled(Boolean(showManagePanel.basicAuth));
+      setDraftRemoteAuthUsername(showManagePanel.basicAuth?.username || "");
+      setDraftRemoteAuthPassword("");
+      setStoredRemoteAuthUsername(showManagePanel.basicAuth?.username || "");
+
+      if (showManagePanel.type === "remote") {
+        const instanceId = showManagePanel.id;
+        void TarvenEnv.getRemoteBasicAuthStatus({ instanceId }).then(status => {
+          if (showManagePanel.id !== instanceId) return;
+          setDraftRemoteAuthEnabled(status.configured);
+          setDraftRemoteAuthUsername(status.username || showManagePanel.basicAuth?.username || "");
+          setStoredRemoteAuthUsername(status.username || "");
+        }).catch(() => {});
+      }
     }
   }, [showManagePanel]);
 
@@ -1100,7 +1463,7 @@ function SillyClientLauncher() {
               const map = new Map(prev.map(t => [t.id, t]));
               for (const item of incoming) {
                 const icon = item.type === "local" ? <Folder className="w-5 h-5" /> : <Cloud className="w-5 h-5" />;
-                map.set(item.id, { ...item, icon });
+                map.set(item.id, { ...item, pendingTavernGestureHint: undefined, icon });
               }
               return Array.from(map.values());
             });
@@ -1112,11 +1475,15 @@ function SillyClientLauncher() {
 
       {/* 背景设置面板 */}
       {(showBgPanel || isPanelClosing) && (
-        <div className={cn(
-          "fixed top-[5.5rem] left-1/2 -translate-x-1/2 z-[55] w-72 border backdrop-blur-[40px] saturate-180 rounded-[var(--radius-3xl)]",
-          isLight ? "bg-white/60 border-black/5 shadow-[0_4px_16px_rgba(0,0,0,0.06)]" : "glass-panel",
-          isPanelClosing ? "bg-panel-exit" : "bg-panel-enter"
-        )}>
+        <div
+          className={cn(
+            "ios-floating-menu fixed left-1/2 -translate-x-1/2 z-[55] w-72 border backdrop-blur-[40px] saturate-180 rounded-[var(--radius-3xl)]",
+            isLight ? "bg-white/60 border-black/5 shadow-[0_4px_16px_rgba(0,0,0,0.06)]" : "glass-panel",
+            isLight && "is-light",
+            isPanelClosing ? "bg-panel-exit" : "bg-panel-enter"
+          )}
+          style={{ top: `calc(max(env(safe-area-inset-top), ${safeInsetTop + 4}px) + 3.5rem)` }}
+        >
           <div className="p-4 space-y-4">
             <div className="flex items-center justify-between">
               <span className={cn("text-sm font-semibold", isLight ? "text-[#1a1625]" : "text-white/90")}>背景设置</span>
@@ -1128,14 +1495,14 @@ function SillyClientLauncher() {
             <div className="space-y-1.5">
               <span className={cn("text-xs font-medium", isLight ? "text-[#1a1625]/50" : "text-white/40")}>背景模式</span>
               <div className="grid grid-cols-2 gap-1.5">
-                <button onClick={() => setBgMode("dynamic")} className={cn(
-                  "px-2 py-2 rounded-lg text-xs font-medium transition-all border",
+                <button onClick={() => setBgMode("dynamic")} aria-pressed={bgMode === "dynamic"} className={cn(
+                  "ios-choice-control px-2 py-2 rounded-lg text-xs font-medium transition-all border",
                   bgMode === "dynamic"
                     ? isLight ? "bg-black/10 border-black/20 text-[#1a1625]" : "bg-white/10 border-white/20 text-white/90"
                     : isLight ? "bg-black/5 border-black/10 text-[#1a1625]/60 hover:bg-black/10" : "bg-white/5 border-white/10 text-white/60 hover:bg-white/10"
                 )}>基础</button>
-                <button onClick={() => setBgMode("custom")} className={cn(
-                  "px-2 py-2 rounded-lg text-xs font-medium transition-all border",
+                <button onClick={() => setBgMode("custom")} aria-pressed={bgMode === "custom"} className={cn(
+                  "ios-choice-control px-2 py-2 rounded-lg text-xs font-medium transition-all border",
                   bgMode === "custom"
                     ? isLight ? "bg-black/10 border-black/20 text-[#1a1625]" : "bg-white/10 border-white/20 text-white/90"
                     : isLight ? "bg-black/5 border-black/10 text-[#1a1625]/60 hover:bg-black/10" : "bg-white/5 border-white/10 text-white/60 hover:bg-white/10"
@@ -1163,14 +1530,14 @@ function SillyClientLauncher() {
                 <div className="space-y-1.5">
                   <span className={cn("text-xs font-medium", isLight ? "text-[#1a1625]/50" : "text-white/40")}>主题风格</span>
                   <div className="grid grid-cols-2 gap-2">
-                    <button onClick={() => setThemeStyle("dark")} className={cn(
-                      "flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-xs font-medium transition-all border",
+                    <button onClick={() => setThemeStyle("dark")} aria-pressed={themeStyle === "dark"} className={cn(
+                      "ios-choice-control flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-xs font-medium transition-all border",
                       themeStyle === "dark"
                         ? "bg-indigo-500/20 border-indigo-500/40 text-indigo-300"
                         : isLight ? "bg-black/5 border-black/10 text-[#1a1625]/60 hover:bg-black/10" : "bg-white/5 border-white/10 text-white/60 hover:bg-white/10"
                     )}><Moon className="w-3.5 h-3.5" /> 暗夜</button>
-                    <button onClick={() => setThemeStyle("light")} className={cn(
-                      "flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-xs font-medium transition-all border",
+                    <button onClick={() => setThemeStyle("light")} aria-pressed={themeStyle === "light"} className={cn(
+                      "ios-choice-control flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-xs font-medium transition-all border",
                       themeStyle === "light"
                         ? isLight ? "bg-black/10 border-black/20 text-[#1a1625]" : "bg-white/10 border-white/20 text-white/90"
                         : isLight ? "bg-black/5 border-black/10 text-[#1a1625]/60 hover:bg-black/10" : "bg-white/5 border-white/10 text-white/60 hover:bg-white/10"
@@ -1212,26 +1579,26 @@ function SillyClientLauncher() {
             <button
               ref={terminalBtnRef}
               onClick={() => {
-                if (isWeb) return;
+                if (isWeb && !isShowcase) return;
                 if (showTerminal) {
                   setIsTerminalClosing(true);
-                  setTimeout(() => { setShowTerminal(false); setIsTerminalClosing(false); }, 300);
-                } else {
-                  const btn = terminalBtnRef.current;
-                  const settingsBtn = settingsBtnRef.current;
-                  if (btn) {
-                    const rect = btn.getBoundingClientRect();
-                    const settingsRect = settingsBtn?.getBoundingClientRect();
-                    const rightEdge = settingsRect ? window.innerWidth - settingsRect.right : 16;
-                    setTerminalPos({ left: rect.left, right: Math.max(8, rightEdge) });
+                  setTimeout(() => { setShowTerminal(false); setIsTerminalClosing(false); }, PANEL_EXIT_MS);
+                  } else {
+                    const btn = terminalBtnRef.current;
+                    const settingsBtn = settingsBtnRef.current;
+                    if (btn) {
+                      const rect = btn.getBoundingClientRect();
+                      const settingsRect = settingsBtn?.getBoundingClientRect();
+                      const rightEdge = settingsRect ? window.innerWidth - settingsRect.right : 16;
+                      setTerminalPos({ left: rect.left, right: Math.max(8, rightEdge) });
+                    }
+                    setShowTerminal(true);
                   }
-                  setShowTerminal(true);
-                }
-              }}
-              className={cn(
+                }}
+                className={cn(
                 "ios-glass-btn px-3 h-8 flex items-center justify-center text-xs font-medium transition-all",
-                isLight ? "text-[#1a1625]/70" : "text-white/70"
-              )}
+                  isLight ? "text-[#1a1625]/70" : "text-white/70"
+                )}
             >
               <Terminal className="w-3.5 h-3.5" />
             </button>
@@ -1249,16 +1616,16 @@ function SillyClientLauncher() {
           <button
             ref={settingsBtnRef}
             onClick={() => {
-              if (isWeb) return;
+              if (isWeb && !isShowcase) return;
               if (showAppMenu) {
-                setIsAppMenuClosing(true);
-                setTimeout(() => { setShowAppMenu(false); setIsAppMenuClosing(false); }, 300);
+                closeAppMenu();
               } else {
+                setAppSettingsTab("general");
                 setShowAppMenu(true);
               }
             }}
             className={cn(
-            "ios-glass-btn px-4 h-9 flex items-center justify-center text-xs font-medium flex-shrink-0",
+            "motion-control ios-glass-btn px-4 h-9 flex items-center justify-center text-xs font-medium flex-shrink-0",
             isLight ? "text-[#1a1625]/70" : "text-white/70"
           )}>
             <Menu className="w-4 h-4" />
@@ -1275,7 +1642,7 @@ function SillyClientLauncher() {
             isTerminalClosing ? "animate-terminal-exit" : "animate-terminal-enter"
           )}
           style={{
-            top: '5.5rem',
+            top: `calc(max(env(safe-area-inset-top), ${safeInsetTop}px) + 5.5rem)`,
             left: terminalPos.left,
             right: terminalPos.right,
             width: terminalSize.w,
@@ -1325,7 +1692,7 @@ function SillyClientLauncher() {
               <button
                 onClick={() => {
                   setIsTerminalClosing(true);
-                  setTimeout(() => { setShowTerminal(false); setIsTerminalClosing(false); }, 300);
+                  setTimeout(() => { setShowTerminal(false); setIsTerminalClosing(false); }, PANEL_EXIT_MS);
                 }}
                 className={cn("p-1 rounded-md transition-colors", isLight ? "hover:bg-black/5 text-[#1a1625]/30" : "hover:bg-white/5 text-white/30")}
               >
@@ -1389,125 +1756,136 @@ function SillyClientLauncher() {
           <div className={cn(
             "fixed inset-0 z-[56] bg-black/15 backdrop-blur-[2px] overlay-backdrop",
             isAppMenuClosing && "overlay-backdrop-exit"
-          )} onClick={() => {
-            setIsAppMenuClosing(true);
-            setTimeout(() => { setShowAppMenu(false); setIsAppMenuClosing(false); }, 300);
-          }} />
+          )} onClick={closeAppMenu} />
           <div className={cn(
-            "fixed z-[58] rounded-2xl flex flex-col overflow-hidden backdrop-blur-[40px] saturate-180",
+            "ios-task-surface app-settings-surface fixed z-[58] rounded-2xl flex flex-col overflow-hidden backdrop-blur-[40px] saturate-180",
             glassBg,
+            isLight && "is-light",
             isAppMenuClosing ? "animate-clone-panel-exit" : "animate-clone-panel"
           )} style={{
             top: '50%',
             left: '50%',
             transform: 'translate(-50%, -50%)',
-            width: 'min(420px, calc(100vw - 2rem))',
-            maxHeight: 'min(80vh, calc(100vh - 4rem))',
+            width: 'min(460px, calc(100vw - 2rem))',
+            maxHeight: 'min(85vh, calc(100vh - 4rem))',
           }}>
             {/* 头部 */}
-            <div className={cn("flex items-center justify-between px-5 h-12 flex-shrink-0 border-b", isLight ? "border-black/[0.06]" : "border-white/[0.06]")}>
+            <div className={cn("app-settings-header flex items-center justify-between px-5 h-12 flex-shrink-0 border-b", isLight ? "border-black/[0.06]" : "border-white/[0.06]")}>
               <span className={cn("text-sm font-semibold", isLight ? "text-[#1a1625]" : "text-white")}>APP 设置</span>
-              <button onClick={() => {
-                setIsAppMenuClosing(true);
-                setTimeout(() => { setShowAppMenu(false); setIsAppMenuClosing(false); }, 300);
-              }} className={cn("p-1.5 rounded-lg transition-colors", isLight ? "hover:bg-black/5 text-[#1a1625]/30" : "hover:bg-white/5 text-white/30")}>
-                <X className="w-4 h-4" />
-              </button>
+              <div className="app-settings-header-actions">
+                <button onClick={closeAppMenu} className={cn("motion-control p-1.5 rounded-lg transition-colors", isLight ? "hover:bg-black/5 text-[#1a1625]/30" : "hover:bg-white/5 text-white/30")}>
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-5 space-y-5 scrollbar-subtle">
-              {/* 浏览器、服务与性能 */}
-              <div>
-                <div className={cn("text-[10px] font-semibold tracking-wide uppercase mb-3", isLight ? "text-[#1a1625]/25" : "text-white/25")}>浏览与性能</div>
-                <div className="space-y-1">
-                  <ManageItem label="下拉刷新" desc="在酒馆界面顶部下拉刷新 WebView" isLight={isLight}>
-                    <ToggleSwitch on={pullToRefresh} onChange={(v) => { setPullToRefresh(v); TarvenEnv.setPullToRefresh({ enabled: v }).catch(() => {}); }} isLight={isLight} />
-                  </ManageItem>
-                </div>
-              </div>
-
-              {isWindows && (
-                <div>
-                  <div className={cn("text-[10px] font-semibold tracking-wide uppercase mb-3", isLight ? "text-[#1a1625]/25" : "text-white/25")}>打开方式</div>
-                  <ManageItem
-                    label="使用系统浏览器"
-                    desc="关闭时在 SillyClient 应用窗口中打开"
-                    isLight={isLight}
+            <div className="app-settings-body flex-1 overflow-y-auto p-5 scrollbar-subtle">
+              <div className="app-settings-tabs flex gap-2" role="group" aria-label="设置分类">
+                {([
+                  { id: "general", label: "通用" },
+                  { id: "data", label: "数据" },
+                  { id: "maintenance", label: "维护" },
+                ] as const).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    aria-pressed={appSettingsTab === tab.id}
+                    className="app-settings-tab ios-choice-control motion-control flex-1 h-9 rounded-xl text-xs font-medium border"
+                    onClick={() => setAppSettingsTab(tab.id)}
                   >
-                    <ToggleSwitch
-                      on={contentOpenMode === "browser"}
-                      onChange={(useBrowser) => {
-                        const previous = contentOpenMode;
-                        const mode: ContentOpenMode = useBrowser ? "browser" : "webview";
-                        setContentOpenMode(mode);
-                        TarvenEnv.setContentOpenMode({ mode }).catch(() => setContentOpenMode(previous));
-                      }}
-                      isLight={isLight}
-                    />
-                  </ManageItem>
-                </div>
-              )}
-
-              {/* 常用操作 */}
-              <div>
-                <div className={cn("text-[10px] font-semibold tracking-wide uppercase mb-3", isLight ? "text-[#1a1625]/25" : "text-white/25")}>常用操作</div>
-                <div className="space-y-2">
-                  <button onClick={() => importInputRef.current?.click()} className={cn(
-                    "w-full px-4 py-2.5 rounded-xl text-xs font-medium text-left transition-all border",
-                    isLight ? "bg-black/[0.03] border-black/[0.06] text-[#1a1625]/60 hover:bg-black/[0.06] hover:text-[#1a1625]/80" : "bg-white/[0.03] border-white/[0.06] text-white/60 hover:bg-white/[0.06] hover:text-white/80"
-                  )}>导入数据压缩包</button>
-                  <button onClick={() => {
-                    const data = JSON.stringify({ version: 2, instances: instances.map(({ icon: _icon, ...rest }) => rest), exportedAt: new Date().toISOString() }, null, 2);
-                    const blob = new Blob([data], { type: 'application/json' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url; a.download = `sillyclient-backup-${new Date().toISOString().slice(0,10)}.json`;
-                    a.click();
-                    URL.revokeObjectURL(url);
-                    closeAppMenu();
-                  }} className={cn(
-                    "w-full px-4 py-2.5 rounded-xl text-xs font-medium text-left transition-all border",
-                    isLight ? "bg-black/[0.03] border-black/[0.06] text-[#1a1625]/60 hover:bg-black/[0.06] hover:text-[#1a1625]/80" : "bg-white/[0.03] border-white/[0.06] text-white/60 hover:bg-white/[0.06] hover:text-white/80"
-                  )}>导出数据压缩包</button>
-                  <button onClick={() => TarvenEnv.clearWebViewData().catch(() => {})} className={cn(
-                    "w-full px-4 py-2.5 rounded-xl text-xs font-medium text-left transition-all border",
-                    isLight ? "bg-black/[0.03] border-black/[0.06] text-[#1a1625]/60 hover:bg-black/[0.06] hover:text-[#1a1625]/80" : "bg-white/[0.03] border-white/[0.06] text-white/60 hover:bg-white/[0.06] hover:text-white/80"
-                  )}>清空浏览器数据</button>
-                  <button onClick={() => {
-                    closeAppMenu();
-                    setTimeout(() => setShowOnboarding(true), 320);
-                  }} className={cn(
-                    "w-full px-4 py-2.5 rounded-xl text-xs font-medium text-left transition-all border",
-                    isLight ? "bg-black/[0.03] border-black/[0.06] text-[#1a1625]/60 hover:bg-black/[0.06] hover:text-[#1a1625]/80" : "bg-white/[0.03] border-white/[0.06] text-white/60 hover:bg-white/[0.06] hover:text-white/80"
-                  )}>重新查看使用引导</button>
-                </div>
+                    {tab.label}
+                  </button>
+                ))}
               </div>
 
-              {/* 危险操作 */}
-              <div>
-                <div className={cn("text-[10px] font-semibold tracking-wide uppercase mb-3", isLight ? "text-[#1a1625]/25" : "text-white/25")}>危险区域</div>
-                <button onClick={async () => {
-                  closeAppMenu();
-                  setCleaningGarbage(true);
-                  setShowCleanPanel(true);
-                  setGarbageItems([]);
-                  try {
-                    const { items } = await TarvenEnv.cleanGarbage({ dryRun: true });
-                    setGarbageItems(items);
-                  } catch (e) { console.error(e); }
-                  setCleaningGarbage(false);
-                }} className={cn(
-                  "w-full px-4 py-2.5 rounded-xl text-xs font-medium text-left transition-all border mb-2",
-                  isLight ? "bg-amber-50/50 border-amber-900/10 text-amber-900/60 hover:bg-amber-50/80 hover:text-amber-900/80" : "bg-amber-400/[0.04] border-amber-400/10 text-amber-400/60 hover:bg-amber-400/[0.08] hover:text-amber-400/80"
-                )}>
-                  清理垃圾
-                </button>
-                <button onClick={() => { if (confirm("确认清空数据并重新初始化？所有实例将被删除")) { localStorage.removeItem("sillyclient.instances"); TarvenEnv.clearWebViewData().catch(() => {}); setInstances([]); } }} className={cn(
-                  "w-full px-4 py-2.5 rounded-xl text-xs font-medium text-left transition-all border",
-                  isLight ? "bg-red-50/50 border-red-900/10 text-red-900/50 hover:bg-red-50/80 hover:text-red-900/70" : "bg-red-400/[0.04] border-red-400/10 text-red-400/50 hover:bg-red-400/[0.08] hover:text-red-400/70"
-                )}>
-                  清空数据并重置
-                </button>
+              <div
+                key={appSettingsTab}
+                id={`app-settings-panel-${appSettingsTab}`}
+                className="app-settings-tab-panel motion-tab-content"
+                aria-live="polite"
+              >
+                {appSettingsTab === "general" && (
+                  <div className="app-settings-list">
+                    <AppSettingsRow label="下拉刷新" desc="在酒馆界面顶部下拉即可刷新">
+                      <ToggleSwitch on={pullToRefresh} onChange={(v) => { setPullToRefresh(v); TarvenEnv.setPullToRefresh({ enabled: v }).catch(() => {}); }} isLight={isLight} />
+                    </AppSettingsRow>
+                    {isWindows && (
+                      <AppSettingsRow label="系统浏览器" desc="关闭后将在 SillyClient 窗口内打开">
+                        <ToggleSwitch
+                          on={contentOpenMode === "browser"}
+                          onChange={(useBrowser) => {
+                            const previous = contentOpenMode;
+                            const mode: ContentOpenMode = useBrowser ? "browser" : "webview";
+                            setContentOpenMode(mode);
+                            TarvenEnv.setContentOpenMode({ mode }).catch(() => setContentOpenMode(previous));
+                          }}
+                          isLight={isLight}
+                        />
+                      </AppSettingsRow>
+                    )}
+                    <AppSettingsLinkRow
+                      label="重新演示引导"
+                      desc="再次查看 SillyClient 的使用说明"
+                      onClick={replayOnboarding}
+                    />
+                    <AppSettingsPlaceholder />
+                  </div>
+                )}
+
+                {appSettingsTab === "data" && (
+                  <div className="app-settings-list">
+                    <AppSettingsRow label="实例备份" desc="迁移实例列表与应用设置">
+                      <div className="app-settings-actions">
+                        <AppSettingsAction onClick={() => importInputRef.current?.click()}>导入</AppSettingsAction>
+                        <AppSettingsAction onClick={() => {
+                          const data = JSON.stringify({
+                            version: 2,
+                            instances: instances.map(({ icon: _icon, pendingTavernGestureHint: _pendingHint, ...rest }) => rest),
+                            exportedAt: new Date().toISOString(),
+                          }, null, 2);
+                          const blob = new Blob([data], { type: 'application/json' });
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url; a.download = `sillyclient-backup-${new Date().toISOString().slice(0,10)}.json`;
+                          a.click();
+                          URL.revokeObjectURL(url);
+                          closeAppMenu();
+                        }}>导出</AppSettingsAction>
+                      </div>
+                    </AppSettingsRow>
+                    <AppSettingsRow label="浏览数据" desc="清除应用内网页缓存">
+                      <AppSettingsAction onClick={() => TarvenEnv.clearWebViewData().catch(() => {})}>清除</AppSettingsAction>
+                    </AppSettingsRow>
+                    <AppSettingsPlaceholder />
+                  </div>
+                )}
+
+                {appSettingsTab === "maintenance" && (
+                  <div className="app-settings-list">
+                    <AppSettingsRow label="临时文件" desc="扫描可以安全移除的缓存">
+                      <AppSettingsAction tone="warning" onClick={async () => {
+                        closeAppMenu();
+                        setCleaningGarbage(true);
+                        setShowCleanPanel(true);
+                        setGarbageItems([]);
+                        try {
+                          const { items } = await TarvenEnv.cleanGarbage({ dryRun: true });
+                          setGarbageItems(items);
+                        } catch (e) { console.error(e); }
+                        setCleaningGarbage(false);
+                      }}>检查</AppSettingsAction>
+                    </AppSettingsRow>
+                    <AppSettingsRow label="重置 SillyClient" desc="清除实例列表与本地数据">
+                      <AppSettingsAction tone="danger" onClick={() => { if (confirm("确认清空数据并重新初始化？所有实例将被删除")) { localStorage.removeItem("sillyclient.instances"); TarvenEnv.clearWebViewData().catch(() => {}); setInstances([]); } }}>重置</AppSettingsAction>
+                    </AppSettingsRow>
+                    <AppSettingsLinkRow
+                      label="项目发布页"
+                      desc="查看安装包、更新说明与项目动态"
+                      onClick={openProjectPage}
+                    />
+                    <AppSettingsPlaceholder />
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -1519,7 +1897,7 @@ function SillyClientLauncher() {
         className="pb-12 px-6 min-h-screen flex flex-col items-center"
         style={{
           paddingTop: `calc(max(env(safe-area-inset-top), ${safeInsetTop}px) + 68px)`,
-          transform: `translateY(${pullDistance}px)`,
+          transform: pullDistance > 0 ? `translateY(${pullDistance}px)` : undefined,
           transition: isPulling.current || isRefreshing ? 'none' : 'transform 0.4s cubic-bezier(0.22, 1, 0.36, 1)',
         }}
       >
@@ -1557,14 +1935,14 @@ function SillyClientLauncher() {
               }
             }
           }} placeholder="搜索并打开实例" className={cn(
-            "w-full h-14 pl-12 pr-4 rounded-[20px] border focus:outline-none focus:border-[#1a1625]/30 transition-all",
+            "w-full h-14 pl-12 pr-4 rounded-[20px] border focus:outline-none focus:border-[#1a1625]/30 transition-[background-color,border-color,box-shadow] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]",
             isLight ? "bg-black/5 border-black/10 text-[#1a1625] placeholder:text-[#1a1625]/40 focus:bg-black/8" : "bg-white/5 border-white/10 text-white placeholder:text-white/40 focus:bg-white/10"
           )} />
           {searchQuery && (
-            <div className="absolute top-full left-0 right-0 mt-2 rounded-2xl border overflow-hidden z-30 max-h-64 overflow-y-auto scrollbar-subtle">
+            <div className="motion-menu-list animate-dropdown absolute top-full left-0 right-0 mt-2 rounded-2xl border overflow-hidden z-30 max-h-64 overflow-y-auto scrollbar-subtle">
               {instances.filter(t => (t.subtitle || t.name).toLowerCase().includes(searchQuery.toLowerCase())).map(t => (
                 <button key={t.id} onClick={() => { const idx = instances.indexOf(t) + 1; scrollToSlide(idx); setSearchQuery(""); }} className={cn(
-                  "w-full px-4 py-3 text-left text-sm flex items-center gap-3 transition-colors",
+                  "motion-menu-item w-full px-4 py-3 text-left text-sm flex items-center gap-3 transition-colors",
                   isLight ? "bg-[#f5f3ef]/95 hover:bg-black/5 text-[#1a1625]/80" : "bg-[#1a1625]/95 hover:bg-white/10 text-white/80"
                 )}>
                   <span className="scale-75">{t.icon}</span>
@@ -1593,24 +1971,27 @@ function SillyClientLauncher() {
               {/* 新建实例 */}
               <button
                 onClick={() => {
-                  if (isWeb) { window.open('https://github.com/CAPTCHAAAAA/SillyClient/releases/latest', '_blank'); return; }
+                  if (isWeb && !isShowcase) { window.open('https://github.com/CAPTCHAAAAA/SillyClient/releases/latest', '_blank'); return; }
                   setNewInstanceMode("local");
                   setNewInstanceName("");
                   setNewInstanceDir("");
                   setNewInstanceUrl("http://");
+                  setNewRemoteAuthEnabled(false);
+                  setNewRemoteAuthUsername("");
+                  setNewRemoteAuthPassword("");
                   setNewInstanceVersion("stable");
                   setNewInstanceLocalZip(null);
                   setNewInstanceError(null);
                   setShowNewInstancePanel(true);
                   }}
                   className={cn(
-                    "flex-shrink-0 w-60 h-[320px] rounded-[18px] overflow-hidden snap-center transition-all duration-300 group relative",
+                    "motion-instance-card flex-shrink-0 w-60 h-[320px] rounded-[18px] overflow-hidden snap-center group relative",
                     isLight ? "bg-black/[0.03] border border-black/[0.08] hover:border-black/15" : "bg-white/[0.04] border border-white/[0.06] hover:border-white/15"
                   )}
                   data-card-index="0"
                 >
                   <div className="relative h-full flex flex-col justify-between p-3.5">
-                    <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center transition-transform duration-300 group-hover:scale-110", isLight ? "bg-black/[0.06]" : "bg-white/[0.08]")}>
+                    <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center transition-[background-color,box-shadow,filter] duration-200", isLight ? "bg-black/[0.06]" : "bg-white/[0.08]")}>
                       <Play className={cn("w-3.5 h-3.5", isLight ? "text-[#1a1625]/40" : "text-white/40")} />
                     </div>
                     <div>
@@ -1626,7 +2007,8 @@ function SillyClientLauncher() {
                     key={instance.id}
                     data-card-index={String(index + 1)}
                     className={cn(
-                      "flex-shrink-0 w-60 h-[320px] rounded-[18px] snap-center transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] relative group border",
+                      "motion-instance-card flex-shrink-0 w-60 h-[320px] rounded-[18px] snap-center relative group border",
+                      hoveredCard === instance.id && "is-expanded",
                       isLight
                         ? cn("border-black/[0.08]", hoveredCard === instance.id && "border-black/15 z-20", activeCardMenu === instance.id && "border-black/25 ring-1 ring-black/10 z-30")
                         : cn("border-white/[0.06]", hoveredCard === instance.id && "border-white/15 z-20", activeCardMenu === instance.id && "border-white/25 ring-1 ring-white/10 z-30")
@@ -1646,11 +2028,14 @@ function SillyClientLauncher() {
                   </div>
 
                     <div className={cn(
-                      "absolute inset-0 rounded-[20px] transition-opacity duration-700",
-                    hoveredCard === instance.id
-                      ? "bg-gradient-to-t from-black/80 via-black/50 to-black/20"
-                      : isLight ? "bg-gradient-to-t from-white/70 via-white/35 to-white/5" : "bg-gradient-to-t from-black/75 via-black/40 to-black/10"
-                  )} />
+                      "absolute inset-0 rounded-[20px] transition-opacity duration-[220ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
+                      isLight ? "bg-gradient-to-t from-white/70 via-white/35 to-white/5" : "bg-gradient-to-t from-black/75 via-black/40 to-black/10",
+                      hoveredCard === instance.id ? "opacity-0" : "opacity-100"
+                    )} />
+                    <div className={cn(
+                      "absolute inset-0 rounded-[20px] bg-gradient-to-t from-black/80 via-black/50 to-black/20 transition-opacity duration-[220ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
+                      hoveredCard === instance.id ? "opacity-100" : "opacity-0"
+                    )} />
 
                     <div className="relative h-full flex flex-col p-3.5 overflow-hidden">
                     <span className={cn(
@@ -1693,11 +2078,8 @@ function SillyClientLauncher() {
                       </div>
                     </div>
 
-                    <div className="transition-all duration-700 ease-[cubic-bezier(0.22,1,0.36,1)]" style={{
-                      maxHeight: hoveredCard === instance.id ? 200 : 0,
-                      opacity: hoveredCard === instance.id ? 1 : 0,
-                      overflow: 'hidden'
-                    }}>
+                    <div className={cn("motion-accordion", hoveredCard === instance.id && "is-open")} aria-hidden={hoveredCard !== instance.id}>
+                      <div className="motion-accordion-inner">
                       <div className={cn("pt-2 border-t space-y-1", isLight ? "border-black/[0.06]" : "border-white/10")}>
                         <div className="flex items-center justify-between text-[11px]">
                           <span className={cn(isLight ? "text-[#1a1625]/35" : "text-white/40")}>创建时间</span>
@@ -1713,7 +2095,7 @@ function SillyClientLauncher() {
                         </div>
                         <div className="flex items-center justify-between pt-1.5">
                           <button onClick={(e) => { e.stopPropagation(); launchTavern(instance); }} disabled={launchingId === instance.id} className={cn(
-                            "h-7 px-4 rounded-full text-[11px] font-semibold flex items-center justify-center gap-1 transition-all active:scale-95 disabled:opacity-50",
+                            "motion-control h-7 px-4 rounded-full text-[11px] font-semibold flex items-center justify-center gap-1 disabled:opacity-50",
                             isLight ? "bg-[#1a1625] text-[#f5f3ef] hover:bg-[#1a1625]/90" : "bg-white/90 text-[#1a1625] hover:bg-white"
                           )}>
                             <Play className="w-2.5 h-2.5" /> {launchingId === instance.id ? "启动中" : "启动"}
@@ -1729,26 +2111,27 @@ function SillyClientLauncher() {
                               setActiveCardMenu(id);
                             }
                           }} className={cn(
-                            "w-7 h-7 rounded-full backdrop-blur-md flex items-center justify-center transition-all active:scale-95",
+                            "motion-control w-7 h-7 rounded-full backdrop-blur-md flex items-center justify-center",
                             isLight ? "bg-black/[0.06] hover:bg-black/10" : "bg-white/15 hover:bg-white/25"
                           )}>
                             <MoreVertical className={cn("w-3 h-3", isLight ? "text-[#1a1625]/50" : "text-white")} />
                           </button>
                         </div>
                       </div>
+                      </div>
                     </div>
 
                   </div>
                     {/* 三点菜单 */}
-                  {(activeCardMenu === instance.id || (isCardMenuClosing && activeCardMenu === instance.id)) && (
+                  {(activeCardMenu === instance.id || (isCardMenuClosing && activeCardMenu === instance.id)) && createPortal(
                     <>
                       <div className={cn(
                         "fixed inset-0 z-40 bg-black/15 backdrop-blur-[2px] overlay-backdrop",
                         isCardMenuClosing && "overlay-backdrop-exit"
-                      )} onClick={closeCardMenu} />
+                      )} onClick={(e) => { e.stopPropagation(); closeCardMenu(); }} />
                       <div className={cn(
-                        "fixed z-50 w-44 py-1 px-1 rounded-2xl overflow-hidden backdrop-blur-[40px] saturate-180",
-                        glassBg,
+                        "ios-floating-menu instance-card-menu motion-menu-list fixed z-50 w-44 py-1 px-1 rounded-2xl overflow-hidden backdrop-blur-[40px] saturate-180",
+                        isLight && "is-light",
                         isCardMenuClosing ? "animate-popover-exit" : "animate-popover"
                       )} style={{
                         top: Math.max(Math.min(menuPos.top, window.innerHeight - 240), 16),
@@ -1762,23 +2145,23 @@ function SillyClientLauncher() {
                                 e.stopPropagation(); closeCardMenu();
                                 try { await TarvenEnv.returnToTavern(); } catch (err) { console.error('[returnToTavern]', err); }
                               }}
-                              className={cn("w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-[#1a1625]/50 hover:text-[#1a1625]/80" : "text-white/50 hover:text-white/80")}
+                              className={cn("motion-menu-item w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-[#1a1625]/50 hover:text-[#1a1625]/80" : "text-white/50 hover:text-white/80")}
                             >返回酒馆</button>
                             <button
                               onClick={async (e) => {
                                 e.stopPropagation(); closeCardMenu();
                                 try { await TarvenEnv.closeTavern(); } catch (err) { console.error('[closeTavern]', err); }
                               }}
-                              className={cn("w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-red-900/40 hover:text-red-900/70" : "text-red-400/40 hover:text-red-400/70")}
+                              className={cn("motion-menu-item w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-red-900/40 hover:text-red-900/70" : "text-red-400/40 hover:text-red-400/70")}
                             >停止实例</button>
-                            <div className={cn("my-1 h-px", isLight ? "bg-black/[0.06]" : "bg-white/[0.06]")} />
+                            <div className="h-1.5" />
                           </>
                         )}
                         <button
-                          onClick={(e) => { e.stopPropagation(); closeCardMenu(); setShowManagePanel(instance); }}
-                          className={cn("w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-[#1a1625]/50 hover:text-[#1a1625]/80" : "text-white/50 hover:text-white/80")}
+                          onClick={(e) => { e.stopPropagation(); openManagePanel(instance); }}
+                          className={cn("motion-menu-item w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-[#1a1625]/50 hover:text-[#1a1625]/80" : "text-white/50 hover:text-white/80")}
                         >管理</button>
-                        <button onClick={(e) => { e.stopPropagation(); closeCardMenu(); setRenamingId(instance.id); setRenameValue(instance.name); }} className={cn("w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-[#1a1625]/50 hover:text-[#1a1625]/80" : "text-white/50 hover:text-white/80")}>重命名</button>
+                        <button onClick={(e) => { e.stopPropagation(); closeCardMenu(); setRenamingId(instance.id); setRenameValue(instance.name); }} className={cn("motion-menu-item w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-[#1a1625]/50 hover:text-[#1a1625]/80" : "text-white/50 hover:text-white/80")}>重命名</button>
                         <button onClick={async (e) => {
                           e.stopPropagation();
                           closeCardMenu();
@@ -1787,8 +2170,8 @@ function SillyClientLauncher() {
                             const coverUrl = Capacitor.getPlatform() === 'android' ? Capacitor.convertFileSrc(path) : `file://${path}`;
                             setInstances(prev => prev.map(t => t.id === instance.id ? { ...t, cover: `${coverUrl}?t=${Date.now()}` } : t));
                           } catch (err) { console.error('[pickImage]', err); }
-                        }} className={cn("w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-[#1a1625]/50 hover:text-[#1a1625]/80" : "text-white/50 hover:text-white/80")}>更换插图</button>
-                        <div className={cn("my-1 h-px", isLight ? "bg-black/[0.06]" : "bg-white/[0.06]")} />
+                        }} className={cn("motion-menu-item w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-[#1a1625]/50 hover:text-[#1a1625]/80" : "text-white/50 hover:text-white/80")}>更换插图</button>
+                        <div className="h-1.5" />
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -1796,10 +2179,11 @@ function SillyClientLauncher() {
                             setDeleteInstanceError(null);
                             setPendingDelete(instance);
                           }}
-                          className={cn("w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-red-900/50 hover:text-red-900/80" : "text-red-400/55 hover:text-red-300/90")}
+                          className={cn("motion-menu-item w-full px-3 py-2.5 text-left text-sm transition-colors", isLight ? "text-red-900/50 hover:text-red-900/80" : "text-red-400/55 hover:text-red-300/90")}
                         >删除实例</button>
                       </div>
-                    </>
+                    </>,
+                    document.body
                   )}
                 </div>
               ))}
@@ -1810,22 +2194,31 @@ function SillyClientLauncher() {
             {/* 指示器 + 方向键 */}
             <div className="flex items-center justify-center gap-3 mt-4">
               <button onClick={() => scrollToSlide(Math.max(0, activeSlide - 1))} disabled={activeSlide === 0} className={cn(
-                "w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90",
+                "motion-control w-7 h-7 rounded-full flex items-center justify-center",
                 activeSlide === 0
                   ? isLight ? "text-[#1a1625]/15 cursor-default" : "text-white/15 cursor-default"
                   : isLight ? "text-[#1a1625]/40 hover:text-[#1a1625]/70 hover:bg-[#1a1625]/8" : "text-white/40 hover:text-white/70 hover:bg-white/10"
               )}><ChevronLeft className="w-3.5 h-3.5" /></button>
 
               {Array.from({ length: instances.length + 1 }).map((_, i) => (
-                <button key={i} onClick={() => scrollToSlide(i)} className={cn("rounded-full transition-all duration-300",
-                  i === activeSlide
-                    ? isLight ? "bg-[#1a1625]/45 w-4 h-1.5" : "bg-white/50 w-4 h-1.5"
-                    : isLight ? "bg-[#1a1625]/12 w-1.5 h-1.5 hover:bg-[#1a1625]/20" : "bg-white/15 w-1.5 h-1.5 hover:bg-white/25"
-                )} />
+                <button
+                  key={i}
+                  onClick={() => scrollToSlide(i)}
+                  aria-label={`切换到第 ${i + 1} 张卡片`}
+                  aria-current={i === activeSlide ? "true" : undefined}
+                  className="motion-control group flex h-4 w-4 items-center justify-center rounded-full"
+                >
+                  <span className={cn(
+                    "block h-1.5 w-4 rounded-full transition-[transform,background-color,opacity] duration-[220ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
+                    i === activeSlide
+                      ? isLight ? "scale-x-100 bg-[#1a1625]/45" : "scale-x-100 bg-white/50"
+                      : isLight ? "scale-x-[0.375] bg-[#1a1625]/12 group-hover:bg-[#1a1625]/20" : "scale-x-[0.375] bg-white/15 group-hover:bg-white/25"
+                  )} />
+                </button>
               ))}
 
               <button onClick={() => scrollToSlide(Math.min(instances.length, activeSlide + 1))} disabled={activeSlide === instances.length} className={cn(
-                "w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90",
+                "motion-control w-7 h-7 rounded-full flex items-center justify-center",
                 activeSlide === instances.length
                   ? isLight ? "text-[#1a1625]/15 cursor-default" : "text-white/15 cursor-default"
                   : isLight ? "text-[#1a1625]/40 hover:text-[#1a1625]/70 hover:bg-[#1a1625]/8" : "text-white/40 hover:text-white/70 hover:bg-white/10"
@@ -1840,7 +2233,7 @@ function SillyClientLauncher() {
       {renamingId && (
         <>
           <div className="fixed inset-0 z-[70] bg-black/15 backdrop-blur-[2px]" onClick={() => setRenamingId(null)} />
-          <div className={cn("fixed z-[72] rounded-2xl flex flex-col overflow-hidden backdrop-blur-[40px] saturate-180", glassBg)} style={{
+          <div className={cn("ios-task-surface fixed z-[72] rounded-2xl flex flex-col overflow-hidden backdrop-blur-[40px] saturate-180", glassBg, isLight && "is-light")} style={{
             top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
             width: 'min(360px, calc(100vw - 2rem))',
           }}>
@@ -1879,8 +2272,9 @@ function SillyClientLauncher() {
             onClick={() => { if (!isDeletingInstance) { setPendingDelete(null); setDeleteInstanceError(null); } }}
           />
           <div className={cn(
-            "fixed z-[74] overflow-hidden rounded-2xl backdrop-blur-[40px] saturate-180 animate-clone-panel",
-            glassBg
+            "ios-task-surface fixed z-[74] overflow-hidden rounded-2xl backdrop-blur-[40px] saturate-180 animate-clone-panel",
+            glassBg,
+            isLight && "is-light"
           )} style={{
             top: "50%",
             left: "50%",
@@ -1931,7 +2325,7 @@ function SillyClientLauncher() {
                 disabled={isDeletingInstance}
                 onClick={() => { setPendingDelete(null); setDeleteInstanceError(null); }}
                 className={cn(
-                  "h-8 rounded-xl px-4 text-[11px] font-medium transition-all active:scale-[0.97] disabled:pointer-events-none disabled:opacity-40",
+                  "motion-control h-8 rounded-xl px-4 text-[11px] font-medium disabled:pointer-events-none disabled:opacity-40",
                   isLight ? "bg-black/[0.05] text-[#1a1625]/45 hover:bg-black/[0.08]" : "bg-white/[0.06] text-white/45 hover:bg-white/10"
                 )}
               >
@@ -1942,7 +2336,7 @@ function SillyClientLauncher() {
                 disabled={isDeletingInstance}
                 onClick={confirmDeleteInstance}
                 className={cn(
-                  "flex h-8 items-center justify-center gap-1.5 rounded-xl px-4 text-[11px] font-semibold transition-all active:scale-[0.97] disabled:pointer-events-none disabled:opacity-60",
+                  "motion-control flex h-8 items-center justify-center gap-1.5 rounded-xl px-4 text-[11px] font-semibold disabled:pointer-events-none disabled:opacity-60",
                   isLight ? "bg-[#1a1625] text-[#f5f3ef] hover:bg-[#1a1625]/90" : "bg-white/90 text-[#1a1625] hover:bg-white"
                 )}
               >
@@ -1959,9 +2353,10 @@ function SillyClientLauncher() {
         <>
           <div className="fixed inset-0 z-[60] bg-black/25 backdrop-blur-[4px]" />
           <div className={cn(
-            "fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[61] w-[min(360px,calc(100vw-2rem))] rounded-3xl overflow-hidden backdrop-blur-[40px] saturate-180",
+            "ios-task-surface fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[61] w-[min(360px,calc(100vw-2rem))] rounded-3xl overflow-hidden backdrop-blur-[40px] saturate-180",
             "shadow-[0_24px_80px_rgba(0,0,0,0.4),0_0_0_0.5px_rgba(255,255,255,0.06),inset_0_0.5px_0_rgba(255,255,255,0.08)]",
-            glassBg
+            glassBg,
+            isLight && "is-light"
           )}>
             {/* 标题 */}
             <div className="px-6 pt-6 pb-4">
@@ -1988,7 +2383,7 @@ function SillyClientLauncher() {
               )}>
                 <div
                   className={cn(
-                    "h-full rounded-full transition-all duration-500 ease-out relative overflow-hidden",
+                    "h-full rounded-full transition-[width,background-color] duration-500 ease-out relative overflow-hidden",
                     launchError
                       ? "bg-red-500/80"
                       : isLight
@@ -2039,16 +2434,16 @@ function SillyClientLauncher() {
                     onClick={() => retryLaunch()}
                     disabled={!!launchingId}
                     className={cn(
-                      "flex-1 h-10 rounded-xl text-[13px] font-semibold transition-all active:scale-95 disabled:opacity-50",
+                      "motion-control flex-1 h-10 rounded-xl text-[13px] font-semibold disabled:opacity-50",
                       isLight ? "bg-[#1a1625] text-[#f5f3ef] hover:bg-[#1a1625]/90" : "bg-white/90 text-[#1a1625] hover:bg-white"
                     )}
                   >
                     重试
                   </button>
                   <button
-                    onClick={() => { setShowLaunchPanel(false); setLaunchError(null); setLaunchProgress(null); }}
+                    onClick={dismissLaunchPanel}
                     className={cn(
-                      "flex-1 h-10 rounded-xl text-[13px] font-semibold transition-all active:scale-95",
+                      "motion-control flex-1 h-10 rounded-xl text-[13px] font-semibold",
                       isLight ? "bg-black/[0.05] text-[#1a1625]/60 hover:bg-black/[0.08]" : "bg-white/[0.08] text-white/60 hover:bg-white/[0.12]"
                     )}
                   >
@@ -2070,7 +2465,7 @@ function SillyClientLauncher() {
                   <button
                     onClick={() => { setShowLaunchPanel(false); setLaunchProgress(null); }}
                     className={cn(
-                      "w-full h-10 rounded-xl text-[13px] font-semibold transition-all active:scale-95",
+                      "motion-control w-full h-10 rounded-xl text-[13px] font-semibold",
                       isLight ? "bg-black/[0.05] text-[#1a1625]/40 hover:bg-black/[0.08]" : "bg-white/[0.08] text-white/40 hover:bg-white/[0.12]"
                     )}
                   >
@@ -2087,7 +2482,7 @@ function SillyClientLauncher() {
       {showCleanPanel && (
         <>
           <div className="fixed inset-0 z-[70] bg-black/15 backdrop-blur-[2px]" onClick={() => { if (!cleaningGarbage) setShowCleanPanel(false); }} />
-          <div className={cn("fixed z-[72] rounded-2xl flex flex-col overflow-hidden backdrop-blur-[40px] saturate-180", glassBg)} style={{
+          <div className={cn("ios-task-surface fixed z-[72] rounded-2xl flex flex-col overflow-hidden backdrop-blur-[40px] saturate-180", glassBg, isLight && "is-light")} style={{
             top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
             width: 'min(420px, calc(100vw - 2rem))',
             maxHeight: 'min(80vh, calc(100vh - 4rem))',
@@ -2123,7 +2518,7 @@ function SillyClientLauncher() {
             </div>
             <div className={cn("flex items-center justify-end gap-2 px-5 py-3 border-t flex-shrink-0", isLight ? "border-black/[0.06]" : "border-white/[0.06]")}>
               <button onClick={() => setShowCleanPanel(false)} disabled={cleaningGarbage} className={cn(
-                "px-4 h-8 rounded-xl text-[11px] font-medium transition-all active:scale-[0.97] disabled:opacity-50",
+                "motion-control px-4 h-8 rounded-xl text-[11px] font-medium disabled:opacity-50",
                 isLight ? "bg-black/[0.05] text-[#1a1625]/45 hover:bg-black/[0.08]" : "bg-white/[0.06] text-white/45 hover:bg-white/10"
               )}>取消</button>
               <button
@@ -2140,7 +2535,7 @@ function SillyClientLauncher() {
                 }}
                 disabled={cleaningGarbage || garbageItems.length === 0}
                 className={cn(
-                  "px-4 h-8 rounded-xl text-[11px] font-semibold transition-all active:scale-[0.97] disabled:opacity-50",
+                  "motion-control px-4 h-8 rounded-xl text-[11px] font-semibold disabled:opacity-50",
                   isLight ? "bg-[#1a1625] text-[#f5f3ef] hover:bg-[#1a1625]/90" : "bg-white/90 text-[#1a1625] hover:bg-white"
                 )}>全部清理</button>
             </div>
@@ -2156,14 +2551,18 @@ function SillyClientLauncher() {
             isNewInstancePanelClosing && "overlay-backdrop-exit"
           )} onClick={() => {
             if (!isCreatingInstance) {
-              setShowNewInstancePanel(false);
-              setIsNewInstancePanelClosing(false);
-              setVerDropdownOpen(false);
+              closeVersionDropdown();
+              setIsNewInstancePanelClosing(true);
+              setTimeout(() => {
+                setShowNewInstancePanel(false);
+                setIsNewInstancePanelClosing(false);
+              }, PANEL_EXIT_MS);
             }
           }} />
           <div className={cn(
-            "fixed z-[62] rounded-2xl flex flex-col overflow-hidden backdrop-blur-[40px] saturate-180",
+            "ios-task-surface fixed z-[62] rounded-2xl flex flex-col overflow-hidden backdrop-blur-[40px] saturate-180",
             glassBg,
+            isLight && "is-light",
             isNewInstancePanelClosing ? "animate-clone-panel-exit" : "animate-clone-panel"
           )} style={{
             top: '50%',
@@ -2175,7 +2574,7 @@ function SillyClientLauncher() {
             {/* 头部 */}
             <div className={cn("flex items-center justify-between px-5 h-12 flex-shrink-0 border-b", isLight ? "border-black/[0.06]" : "border-white/[0.06]")}>
               <span className={cn("text-sm font-semibold", isLight ? "text-[#1a1625]" : "text-white")}>新建实例</span>
-              <button disabled={isCreatingInstance} onClick={() => { setIsNewInstancePanelClosing(true); setTimeout(() => { setShowNewInstancePanel(false); setIsNewInstancePanelClosing(false); setVerDropdownOpen(false); }, 250); }} className={cn("p-1.5 rounded-lg transition-colors disabled:pointer-events-none disabled:opacity-30", isLight ? "hover:bg-black/5 text-[#1a1625]/30" : "hover:bg-white/5 text-white/30")}>
+              <button disabled={isCreatingInstance} onClick={() => { closeVersionDropdown(); setIsNewInstancePanelClosing(true); setTimeout(() => { setShowNewInstancePanel(false); setIsNewInstancePanelClosing(false); }, PANEL_EXIT_MS); }} className={cn("motion-control p-1.5 rounded-lg transition-colors disabled:pointer-events-none disabled:opacity-30", isLight ? "hover:bg-black/5 text-[#1a1625]/30" : "hover:bg-white/5 text-white/30")}>
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -2203,8 +2602,9 @@ function SillyClientLauncher() {
                 <div className="flex gap-2">
                   <button
                     onClick={() => setNewInstanceMode("local")}
+                    aria-pressed={newInstanceMode === "local"}
                     className={cn(
-                      "flex-1 h-9 rounded-xl text-xs font-medium border transition-all",
+                      "ios-choice-control motion-control flex-1 h-9 rounded-xl text-xs font-medium border",
                       newInstanceMode === "local"
                         ? isLight ? "bg-[#1a1625]/8 border-[#1a1625]/15 text-[#1a1625]" : "bg-white/10 border-white/15 text-white"
                         : isLight ? "bg-transparent border-black/[0.06] text-[#1a1625]/35 hover:border-black/12 hover:text-[#1a1625]/55" : "bg-transparent border-white/[0.06] text-white/35 hover:border-white/12 hover:text-white/55"
@@ -2212,8 +2612,9 @@ function SillyClientLauncher() {
                   >本地实例</button>
                   <button
                     onClick={() => setNewInstanceMode("remote")}
+                    aria-pressed={newInstanceMode === "remote"}
                     className={cn(
-                      "flex-1 h-9 rounded-xl text-xs font-medium border transition-all",
+                      "ios-choice-control motion-control flex-1 h-9 rounded-xl text-xs font-medium border",
                       newInstanceMode === "remote"
                         ? isLight ? "bg-[#1a1625]/8 border-[#1a1625]/15 text-[#1a1625]" : "bg-white/10 border-white/15 text-white"
                         : isLight ? "bg-transparent border-black/[0.06] text-[#1a1625]/35 hover:border-black/12 hover:text-[#1a1625]/55" : "bg-transparent border-white/[0.06] text-white/35 hover:border-white/12 hover:text-white/55"
@@ -2224,7 +2625,7 @@ function SillyClientLauncher() {
 
               {/* 本地模式配置 */}
               {newInstanceMode === "local" && (
-                <>
+                <div key="local" className="motion-section-enter space-y-5">
                   <NewInstanceField label="安装目录" isLight={isLight}>
                     <div className="flex items-center gap-2 w-full">
                       <input
@@ -2245,106 +2646,147 @@ function SillyClientLauncher() {
                           setNewInstanceDir(name);
                         } catch { /* 取消 */ }
                       }} className={cn(
-                        "h-9 px-3 rounded-xl text-[11px] font-medium border flex-shrink-0 transition-all",
+                        "motion-control h-9 px-3 rounded-xl text-[11px] font-medium border flex-shrink-0",
                         isLight ? "border-black/[0.08] text-[#1a1625]/50 hover:bg-black/[0.04]" : "border-white/[0.08] text-white/50 hover:bg-white/[0.04]"
                       )}>浏览</button>
                     </div>
                   </NewInstanceField>
 
-                  {/* 从本地导入 zip */}
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={async () => {
-                        try {
-                          const { path, sizeBytes } = await TarvenEnv.pickZipFile();
-                          setNewInstanceLocalZip(path);
-                          setNewInstanceVersion("local");
-                          setTerminalLogs(prev => [...prev, { msg: `> 已选择本地文件 (${(sizeBytes / 1048576).toFixed(1)}MB)`, level: "info" }]);
-                        } catch { /* 取消 */ }
-                      }}
-                      className={cn(
-                        "flex-1 h-9 rounded-xl text-[11px] font-medium border transition-all",
-                        newInstanceLocalZip
-                          ? (isLight ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-600" : "border-emerald-400/30 bg-emerald-400/5 text-emerald-400")
-                          : (isLight ? "border-black/[0.08] text-[#1a1625]/50 hover:bg-black/[0.04]" : "border-white/[0.08] text-white/50 hover:bg-white/[0.04]")
-                      )}
-                    >
-                      {newInstanceLocalZip ? "已选择文件" : "从本地导入 zip"}
-                    </button>
-                    {newInstanceLocalZip && (
+                  <NewInstanceField label="版本" isLight={isLight}>
+                    <div className="flex items-center gap-2 w-full">
                       <button
-                        onClick={() => { setNewInstanceLocalZip(null); setNewInstanceVersion("stable"); }}
+                        id="ver-trigger"
+                        onClick={async () => {
+                          if (verDropdownOpen) {
+                            closeVersionDropdown();
+                          } else {
+                            // 首次打开时拉取 GitHub releases
+                            if (releases.length === 0 && !fetchingReleases) {
+                              setFetchingReleases(true);
+                              try {
+                                const { releases: r } = await TarvenEnv.fetchReleases();
+                                setReleases(r);
+                              } catch { /* 网络失败,保留默认选项 */ }
+                              setFetchingReleases(false);
+                            }
+                            const trigger = document.getElementById('ver-trigger');
+                            if (trigger) {
+                              const r = trigger.getBoundingClientRect();
+                              setVerDropdownPos({
+                                bottom: window.innerHeight - r.top + 4,
+                                left: Math.max(8, Math.min(r.left, window.innerWidth - r.width - 8)),
+                                width: r.width,
+                                maxHeight: Math.max(0, Math.min(360, r.top - 12)),
+                              });
+                            }
+                            setIsVerDropdownClosing(false);
+                            setVerDropdownOpen(true);
+                          }
+                        }}
                         className={cn(
-                          "h-9 px-3 rounded-xl text-[11px] font-medium border transition-all",
+                          "ios-field-control motion-control flex-1 min-w-0 h-9 px-3 rounded-xl border text-sm text-left flex items-center justify-between transition-colors",
+                          isLight
+                            ? "bg-black/[0.04] border-black/[0.08] text-[#1a1625]"
+                            : "bg-white/[0.04] border-white/[0.08] text-white"
+                        )}
+                      >
+                        <span className="truncate">{fetchingReleases ? "获取版本中" : (newInstanceLocalZip ? "本地 ZIP" : newInstanceVersion === "stable" ? "稳定版" : newInstanceVersion)}</span>
+                        <ChevronDown className={cn("w-3.5 h-3.5 flex-shrink-0 opacity-40 transition-transform duration-200 ease-[cubic-bezier(0.22,1,0.36,1)]", verDropdownOpen && !isVerDropdownClosing && "rotate-180")} />
+                      </button>
+                      <button
+                        onClick={async () => {
+                          try {
+                            const { path, sizeBytes } = await TarvenEnv.pickZipFile();
+                            setNewInstanceLocalZip(path);
+                            setNewInstanceVersion("local");
+                            setTerminalLogs(prev => [...prev, { msg: `> 已选择本地文件 (${(sizeBytes / 1048576).toFixed(1)}MB)`, level: "info" }]);
+                          } catch { /* 取消 */ }
+                        }}
+                        className={cn(
+                          "motion-control h-9 px-3 rounded-xl text-[11px] font-medium border flex-shrink-0",
                           isLight ? "border-black/[0.08] text-[#1a1625]/50 hover:bg-black/[0.04]" : "border-white/[0.08] text-white/50 hover:bg-white/[0.04]"
                         )}
-                      >移除</button>
-                    )}
-                  </div>
-
-                  <NewInstanceField label="版本" isLight={isLight}>
-                    <button
-                      id="ver-trigger"
-                      onClick={async () => {
-                        if (verDropdownOpen) {
-                          setVerDropdownOpen(false);
-                        } else {
-                          // 首次打开时拉取 GitHub releases
-                          if (releases.length === 0 && !fetchingReleases) {
-                            setFetchingReleases(true);
-                            try {
-                              const { releases: r } = await TarvenEnv.fetchReleases();
-                              setReleases(r);
-                            } catch { /* 网络失败,保留默认选项 */ }
-                            setFetchingReleases(false);
-                          }
-                          const trigger = document.getElementById('ver-trigger');
-                          if (trigger) {
-                            const r = trigger.getBoundingClientRect();
-                            const maxH = 360;
-                            const spaceBelow = window.innerHeight - r.bottom - 16;
-                            const spaceAbove = r.top - 16;
-                            if (spaceBelow >= maxH || spaceBelow >= spaceAbove) {
-                              // 下方展开
-                              setVerDropdownPos({ top: Math.min(r.bottom + 4, window.innerHeight - maxH - 8), left: Math.min(r.left, window.innerWidth - r.width - 8), width: r.width });
-                            } else {
-                              // 上方展开
-                              setVerDropdownPos({ top: Math.max(8, r.top - maxH - 4), left: Math.min(r.left, window.innerWidth - r.width - 8), width: r.width });
-                            }
-                          }
-                          setVerDropdownOpen(true);
-                        }
-                      }}
-                      className={cn(
-                        "w-full h-9 px-3 rounded-xl border text-sm text-left flex items-center justify-between transition-colors",
-                        isLight
-                          ? "bg-black/[0.04] border-black/[0.08] text-[#1a1625]"
-                          : "bg-white/[0.04] border-white/[0.08] text-white"
-                      )}
-                    >
-                      <span>{fetchingReleases ? "获取版本中" : (newInstanceVersion === "stable" ? "稳定版" : newInstanceVersion)}</span>
-                      <ChevronDown className="w-3.5 h-3.5 opacity-40" />
-                    </button>
+                      >{newInstanceLocalZip ? "更换" : "导入 ZIP"}</button>
+                    </div>
                   </NewInstanceField>
-                </>
+                </div>
               )}
 
               {/* 远程模式配置 */}
               {newInstanceMode === "remote" && (
-                <NewInstanceField label="连接地址" isLight={isLight}>
-                  <input
-                    type="text"
-                    value={newInstanceUrl}
-                    onChange={(e) => setNewInstanceUrl(e.target.value)}
-                    placeholder="http://192.168.1.100:8000"
-                    className={cn(
-                      "w-full h-9 px-3 rounded-xl border text-sm focus:outline-none focus:ring-0 transition-colors",
-                      isLight
-                        ? "bg-black/[0.04] border-black/[0.08] text-[#1a1625] placeholder:text-[#1a1625]/25 focus:border-[#1a1625]/20"
-                        : "bg-white/[0.04] border-white/[0.08] text-white placeholder:text-white/25 focus:border-white/20"
-                    )}
-                  />
-                </NewInstanceField>
+                <div key="remote" className="motion-section-enter space-y-5">
+                  <NewInstanceField label="连接地址" isLight={isLight}>
+                    <input
+                      type="url"
+                      value={newInstanceUrl}
+                      onChange={(e) => setNewInstanceUrl(e.target.value)}
+                      placeholder="https://example.com"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      className={cn(
+                        "w-full h-9 px-3 rounded-xl border text-sm focus:outline-none focus:ring-0 transition-colors",
+                        isLight
+                          ? "bg-black/[0.04] border-black/[0.08] text-[#1a1625] placeholder:text-[#1a1625]/25 focus:border-[#1a1625]/20"
+                          : "bg-white/[0.04] border-white/[0.08] text-white placeholder:text-white/25 focus:border-white/20"
+                      )}
+                    />
+                  </NewInstanceField>
+
+                  <div className={cn(
+                    "border-t pt-3",
+                    isLight ? "border-black/[0.04]" : "border-white/[0.04]"
+                  )}>
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <div className={cn("text-xs font-medium", isLight ? "text-[#1a1625]/70" : "text-white/70")}>Basic Auth</div>
+                        <div className={cn("mt-0.5 text-[10px]", isLight ? "text-[#1a1625]/35" : "text-white/35")}>用于受 HTTP 基本认证保护的远程地址</div>
+                      </div>
+                      <ToggleSwitch on={newRemoteAuthEnabled} onChange={setNewRemoteAuthEnabled} isLight={isLight} />
+                    </div>
+
+                    <div className={cn("motion-accordion", newRemoteAuthEnabled && "is-open")} aria-hidden={!newRemoteAuthEnabled}>
+                      <div className="motion-accordion-inner">
+                      <div className="pt-3">
+                      <div className="grid grid-cols-2 gap-2">
+                        <input
+                          type="text"
+                          value={newRemoteAuthUsername}
+                          onChange={(e) => setNewRemoteAuthUsername(e.target.value)}
+                          placeholder="用户名"
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          autoComplete="username"
+                          disabled={!newRemoteAuthEnabled}
+                          className={cn(
+                            "h-9 min-w-0 px-3 rounded-xl border text-sm focus:outline-none focus:ring-0 transition-colors",
+                            isLight
+                              ? "bg-black/[0.04] border-black/[0.08] text-[#1a1625] placeholder:text-[#1a1625]/25 focus:border-[#1a1625]/20"
+                              : "bg-white/[0.04] border-white/[0.08] text-white placeholder:text-white/25 focus:border-white/20"
+                          )}
+                        />
+                        <input
+                          type="password"
+                          value={newRemoteAuthPassword}
+                          onChange={(e) => setNewRemoteAuthPassword(e.target.value)}
+                          placeholder="密码"
+                          autoComplete="current-password"
+                          disabled={!newRemoteAuthEnabled}
+                          className={cn(
+                            "h-9 min-w-0 px-3 rounded-xl border text-sm focus:outline-none focus:ring-0 transition-colors",
+                            isLight
+                              ? "bg-black/[0.04] border-black/[0.08] text-[#1a1625] placeholder:text-[#1a1625]/25 focus:border-[#1a1625]/20"
+                              : "bg-white/[0.04] border-white/[0.08] text-white placeholder:text-white/25 focus:border-white/20"
+                          )}
+                        />
+                      </div>
+                      <p className={cn("mt-2 text-[10px] leading-relaxed", isLight ? "text-[#1a1625]/35" : "text-white/35")}>
+                        密码由系统安全存储保管，不会写入连接地址。公网连接建议使用 HTTPS。
+                      </p>
+                      </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
 
@@ -2360,8 +2802,8 @@ function SillyClientLauncher() {
                 </div>
               )}
               <div className="flex items-center justify-end gap-2">
-              <button disabled={isCreatingInstance} onClick={() => { setIsNewInstancePanelClosing(true); setTimeout(() => { setShowNewInstancePanel(false); setIsNewInstancePanelClosing(false); }, 250); }} className={cn(
-                "px-4 h-8 rounded-xl text-[11px] font-medium transition-all active:scale-[0.97]",
+              <button disabled={isCreatingInstance} onClick={() => { closeVersionDropdown(); setIsNewInstancePanelClosing(true); setTimeout(() => { setShowNewInstancePanel(false); setIsNewInstancePanelClosing(false); }, PANEL_EXIT_MS); }} className={cn(
+                "motion-control px-4 h-8 rounded-xl text-[11px] font-medium",
                 "disabled:pointer-events-none disabled:opacity-40",
                 isLight ? "bg-black/[0.05] text-[#1a1625]/45 hover:bg-black/[0.08]" : "bg-white/[0.06] text-white/45 hover:bg-white/10"
               )}>取消</button>
@@ -2369,12 +2811,12 @@ function SillyClientLauncher() {
                 onClick={createInstance}
                 disabled={isCreatingInstance}
                 className={cn(
-                  "px-4 h-8 rounded-xl text-[11px] font-semibold transition-all active:scale-[0.97] disabled:pointer-events-none disabled:opacity-60 flex items-center gap-1.5",
+                  "motion-control px-4 h-8 rounded-xl text-[11px] font-semibold disabled:pointer-events-none disabled:opacity-60 flex items-center gap-1.5",
                   isLight ? "bg-[#1a1625] text-[#f5f3ef] hover:bg-[#1a1625]/90" : "bg-white/90 text-[#1a1625] hover:bg-white"
                 )}
               >
                 {isCreatingInstance && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
-                {isCreatingInstance ? "获取当前版本" : "创建"}
+                {isCreatingInstance ? (newInstanceMode === "remote" ? "验证连接" : "获取当前版本") : "创建"}
               </button>
               </div>
             </div>
@@ -2383,42 +2825,46 @@ function SillyClientLauncher() {
       )}
 
       {/* 版本下拉菜单 — 渲染在面板外部避免 transform 裁剪 */}
-      {verDropdownOpen && (
+      {(verDropdownOpen || isVerDropdownClosing) && (
         <>
-          <div className="fixed inset-0 z-[70] overlay-backdrop" onClick={() => setVerDropdownOpen(false)} />
+          <div className={cn("fixed inset-0 z-[70] overlay-backdrop", isVerDropdownClosing && "overlay-backdrop-exit")} onClick={closeVersionDropdown} />
           <div className={cn(
-            "fixed z-[72] rounded-md overflow-hidden animate-dropdown backdrop-blur-[40px] saturate-180",
+            "motion-menu-list fixed z-[72] rounded-md overflow-hidden backdrop-blur-[40px] saturate-180",
+            isVerDropdownClosing ? "animate-dropdown-up-exit" : "animate-dropdown-up",
             glassBg
           )} style={{
-            top: verDropdownPos.top,
+            bottom: verDropdownPos.bottom,
             left: verDropdownPos.left,
             width: verDropdownPos.width,
-            maxHeight: "min(50vh, 360px)",
+            maxHeight: verDropdownPos.maxHeight,
             overflowY: "auto",
             overscrollBehavior: "contain",
-          }}>
+            transformOrigin: "bottom center",
+          }} ref={versionDropdownRef}>
             {[
-              { value: "stable", label: "稳定版", sublabel: "自动获取最新正式版", zipballUrl: undefined },
-              ...releases.slice(0, 20).map(r => ({
+              ...releases.slice(0, 20).reverse().map(r => ({
                 value: r.tag,
                 label: r.tag,
                 sublabel: r.prerelease ? "预发布版本" : "正式版本",
                 zipballUrl: r.zipballUrl,
                 recommended: r.tag === releases.find(x => !x.prerelease)?.tag
               })),
-            ].map(opt => (
+              { value: "stable", label: "稳定版", sublabel: "自动获取最新正式版", zipballUrl: undefined },
+            ].map((opt, optionIndex, options) => (
               <button
                 key={opt.value}
                 onClick={() => {
+                  setNewInstanceLocalZip(null);
                   setNewInstanceVersion(opt.value);
-                  setVerDropdownOpen(false);
+                  closeVersionDropdown();
                 }}
                 className={cn(
-                  "w-full px-4 py-2.5 text-left transition-colors flex items-center justify-between gap-2",
+                  "motion-menu-item w-full px-4 py-2.5 text-left transition-colors flex items-center justify-between gap-2",
                   newInstanceVersion === opt.value
                     ? isLight ? "bg-[#1a1625]/8" : "bg-white/10"
                     : isLight ? "hover:bg-black/[0.04]" : "hover:bg-white/[0.06]"
                 )}
+                style={{ animationDelay: `${Math.min(options.length - 1 - optionIndex, 5) * 14}ms` }}
               >
                 <div className="flex flex-col items-start min-w-0">
                   <span className={cn("text-[13px] font-medium", newInstanceVersion === opt.value
@@ -2440,16 +2886,17 @@ function SillyClientLauncher() {
       {/* 管理面板 */}
       {(() => {
         const mp = showManagePanel;
-        if (!mp && !isManagePanelClosing) return null;
+        if (!mp) return null;
         return (
         <>
           <div className={cn(
             "fixed inset-0 z-[60] bg-black/25 backdrop-blur-[2px] overlay-backdrop",
             isManagePanelClosing && "overlay-backdrop-exit"
-          )} onClick={() => { setShowManagePanel(null); setIsManagePanelClosing(false); setManageTab("general"); }} />
+          )} onClick={closeManagePanel} />
           <div className={cn(
-            "fixed z-[62] rounded-2xl flex flex-col overflow-hidden backdrop-blur-[40px] saturate-180",
+            "ios-task-surface manage-panel-surface fixed z-[62] rounded-2xl flex flex-col overflow-hidden backdrop-blur-[28px] saturate-180",
             glassBg,
+            isLight && "is-light",
             isManagePanelClosing ? "animate-clone-panel-exit" : "animate-clone-panel"
           )} style={{
             top: '50%',
@@ -2464,7 +2911,7 @@ function SillyClientLauncher() {
                 <span className={cn("text-sm font-semibold", isLight ? "text-[#1a1625]" : "text-white")}>{mp!.subtitle || mp!.name}</span>
                 <span className={cn("text-[10px] px-1.5 py-0.5 rounded-md", isLight ? "bg-black/[0.05] text-[#1a1625]/35" : "bg-white/[0.06] text-white/35")}>{mp!.version || "—"}</span>
               </div>
-              <button onClick={() => { setIsManagePanelClosing(true); setTimeout(() => { setShowManagePanel(null); setIsManagePanelClosing(false); setManageTab("general"); }, 250); }} className={cn("p-1.5 rounded-lg transition-colors", isLight ? "hover:bg-black/5 text-[#1a1625]/30" : "hover:bg-white/5 text-white/30")}>
+              <button onClick={closeManagePanel} className={cn("motion-control p-1.5 rounded-lg", isLight ? "hover:bg-black/5 text-[#1a1625]/30" : "hover:bg-white/5 text-white/30")}>
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -2478,8 +2925,9 @@ function SillyClientLauncher() {
                 <button
                   key={tab.id}
                   onClick={() => setManageTab(tab.id)}
+                  aria-pressed={manageTab === tab.id}
                   className={cn(
-                    "px-3 py-1.5 rounded-lg text-[11px] font-medium transition-all",
+                    "ios-choice-control motion-control px-3 py-1.5 rounded-lg text-[11px] font-medium border border-transparent",
                     manageTab === tab.id
                       ? isLight ? "bg-[#1a1625]/8 text-[#1a1625]" : "bg-white/10 text-white"
                       : isLight ? "text-[#1a1625]/35 hover:text-[#1a1625]/55" : "text-white/35 hover:text-white/55"
@@ -2489,9 +2937,12 @@ function SillyClientLauncher() {
             </div>
 
             {/* Tab 内容 */}
-            <div className="flex-1 overflow-y-auto p-5 space-y-4 scrollbar-subtle">
+            <div className="flex-1 overflow-y-auto p-5 scrollbar-subtle">
+              <div key={manageTab} className="motion-tab-content space-y-4">
               {manageTab === "general" && (
                 <>
+                  {mp!.type === "local" ? (
+                  <>
                   <ManageItem label="启动端口" desc="宿主 WebView 和本地服务都会使用这个端口" isLight={isLight}>
                     <input type="text" inputMode="numeric" pattern="[0-9]*" value={draftPort} onChange={(e) => {
                       setDraftPort(parseInt(e.target.value) || 8000);
@@ -2522,6 +2973,56 @@ function SillyClientLauncher() {
                   <ManageItem label="启用 HTTP Keep-Alive" desc="网络波动大时可临时关闭" isLight={isLight}>
                     <ToggleSwitch on={draftConfig.keepAlive} onChange={(v) => setDraftConfig(prev => ({ ...prev, keepAlive: v }))} isLight={isLight} />
                   </ManageItem>
+                  </>
+                  ) : (
+                  <div>
+                    <ManageItem label="Basic Auth" desc="为受 HTTP 基本认证保护的远程地址提供凭据" isLight={isLight}>
+                      <ToggleSwitch on={draftRemoteAuthEnabled} onChange={setDraftRemoteAuthEnabled} isLight={isLight} />
+                    </ManageItem>
+                    <div
+                      className={cn("motion-accordion", draftRemoteAuthEnabled && "is-open")}
+                      aria-hidden={!draftRemoteAuthEnabled}
+                    >
+                      <div className="motion-accordion-inner">
+                      <div className="pt-3 space-y-2">
+                        <input
+                          type="text"
+                          disabled={!draftRemoteAuthEnabled}
+                          value={draftRemoteAuthUsername}
+                          onChange={(e) => setDraftRemoteAuthUsername(e.target.value)}
+                          placeholder="用户名"
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          autoComplete="username"
+                          className={cn(
+                            "w-full h-9 px-3 rounded-xl border text-sm focus:outline-none focus:ring-0 transition-colors",
+                            isLight
+                              ? "bg-black/[0.04] border-black/[0.08] text-[#1a1625] placeholder:text-[#1a1625]/25 focus:border-[#1a1625]/20"
+                              : "bg-white/[0.04] border-white/[0.08] text-white placeholder:text-white/25 focus:border-white/20"
+                          )}
+                        />
+                        <input
+                          type="password"
+                          disabled={!draftRemoteAuthEnabled}
+                          value={draftRemoteAuthPassword}
+                          onChange={(e) => setDraftRemoteAuthPassword(e.target.value)}
+                          placeholder={mp!.basicAuth ? "留空则保留现有密码" : "密码"}
+                          autoComplete="current-password"
+                          className={cn(
+                            "w-full h-9 px-3 rounded-xl border text-sm focus:outline-none focus:ring-0 transition-colors",
+                            isLight
+                              ? "bg-black/[0.04] border-black/[0.08] text-[#1a1625] placeholder:text-[#1a1625]/25 focus:border-[#1a1625]/20"
+                              : "bg-white/[0.04] border-white/[0.08] text-white placeholder:text-white/25 focus:border-white/20"
+                          )}
+                        />
+                        <p className={cn("text-[10px] leading-relaxed", isLight ? "text-[#1a1625]/35" : "text-white/35")}>
+                          密码由系统安全存储保管。保存时会立即验证当前连接。
+                        </p>
+                      </div>
+                      </div>
+                    </div>
+                  </div>
+                  )}
                 </>
               )}
               {manageTab === "about" && (
@@ -2565,29 +3066,36 @@ function SillyClientLauncher() {
                     </div>
                   )}
                   {showManagePanel!.type === "remote" && (
-                    <div className={cn("py-2")}>
+                    <div className="space-y-3 py-2">
                       <span className={cn("text-xs block mb-1", isLight ? "text-[#1a1625]/40" : "text-white/40")}>连接地址</span>
                       <span className={cn("text-[10px] font-mono break-all", isLight ? "text-[#1a1625]/50" : "text-white/50")}>{showManagePanel!.url || "—"}</span>
+                      <div className={cn("flex items-center justify-between border-t pt-3", isLight ? "border-black/[0.04]" : "border-white/[0.04]")}>
+                        <span className={cn("text-xs", isLight ? "text-[#1a1625]/40" : "text-white/40")}>Basic Auth</span>
+                        <span className={cn("text-xs font-medium", isLight ? "text-[#1a1625]/70" : "text-white/70")}>
+                          {showManagePanel!.basicAuth ? showManagePanel!.basicAuth.username : "未配置"}
+                        </span>
+                      </div>
                     </div>
                   )}
                 </div>
               )}
+              </div>
             </div>
 
             {/* 底部按钮 */}
             <div className={cn("flex items-center justify-end gap-2 px-5 py-3 border-t flex-shrink-0", isLight ? "border-black/[0.06]" : "border-white/[0.06]")}>
-              <button onClick={() => { setIsManagePanelClosing(true); setTimeout(() => { setShowManagePanel(null); setIsManagePanelClosing(false); setManageTab("general"); }, 250); }} className={cn(
-                "px-4 h-8 rounded-xl text-[11px] font-medium transition-all active:scale-[0.97]",
+              {manageSaveError && (
+                <span className={cn("mr-auto max-w-[55%] text-[10px] leading-snug", isLight ? "text-red-900/65" : "text-red-300/75")}>{manageSaveError}</span>
+              )}
+              <button disabled={isSavingManagePanel} onClick={closeManagePanel} className={cn(
+                "motion-control px-4 h-8 rounded-xl text-[11px] font-medium",
+                "disabled:pointer-events-none disabled:opacity-40",
                 isLight ? "bg-black/[0.05] text-[#1a1625]/45 hover:bg-black/[0.08]" : "bg-white/[0.06] text-white/45 hover:bg-white/10"
               )}>取消</button>
-              <button onClick={() => {
-                updateManagedConfig(draftConfig);
-                if (showManagePanel) setInstances(prev => prev.map(t => t.id === showManagePanel.id ? { ...t, port: draftPort } : t));
-                closeManagePanel();
-              }} className={cn(
-                "px-4 h-8 rounded-xl text-[11px] font-semibold transition-all active:scale-[0.97]",
+              <button disabled={isSavingManagePanel} onClick={saveManagedInstance} className={cn(
+                "motion-control px-4 h-8 rounded-xl text-[11px] font-semibold disabled:pointer-events-none disabled:opacity-60",
                 isLight ? "bg-[#1a1625] text-[#f5f3ef] hover:bg-[#1a1625]/90" : "bg-white/90 text-[#1a1625] hover:bg-white"
-              )}>保存</button>
+              )}>{isSavingManagePanel ? "验证中" : "保存"}</button>
             </div>
           </div>
         </>
