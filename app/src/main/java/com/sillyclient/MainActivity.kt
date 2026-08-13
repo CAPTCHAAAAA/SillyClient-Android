@@ -1114,14 +1114,19 @@ class MainActivity : BridgeActivity() {
     }
 
     /** 向终端发送命令:运行 shell 命令并流式输出到日志。 */
-    fun sendCommand(text: String) {
+    fun sendCommand(text: String, instanceId: String) {
         if (text.isBlank()) return
         val paths = RuntimePaths.from(this)
+        val instanceDir = paths.serverDirFor(instanceId, create = false)
+        if (!instanceDir.exists()) {
+            pushLog("实例目录不存在: $instanceId")
+            return
+        }
         Thread {
             pushLog("\$ $text")
             try {
                 val pb = ProcessBuilder("/system/bin/sh", "-c", text)
-                pb.directory(paths.bootstrapDir)
+                pb.directory(instanceDir)
                 pb.redirectErrorStream(true)
                 val env = pb.environment()
                 env["LD_LIBRARY_PATH"] = "${paths.usrDir.absolutePath}/lib:${paths.nativeLibDir.absolutePath}"

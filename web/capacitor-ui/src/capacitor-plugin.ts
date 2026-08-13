@@ -33,6 +33,15 @@ export interface GithubRelease {
   prerelease: boolean
 }
 
+/** SillyClient 应用自身的更新检查结果。 */
+export interface AppUpdateInfo {
+  currentVersion: string
+  latestVersion: string
+  updateAvailable: boolean
+  releaseUrl?: string
+  publishedAt?: string
+}
+
 export type ContentOpenMode = 'webview' | 'browser'
 
 /** 自检发现的本地实例。 */
@@ -84,6 +93,9 @@ export interface TarvenEnvPlugin {
   /** 拉取 GitHub SillyTavern releases 列表。 */
   fetchReleases(): Promise<{ releases: GithubRelease[] }>
 
+  /** 检查 SillyClient 应用自身是否有新版本。 */
+  checkAppUpdate(): Promise<AppUpdateInfo>
+
   /** 调用系统目录选择器,返回选中的目录显示名(用作实例安装标识)。 */
   pickDirectory(): Promise<{ name: string; path: string }>
 
@@ -100,7 +112,7 @@ export interface TarvenEnvPlugin {
   getInstanceInfo(options: { instanceId: string; port?: number }): Promise<InstanceInfo>
 
   /** 在当前平台的原生控制台中执行命令。 */
-  sendCommand(options: { text: string }): Promise<void>
+  sendCommand(options: { text: string; instanceId?: string }): Promise<void>
 
   /** 刷新酒馆 WebView。 */
   reloadTavern(): Promise<void>
