@@ -48,8 +48,12 @@ export type ContentOpenMode = 'webview' | 'browser'
 export interface ScannedInstance {
   instanceId: string
   version: string
+  path?: string
   sizeBytes: number
   hasServer: boolean
+  createdAt?: string
+  lastUsedAt?: string
+  totalUsageMs?: number
 }
 
 /** 实例详情(管理面板「关于」真实数据)。 */
@@ -59,6 +63,8 @@ export interface InstanceInfo {
   path: string
   sizeBytes: number
   createdAt: string
+  lastUsedAt?: string
+  totalUsageMs?: number
   status: string
 }
 
@@ -77,6 +83,8 @@ export interface TarvenEnvPlugin {
     version: string
     zipballUrl?: string
     localZipPath?: string
+    /** Windows 可选：实例实际安装目录的绝对路径。Android 忽略该字段。 */
+    installPath?: string
     config: InstanceConfig
   }): Promise<{ ready: boolean }>
 
@@ -100,7 +108,7 @@ export interface TarvenEnvPlugin {
   pickDirectory(): Promise<{ name: string; path: string }>
 
   /** 调用系统图片选择器,把图片复制到 covers/{instanceId},返回可加载的文件路径。 */
-  pickImage(options: { instanceId: string }): Promise<{ path: string }>
+  pickImage(options: { instanceId: string }): Promise<{ path: string; url?: string }>
 
   /** 调用系统文件选择器,选择 SillyTavern zip 文件,复制到 tmp 并返回路径。 */
   pickZipFile(): Promise<{ path: string; sizeBytes: number }>
@@ -109,7 +117,7 @@ export interface TarvenEnvPlugin {
   scanInstances(): Promise<{ instances: ScannedInstance[] }>
 
   /** 读取实例详情(关于页真实数据)。 */
-  getInstanceInfo(options: { instanceId: string; port?: number }): Promise<InstanceInfo>
+  getInstanceInfo(options: { instanceId: string; installPath?: string; port?: number }): Promise<InstanceInfo>
 
   /** 在当前平台的原生控制台中执行命令。 */
   sendCommand(options: { text: string; instanceId?: string }): Promise<void>
@@ -154,7 +162,7 @@ export interface TarvenEnvPlugin {
   }): Promise<{ online: boolean; statusCode?: number; authRequired?: boolean; error?: string }>
 
   /** 卸载实例:删除安装目录和封面图。 */
-  uninstallInstance(options: { instanceId: string }): Promise<{ success: boolean; freedBytes: number }>
+  uninstallInstance(options: { instanceId: string; installPath?: string; port?: number }): Promise<{ success: boolean; freedBytes: number }>
 
   /** 清理垃圾:扫描孤立文件/目录,返回可清理项。dryRun=true 仅扫描不删除。 */
   cleanGarbage(options: { dryRun: boolean }): Promise<{ items: GarbageItem[]; totalBytes: number }>
