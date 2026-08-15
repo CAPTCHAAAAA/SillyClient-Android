@@ -335,8 +335,8 @@ function SillyClientLauncher() {
   const terminalTitle = isWindows ? "Windows 控制台" : "Android 终端";
   const terminalPrompt = isWindows ? "C:\\>" : "~ $";
   const terminalBanner = isWindows
-    ? "SillyClient 1.8.0 · Windows · cmd.exe"
-    : "SillyClient 1.8.0 · Android shell";
+    ? "SillyClient 1.8.1 · Windows · cmd.exe"
+    : "SillyClient 1.8.1 · Android shell";
   const terminalPlaceholder = isWindows ? "输入 Windows 命令" : "输入 Android shell 命令";
   const [showOnboarding, setShowOnboarding] = useState(
     () => (!isWeb || isWindows) && !isShowcase && localStorage.getItem(ONBOARDING_KEY) !== ONBOARDING_VERSION,
@@ -1912,16 +1912,13 @@ function SillyClientLauncher() {
             <button
               ref={terminalBtnRef}
               onClick={() => {
-                if (isWeb && !isShowcase) return;
+                // Windows uses the shared web renderer, but still exposes the native terminal bridge.
+                if (isWeb && !isWindows && !isShowcase) return;
                 if (showTerminal) {
                   setIsTerminalClosing(true);
                   setTimeout(() => { setShowTerminal(false); setIsTerminalClosing(false); }, PANEL_EXIT_MS);
                 } else {
                   const instance = activeInstance;
-                  if (!instance) {
-                    setTerminalLogs([{ msg: "请先选择一个实例，再打开实例终端", level: "info" }]);
-                    return;
-                  }
                   const btn = terminalBtnRef.current;
                   const settingsBtn = settingsBtnRef.current;
                   if (btn) {
@@ -1929,6 +1926,14 @@ function SillyClientLauncher() {
                     const settingsRect = settingsBtn?.getBoundingClientRect();
                     const rightEdge = settingsRect ? window.innerWidth - settingsRect.right : 16;
                     setTerminalPos({ left: rect.left, right: Math.max(8, rightEdge) });
+                  }
+                  if (!instance) {
+                    setTerminalInstanceId(null);
+                    setTerminalLogs([{ msg: "请先选择一个实例，再打开实例终端", level: "info" }]);
+                    setTerminalInput("");
+                    setIsTerminalClosing(false);
+                    setShowTerminal(true);
+                    return;
                   }
                   openInstanceTerminal(instance);
                 }
