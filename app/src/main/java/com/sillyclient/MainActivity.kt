@@ -1,9 +1,11 @@
 package com.sillyclient
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Rect
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -22,10 +24,13 @@ import android.webkit.HttpAuthHandler
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.ValueCallback
 import android.widget.FrameLayout
 import com.getcapacitor.BridgeActivity
 import com.sillyclient.plugin.TarvenEnvPlugin
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.ActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -92,6 +97,11 @@ class MainActivity : BridgeActivity() {
 
     private var fullscreenView: View? = null
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
+    private var pendingFileChooser: ValueCallback<Array<Uri>>? = null
+    private val fileChooserLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result -> resolveFileChooser(result) }
+
     private val fullscreenBackCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() = exitFullscreen()
     }
@@ -217,7 +227,8 @@ class MainActivity : BridgeActivity() {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.allowFileAccess = false
-            settings.allowContentAccess = false
+            // 文件选择器返回 content:// URI。保持 file:// 关闭，允许 WebView 读取用户明确选择的内容。
+            settings.allowContentAccess = true
             settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -256,6 +267,30 @@ class MainActivity : BridgeActivity() {
             }
 
             webChromeClient = object : WebChromeClient() {
+                override fun onShowFileChooser(
+                    view: WebView?,
+                    filePathCallback: ValueCallback<Array<Uri>>?,
+                    fileChooserParams: FileChooserParams?
+                ): Boolean {
+                    // WebView 只保留一个待回调选择；重新触发时先结束旧请求，避免页面永久等待。
+                    pendingFileChooser?.onReceiveValue(null)
+                    pendingFileChooser = filePathCallback
+                    if (filePathCallback == null || fileChooserParams == null) {
+                        pendingFileChooser = null
+                        return false
+                    }
+
+                    return try {
+                        fileChooserLauncher.launch(createFileChooserIntent(fileChooserParams))
+                        true
+                    } catch (error: Exception) {
+                        android.util.Log.e(TAG, "Unable to open WebView file chooser", error)
+                        pendingFileChooser?.onReceiveValue(null)
+                        pendingFileChooser = null
+                        false
+                    }
+                }
+
                 override fun onShowCustomView(v: View?, cb: CustomViewCallback?) {
                     fullscreenView?.let { root.removeView(it) }
                     fullscreenView = v
@@ -448,6 +483,61 @@ class MainActivity : BridgeActivity() {
             pushProgress(100f, "Ready")
             pushReady(true)
         }
+    }
+
+    /** 为酒馆 WebView 创建兼容 Android 文件管理器的选择 Intent。 */
+    private fun createFileChooserIntent(params: WebChromeClient.FileChooserParams): Intent {
+        return try {
+            params.createIntent().apply {
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                if (params.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE) {
+                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                }
+            }
+        } catch (_: Exception) {
+            val acceptedMimeTypes = params.acceptTypes
+                .flatMap { it.split(',') }
+                .map { it.trim() }
+                .filter { it.contains('/') }
+                .distinct()
+            Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = acceptedMimeTypes.singleOrNull() ?: "*/*"
+                if (acceptedMimeTypes.size > 1) {
+                    putExtra(Intent.EXTRA_MIME_TYPES, acceptedMimeTypes.toTypedArray())
+                }
+                putExtra(
+                    Intent.EXTRA_ALLOW_MULTIPLE,
+                    params.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE
+                )
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        }
+    }
+
+    /** 把系统文件管理器结果完整回传给酒馆页面的 input[type=file]。 */
+    private fun resolveFileChooser(result: ActivityResult) {
+        val callback = pendingFileChooser ?: return
+        pendingFileChooser = null
+
+        if (result.resultCode != RESULT_OK) {
+            callback.onReceiveValue(null)
+            return
+        }
+
+        val data = result.data
+        val uris = buildList {
+            val clipData = data?.clipData
+            if (clipData != null) {
+                for (index in 0 until clipData.itemCount) {
+                    clipData.getItemAt(index).uri?.let(::add)
+                }
+            } else {
+                data?.data?.let(::add)
+            }
+        }.distinct()
+
+        callback.onReceiveValue(uris.takeIf { it.isNotEmpty() }?.toTypedArray())
     }
 
     /**
@@ -1403,6 +1493,8 @@ class MainActivity : BridgeActivity() {
     override fun onDestroy() {
         handler.removeCallbacks(topColorPoll)
         if (::tavernGestureHint.isInitialized) tavernGestureHint.dismiss()
+        pendingFileChooser?.onReceiveValue(null)
+        pendingFileChooser = null
         serverProcess?.destroy()
         serverProcess = null
         webView.destroy()
