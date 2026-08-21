@@ -13,8 +13,10 @@ import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.ActivityCallback
 import com.sillyclient.MainActivity
 import com.sillyclient.auth.RemoteBasicAuthStore
+import com.sillyclient.download.TavernDownloadFiles
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import org.json.JSONObject
@@ -190,13 +192,76 @@ class TarvenEnvPlugin : Plugin() {
     @PluginMethod
     fun pickDirectory(call: PluginCall) {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
+            )
         }
         startActivityForResult(call, intent, "pickDir")
     }
 
+    /** 共享控制台的小型文本/JSON 导出，Android 通过 SAF 选择保存位置。 */
+    @PluginMethod
+    fun saveTextFile(call: PluginCall) {
+        val fileName = TavernDownloadFiles.sanitizeFileName(
+            call.getString("fileName"),
+            call.getString("mimeType")
+        )
+        val mimeType = TavernDownloadFiles.normalizeMimeType(call.getString("mimeType"))
+        if (call.getString("content") == null) {
+            call.reject("Missing file content")
+            return
+        }
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = mimeType
+            putExtra(Intent.EXTRA_TITLE, fileName)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        }
+        startActivityForResult(call, intent, "saveTextFileResult")
+    }
+
     @ActivityCallback
-    private fun pickDir(call: PluginCall, @Suppress("UNUSED_PARAMETER") result: androidx.activity.result.ActivityResult) {
+    private fun saveTextFileResult(call: PluginCall?, result: androidx.activity.result.ActivityResult) {
+        if (call == null) {
+            android.util.Log.e(TAG, "saveTextFile: call is null (process was killed)")
+            return
+        }
+        val destination = result.data?.data
+        if (result.resultCode != android.app.Activity.RESULT_OK || destination == null) {
+            call.reject("cancelled")
+            return
+        }
+        val content = call.getString("content") ?: run {
+            call.reject("Missing file content")
+            return
+        }
+        Thread {
+            val tempFile = File(
+                getContext().cacheDir,
+                "sillyclient-export-${System.currentTimeMillis()}.tmp"
+            )
+            try {
+                FileOutputStream(tempFile).writer(Charsets.UTF_8).use { it.write(content) }
+                val output = getContext().contentResolver.openOutputStream(destination, "w")
+                    ?: throw IOException("Document provider returned no output stream")
+                tempFile.inputStream().use { input ->
+                    output.use { sink -> input.copyTo(sink) }
+                }
+                runCatching { tempFile.delete() }
+                call.resolve()
+            } catch (error: Exception) {
+                runCatching { tempFile.delete() }
+                android.util.Log.e(TAG, "saveTextFile error", error)
+                call.reject("saveTextFile: ${error.message}")
+            }
+        }.start()
+    }
+
+    @ActivityCallback
+    private fun pickDir(call: PluginCall?, @Suppress("UNUSED_PARAMETER") result: androidx.activity.result.ActivityResult) {
         if (call == null) return
         if (result.resultCode != android.app.Activity.RESULT_OK || result.data?.data == null) {
             call.reject("cancelled")
@@ -231,7 +296,7 @@ class TarvenEnvPlugin : Plugin() {
     }
 
     @ActivityCallback
-    private fun pickImage(call: PluginCall, @Suppress("UNUSED_PARAMETER") result: androidx.activity.result.ActivityResult) {
+    private fun pickImage(call: PluginCall?, @Suppress("UNUSED_PARAMETER") result: androidx.activity.result.ActivityResult) {
         if (call == null) {
             android.util.Log.e(TAG, "pickImage: call is null (process was killed)")
             return
@@ -268,7 +333,7 @@ class TarvenEnvPlugin : Plugin() {
     }
 
     @ActivityCallback
-    private fun pickZipFile(call: PluginCall, @Suppress("UNUSED_PARAMETER") result: androidx.activity.result.ActivityResult) {
+    private fun pickZipFile(call: PluginCall?, @Suppress("UNUSED_PARAMETER") result: androidx.activity.result.ActivityResult) {
         if (call == null) {
             android.util.Log.e(TAG, "pickZipFile: call is null (process was killed)")
             return
@@ -284,8 +349,10 @@ class TarvenEnvPlugin : Plugin() {
             val uri = data.data ?: run { call.reject("No file data"); return }
             val tmpDir = File(act.cacheDir, "sillyclient-tmp").apply { mkdirs() }
             val destFile = File(tmpDir, "sillytavern-import-${System.currentTimeMillis()}.zip")
-            act.contentResolver.openInputStream(uri).use { input ->
-                FileOutputStream(destFile).use { out -> input?.copyTo(out) }
+            val input = act.contentResolver.openInputStream(uri)
+                ?: throw IOException("Document provider returned no input stream")
+            input.use {
+                FileOutputStream(destFile).use { out -> it.copyTo(out) }
             }
             val ret = JSObject()
             ret.put("path", destFile.absolutePath)

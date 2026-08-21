@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, startTransition } from "react";
 import { createPortal } from "react-dom";
 import {
   Menu,
@@ -69,7 +69,7 @@ interface TavernInstance {
   cover?: string;
   /** 本地实例运行配置(映射管理面板设置) */
   config?: InstanceConfig;
-  /** Android 新建实例首次进入酒馆时显示顶部返回手势提示。 */
+  /** Android 新建实例首次进入酒馆时显示状态栏返回提示；仅在用户实际滑动返回后清除。 */
   pendingTavernGestureHint?: boolean;
 }
 
@@ -149,6 +149,22 @@ function saveInstances(list: TavernInstance[]) {
     /* ignore */
   }
 }
+
+/** 仅 Vite 开发预览使用，不进入正式构建与本地存储。 */
+const DEMO_INSTANCE: TavernInstance = {
+  id: "demo-instance",
+  name: "演示实例",
+  subtitle: "本地演示 · 可展开",
+  version: "1.12.4",
+  status: "running",
+  type: "local",
+  createdAt: "2026-08-22",
+  lastUsed: "刚刚",
+  totalUsage: "3 小时",
+  color: "#a3e635",
+  port: 8000,
+  icon: <Folder className="w-5 h-5" />,
+};
 
 type BgMode = "dynamic" | "custom";
 type ThemeStyle = "dark" | "light";
@@ -323,6 +339,7 @@ function SillyClientLauncher() {
   const isWeb = !Capacitor.isNativePlatform();
   const showcaseParams = new URLSearchParams(window.location.search);
   const isShowcase = showcaseParams.get("showcase") === "1";
+  const isDemoPreview = import.meta.env.DEV && !isShowcase;
   const showcaseSafeTop = isShowcase
     ? Math.max(0, Number(showcaseParams.get("safeTop")) || 52)
     : 0;
@@ -335,18 +352,24 @@ function SillyClientLauncher() {
   const terminalTitle = isWindows ? "Windows 控制台" : "Android 终端";
   const terminalPrompt = isWindows ? "C:\\>" : "~ $";
   const terminalBanner = isWindows
-    ? "SillyClient 1.8.1 · Windows · cmd.exe"
-    : "SillyClient 1.8.1 · Android shell";
+    ? "SillyClient 1.8.2 · Windows · cmd.exe"
+    : "SillyClient 1.8.2 · Android shell";
   const terminalPlaceholder = isWindows ? "输入 Windows 命令" : "输入 Android shell 命令";
   const [showOnboarding, setShowOnboarding] = useState(
     () => (!isWeb || isWindows) && !isShowcase && localStorage.getItem(ONBOARDING_KEY) !== ONBOARDING_VERSION,
   );
-  const [instances, setInstances] = useState<TavernInstance[]>(() => isShowcase ? [] : loadInstances());
+  const [instances, setInstances] = useState<TavernInstance[]>(() => {
+    if (isShowcase) return [];
+    const loaded = loadInstances();
+    return isDemoPreview ? [DEMO_INSTANCE, ...loaded] : loaded;
+  });
   const [showBgPanel, setShowBgPanel] = useState(false);
   const [isPanelClosing, setIsPanelClosing] = useState(false);
   const [bgMode, setBgMode] = useState<BgMode>("dynamic");
   const [dynamicPaused, setDynamicPaused] = useState(false);
   const [themeStyle, setThemeStyle] = useState<ThemeStyle>("dark");
+  const [themeSmoothing, setThemeSmoothing] = useState(false);
+  const themeSmoothingTimer = useRef<number | null>(null);
   const [customWallpaperUrl, setCustomWallpaperUrl] = useState<string | null>(null);
   const wallpaperInputRef = useRef<HTMLInputElement>(null);
   const [showTerminal, setShowTerminal] = useState(false);
@@ -477,6 +500,11 @@ function SillyClientLauncher() {
     const haystack = `${instance.name} ${instance.subtitle || ""} ${instance.url || ""}`.toLowerCase();
     return matchesFilter && (!normalizedManageSearch || haystack.includes(normalizedManageSearch));
   });
+  const searchResults = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return [];
+    return instances.filter(t => (t.subtitle || t.name).toLowerCase().includes(query));
+  }, [instances, searchQuery]);
 
   const terminalInstance = terminalInstanceId
     ? instances.find(instance => instance.id === terminalInstanceId) || null
@@ -811,10 +839,21 @@ function SillyClientLauncher() {
 
   useEffect(() => { document.documentElement.classList.add('dark'); }, []);
 
+  useEffect(() => () => {
+    if (themeSmoothingTimer.current !== null) window.clearTimeout(themeSmoothingTimer.current);
+  }, []);
+
+  const switchThemeMode = useCallback((apply: () => void) => {
+    setThemeSmoothing(true);
+    startTransition(apply);
+    if (themeSmoothingTimer.current !== null) window.clearTimeout(themeSmoothingTimer.current);
+    themeSmoothingTimer.current = window.setTimeout(() => setThemeSmoothing(false), 1200);
+  }, []);
+
   // 实例列表持久化到 localStorage
   useEffect(() => {
-    if (!isShowcase) saveInstances(instances);
-  }, [instances, isShowcase]);
+    if (!isShowcase && !isDemoPreview) saveInstances(instances);
+  }, [instances, isShowcase, isDemoPreview]);
 
   // 远程实例在线状态检测(用原生 pingUrl 绕过 WebView CORS)
   const checkRemoteStatus = useCallback(async () => {
@@ -828,11 +867,20 @@ function SillyClientLauncher() {
         return { id: r.id, online: false };
       }
     }));
-    setInstances(prev => prev.map(t => {
-      const res = results.find(r => r.id === t.id);
-      if (!res || t.type !== "remote") return t;
-      return { ...t, status: res.online ? "online" : "offline" };
-    }));
+    const statusByInstance = new Map<string, TavernInstance["status"]>(
+      results.map(r => [r.id, r.online ? "online" as const : "offline" as const])
+    );
+    setInstances(prev => {
+      let changed = false;
+      const next = prev.map(t => {
+        if (t.type !== "remote") return t;
+        const nextStatus = statusByInstance.get(t.id);
+        if (!nextStatus || t.status === nextStatus) return t;
+        changed = true;
+        return { ...t, status: nextStatus };
+      });
+      return changed ? next : prev;
+    });
   }, [instances.filter(t => t.type === "remote").map(t => `${t.id}${t.url}${t.basicAuth?.username || ""}`).join(",")]);
 
   // 启动时 + 每15s 轮询
@@ -914,6 +962,11 @@ function SillyClientLauncher() {
           setTerminalLogs(prev => [...prev, { msg: `✓ 就绪${d.url ? " " + d.url : ""}`, level: "success" }]);
         });
         modeHandle = await TarvenEnv.addListener("mode", (d: { mode: string; tavernRunning?: boolean; instanceId?: string; lastUsedAt?: string; totalUsageMs?: number }) => {
+          if (d.mode === "launcher" && d.tavernRunning === true && d.instanceId) {
+            setInstances(prev => prev.map(instance => instance.id === d.instanceId
+              ? { ...instance, pendingTavernGestureHint: undefined }
+              : instance));
+          }
           // 只有 tavernRunning=false（实例真正关闭）时才置 stopped
           // tavernRunning=true（手势退出）时实例还在跑，不改变状态
           if (d.mode === "launcher" && !d.tavernRunning) {
@@ -941,12 +994,6 @@ function SillyClientLauncher() {
       modeHandle?.remove?.();
     };
   }, [isShowcase]);
-
-  const consumeTavernGestureHint = useCallback((instanceId: string) => {
-    setInstances(prev => prev.map(instance => instance.id === instanceId
-      ? { ...instance, pendingTavernGestureHint: undefined }
-      : instance));
-  }, []);
 
   // 配置并启动本地实例。创建流程只在确认服务可访问后写入卡片。
   const doLaunch = useCallback(async (instance: TavernInstance, enterWhenReady = true) => {
@@ -1056,7 +1103,6 @@ function SillyClientLauncher() {
           instanceId: instance.id,
           showGestureHint: instance.pendingTavernGestureHint === true,
         });
-        if (instance.pendingTavernGestureHint) consumeTavernGestureHint(instance.id);
       }
       return { url: resolvedUrl, port: resolvedPort };
     } finally {
@@ -1068,7 +1114,7 @@ function SillyClientLauncher() {
       logHandle?.remove?.();
       errorHandle?.remove?.();
     }
-  }, [consumeTavernGestureHint]);
+  }, []);
 
   const openRemoteInstance = useCallback(async (instance: TavernInstance) => {
     const url = instance.url || "http://127.0.0.1:8000";
@@ -1092,9 +1138,8 @@ function SillyClientLauncher() {
       instanceId: instance.id,
       showGestureHint: instance.pendingTavernGestureHint === true,
     });
-    if (instance.pendingTavernGestureHint) consumeTavernGestureHint(instance.id);
     setLaunchProgress({ pct: 100, text: "远程实例已打开" });
-  }, [consumeTavernGestureHint, contentOpenMode]);
+  }, [contentOpenMode]);
 
   // 启动实例入口
   const launchTavern = useCallback(async (instance: TavernInstance) => {
@@ -1747,7 +1792,8 @@ function SillyClientLauncher() {
       onTouchMove={onTouchMove}
       onTouchEnd={onTouchEnd}
       className={cn(
-      "min-h-screen overflow-y-auto overscroll-none transition-colors duration-500",
+      "min-h-screen overflow-y-auto overscroll-none transition-colors duration-900",
+      themeSmoothing && "theme-smoothing",
       isLight ? "bg-[#f0ece8] text-[#1a1625]" : "bg-[#1a1625] text-white"
     )}>
       {/* 下拉刷新指示器 — 固定在顶部,不跟随拖拽 */}
@@ -1828,13 +1874,13 @@ function SillyClientLauncher() {
             <div className="space-y-1.5">
               <span className={cn("text-xs font-medium", isLight ? "text-[#1a1625]/50" : "text-white/40")}>背景模式</span>
               <div className="grid grid-cols-2 gap-1.5">
-                <button onClick={() => setBgMode("dynamic")} aria-pressed={bgMode === "dynamic"} className={cn(
+                <button onClick={() => switchThemeMode(() => setBgMode("dynamic"))} aria-pressed={bgMode === "dynamic"} className={cn(
                   "ios-choice-control px-2 py-2 rounded-lg text-xs font-medium transition-all border",
                   bgMode === "dynamic"
                     ? isLight ? "bg-black/10 border-black/20 text-[#1a1625]" : "bg-white/10 border-white/20 text-white/90"
                     : isLight ? "bg-black/5 border-black/10 text-[#1a1625]/60 hover:bg-black/10" : "bg-white/5 border-white/10 text-white/60 hover:bg-white/10"
                 )}>基础</button>
-                <button onClick={() => setBgMode("custom")} aria-pressed={bgMode === "custom"} className={cn(
+                <button onClick={() => switchThemeMode(() => setBgMode("custom"))} aria-pressed={bgMode === "custom"} className={cn(
                   "ios-choice-control px-2 py-2 rounded-lg text-xs font-medium transition-all border",
                   bgMode === "custom"
                     ? isLight ? "bg-black/10 border-black/20 text-[#1a1625]" : "bg-white/10 border-white/20 text-white/90"
@@ -1863,13 +1909,13 @@ function SillyClientLauncher() {
                 <div className="space-y-1.5">
                   <span className={cn("text-xs font-medium", isLight ? "text-[#1a1625]/50" : "text-white/40")}>主题风格</span>
                   <div className="grid grid-cols-2 gap-2">
-                    <button onClick={() => setThemeStyle("dark")} aria-pressed={themeStyle === "dark"} className={cn(
+                    <button onClick={() => switchThemeMode(() => setThemeStyle("dark"))} aria-pressed={themeStyle === "dark"} className={cn(
                       "ios-choice-control flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-xs font-medium transition-all border",
                       themeStyle === "dark"
                         ? "bg-indigo-500/20 border-indigo-500/40 text-indigo-300"
                         : isLight ? "bg-black/5 border-black/10 text-[#1a1625]/60 hover:bg-black/10" : "bg-white/5 border-white/10 text-white/60 hover:bg-white/10"
                     )}><Moon className="w-3.5 h-3.5" /> 暗夜</button>
-                    <button onClick={() => setThemeStyle("light")} aria-pressed={themeStyle === "light"} className={cn(
+                    <button onClick={() => switchThemeMode(() => setThemeStyle("light"))} aria-pressed={themeStyle === "light"} className={cn(
                       "ios-choice-control flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-xs font-medium transition-all border",
                       themeStyle === "light"
                         ? isLight ? "bg-black/10 border-black/20 text-[#1a1625]" : "bg-white/10 border-white/20 text-white/90"
@@ -2182,16 +2228,28 @@ function SillyClientLauncher() {
                     <AppSettingsRow label="实例备份" desc="迁移实例列表与应用设置">
                       <div className="app-settings-actions">
                         <AppSettingsAction onClick={() => importInputRef.current?.click()}>导入</AppSettingsAction>
-                        <AppSettingsAction onClick={() => {
+                        <AppSettingsAction onClick={async () => {
                           const data = JSON.stringify({
                             version: 2,
                             instances: instances.map(({ icon: _icon, pendingTavernGestureHint: _pendingHint, ...rest }) => rest),
                             exportedAt: new Date().toISOString(),
                           }, null, 2);
+                          const fileName = `sillyclient-backup-${new Date().toISOString().slice(0,10)}.json`;
+                          if (Capacitor.isNativePlatform()) {
+                            try {
+                              await TarvenEnv.saveTextFile({
+                                fileName,
+                                mimeType: 'application/json',
+                                content: data,
+                              });
+                            } catch { /* 用户取消或原生保存失败时回到启动器 */ }
+                            closeAppMenu();
+                            return;
+                          }
                           const blob = new Blob([data], { type: 'application/json' });
                           const url = URL.createObjectURL(blob);
                           const a = document.createElement('a');
-                          a.href = url; a.download = `sillyclient-backup-${new Date().toISOString().slice(0,10)}.json`;
+                          a.href = url; a.download = fileName;
                           a.click();
                           URL.revokeObjectURL(url);
                           closeAppMenu();
@@ -2314,7 +2372,7 @@ function SillyClientLauncher() {
           )} />
           {searchQuery && (
             <div className="motion-menu-list animate-dropdown absolute top-full left-0 right-0 mt-2 rounded-2xl border overflow-hidden z-30 max-h-64 overflow-y-auto scrollbar-subtle">
-              {instances.filter(t => (t.subtitle || t.name).toLowerCase().includes(searchQuery.toLowerCase())).map(t => (
+              {searchResults.map(t => (
                 <button key={t.id} onClick={() => { const idx = instances.indexOf(t) + 1; scrollToSlide(idx); setSearchQuery(""); }} className={cn(
                   "motion-menu-item w-full px-4 py-3 text-left text-sm flex items-center gap-3 transition-colors",
                   isLight ? "bg-[#f5f3ef]/95 hover:bg-black/5 text-[#1a1625]/80" : "bg-[#1a1625]/95 hover:bg-white/10 text-white/80"
@@ -2324,7 +2382,7 @@ function SillyClientLauncher() {
                   <span className={cn("ml-auto text-[10px]", isLight ? "text-[#1a1625]/40" : "text-white/40")}>{t.type === "local" ? "本地" : "远程"}</span>
                 </button>
               ))}
-              {instances.filter(t => (t.subtitle || t.name).toLowerCase().includes(searchQuery.toLowerCase())).length === 0 && (
+              {searchResults.length === 0 && (
                 <div className={cn("px-4 py-3 text-sm", isLight ? "bg-[#f5f3ef]/95 text-[#1a1625]/40" : "bg-[#1a1625]/95 text-white/40")}>无匹配实例</div>
               )}
             </div>
@@ -2336,7 +2394,7 @@ function SillyClientLauncher() {
           <div className="relative">
             <div
               ref={carouselRef}
-              className="carousel-scrollbar-hidden flex gap-5 overflow-x-auto snap-x snap-mandatory px-1 py-1 -mx-1"
+              className="carousel-scrollbar-hidden flex gap-5 overflow-x-auto snap-x snap-mandatory px-3 py-4 -mx-2"
               style={{ scrollbarWidth: 'none', msOverflowStyle: 'none', scrollPaddingInline: '1px' }}
             >
 
@@ -2392,7 +2450,7 @@ function SillyClientLauncher() {
                     setHoveredCard(hoveredCard === instance.id ? null : instance.id);
                   }}
                 >
-                    <div className="absolute inset-0 rounded-[20px] overflow-hidden">
+                    <div className="absolute inset-0 rounded-[18px] overflow-hidden">
                     <img src={instance.cover || "./tavern-logo.png"} alt="" className="w-full h-full object-cover" loading="lazy" />
                     <div className="absolute inset-0" style={{
                       background: isLight
@@ -2402,33 +2460,44 @@ function SillyClientLauncher() {
                   </div>
 
                     <div className={cn(
-                      "absolute inset-0 rounded-[20px] transition-opacity duration-[220ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
+                      "absolute inset-0 rounded-[18px] transition-opacity duration-[220ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
                       isLight ? "bg-gradient-to-t from-white/70 via-white/35 to-white/5" : "bg-gradient-to-t from-black/75 via-black/40 to-black/10",
                       hoveredCard === instance.id ? "opacity-0" : "opacity-100"
                     )} />
                     <div className={cn(
-                      "absolute inset-0 rounded-[20px] bg-gradient-to-t from-black/80 via-black/50 to-black/20 transition-opacity duration-[220ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
+                      "absolute inset-0 rounded-[18px] bg-gradient-to-t from-black/80 via-black/50 to-black/20 transition-opacity duration-[220ms] ease-[cubic-bezier(0.22,1,0.36,1)]",
                       hoveredCard === instance.id ? "opacity-100" : "opacity-0"
                     )} />
 
-                    <div className="relative h-full flex flex-col p-3.5 overflow-hidden">
+                    <div className="relative h-full flex flex-col p-3.5 overflow-hidden rounded-[18px]">
                     <span className={cn(
                       "self-start px-2 py-0.5 rounded-md text-[10px] font-semibold tracking-wide border backdrop-blur-md w-fit",
-                      isLight ? "bg-black/[0.06] text-[#1a1625]/55 border-black/[0.08]" : "bg-white/[0.08] text-white/50 border-white/[0.08]"
+                      isLight && hoveredCard !== instance.id
+                        ? "bg-black/[0.06] text-[#1a1625]/55 border-black/[0.08]"
+                        : "bg-white/[0.08] text-white/50 border-white/[0.08]"
                     )}>
                       {instance.version || "—"}
                     </span>
 
                     <div className="flex-1" />
 
-                    <div className={cn("text-sm font-medium leading-snug mb-2", isLight ? "text-[#1a1625]/75" : "text-white/80")}>{instance.subtitle}</div>
+                    <div className={cn(
+                      "text-sm font-medium leading-snug mb-2",
+                      isLight && hoveredCard !== instance.id ? "text-[#1a1625]/75" : "text-white/80"
+                    )}>{instance.subtitle}</div>
 
                     <div className="flex items-center justify-between mt-1.5">
                       <div className="flex items-center gap-1.5">
-                        <div className={cn("w-3.5 h-3.5 rounded flex items-center justify-center backdrop-blur-md shrink-0", isLight ? "bg-black/[0.08]" : "bg-white/10")}>
-                          <span className={cn("scale-[0.7]", isLight ? "text-[#1a1625]/50" : "text-white")}>{instance.icon}</span>
-                        </div>
-                        <span className={cn("text-[10px] font-medium", isLight ? "text-[#1a1625]/45" : "text-white/50")}>
+                        <span className={cn(
+                          "flex items-center justify-center shrink-0 scale-[0.72]",
+                          isLight && hoveredCard !== instance.id ? "text-[#1a1625]/50" : "text-white"
+                        )}>
+                          {instance.icon}
+                        </span>
+                        <span className={cn(
+                          "text-[10px] font-medium",
+                          isLight && hoveredCard !== instance.id ? "text-[#1a1625]/45" : "text-white/55"
+                        )}>
                           {instance.type === "local" ? "本地" : "远程"}
                         </span>
                       </div>
@@ -2454,23 +2523,38 @@ function SillyClientLauncher() {
 
                     <div className={cn("motion-accordion", hoveredCard === instance.id && "is-open")} aria-hidden={hoveredCard !== instance.id}>
                       <div className="motion-accordion-inner">
-                      <div className={cn("pt-2 border-t space-y-1", isLight ? "border-black/[0.06]" : "border-white/10")}>
+                      <div className="pt-2 space-y-1">
                         <div className="flex items-center justify-between text-[11px]">
-                          <span className={cn(isLight ? "text-[#1a1625]/35" : "text-white/40")}>创建时间</span>
-                          <span className={cn("font-medium tabular-nums", isLight ? "text-[#1a1625]/60" : "text-white/70")}>{instance.createdAt || "—"}</span>
+                          <span className={cn(
+                            isLight && hoveredCard !== instance.id ? "text-[#1a1625]/35" : "text-white/40"
+                          )}>创建时间</span>
+                          <span className={cn(
+                            "font-medium tabular-nums",
+                            isLight && hoveredCard !== instance.id ? "text-[#1a1625]/60" : "text-white/70"
+                          )}>{instance.createdAt || "—"}</span>
                         </div>
                         <div className="flex items-center justify-between text-[11px]">
-                          <span className={cn(isLight ? "text-[#1a1625]/35" : "text-white/40")}>上次使用</span>
-                          <span className={cn("font-medium tabular-nums", isLight ? "text-[#1a1625]/60" : "text-white/70")}>{instance.lastUsed || "—"}</span>
+                          <span className={cn(
+                            isLight && hoveredCard !== instance.id ? "text-[#1a1625]/35" : "text-white/40"
+                          )}>上次使用</span>
+                          <span className={cn(
+                            "font-medium tabular-nums",
+                            isLight && hoveredCard !== instance.id ? "text-[#1a1625]/60" : "text-white/70"
+                          )}>{instance.lastUsed || "—"}</span>
                         </div>
                         <div className="flex items-center justify-between text-[11px]">
-                          <span className={cn(isLight ? "text-[#1a1625]/35" : "text-white/40")}>累计使用</span>
-                          <span className={cn("font-medium tabular-nums", isLight ? "text-[#1a1625]/60" : "text-white/70")}>{instance.totalUsage || "—"}</span>
+                          <span className={cn(
+                            isLight && hoveredCard !== instance.id ? "text-[#1a1625]/35" : "text-white/40"
+                          )}>累计使用</span>
+                          <span className={cn(
+                            "font-medium tabular-nums",
+                            isLight && hoveredCard !== instance.id ? "text-[#1a1625]/60" : "text-white/70"
+                          )}>{instance.totalUsage || "—"}</span>
                         </div>
                         <div className="flex items-center justify-between pt-1.5">
                           <button onClick={(e) => { e.stopPropagation(); launchTavern(instance); }} disabled={launchingId === instance.id} className={cn(
                             "motion-control h-7 px-4 rounded-full text-[11px] font-semibold flex items-center justify-center gap-1 disabled:opacity-50",
-                            "bg-white/90 text-[#1a1625] hover:bg-white"
+                            "bg-white/15 text-white hover:bg-white/25 backdrop-blur-md"
                           )}>
                             <Play className="w-2.5 h-2.5" /> {launchingId === instance.id ? "启动中" : "启动"}
                           </button>

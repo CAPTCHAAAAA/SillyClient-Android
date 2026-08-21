@@ -19,13 +19,16 @@ import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import android.view.animation.DecelerateInterpolator
 import android.webkit.CookieManager
 import android.webkit.HttpAuthHandler
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.ValueCallback
+import android.webkit.URLUtil
 import android.widget.FrameLayout
+import android.widget.Toast
 import com.getcapacitor.BridgeActivity
 import com.sillyclient.plugin.TarvenEnvPlugin
 import androidx.activity.OnBackPressedCallback
@@ -38,28 +41,40 @@ import androidx.core.graphics.Insets
 import com.getcapacitor.JSObject
 import com.sillyclient.runtime.RuntimePaths
 import com.sillyclient.runtime.RuntimeFileUtils
-import com.sillyclient.ui.TavernGestureHint
+import com.sillyclient.download.TavernDownloadBridge
+import com.sillyclient.download.TavernDownloadFiles
+import com.sillyclient.download.TavernDownloadRequest
+import com.sillyclient.download.TavernDownloadScript
+import com.sillyclient.download.TavernDownloadTerminalEvent
+import com.sillyclient.ui.TavernStatusHint
 import com.sillyclient.ui.TopScrimBar
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
+import org.json.JSONObject
 
 class MainActivity : BridgeActivity() {
 
     private val handler = Handler(Looper.getMainLooper())
+    private var lastAppliedTopColor: Int? = null
+    private var samplingTopColor = false
     private val topColorPoll: Runnable = Runnable {
         if (isWebViewVisible) {
-            sampleTopColor { c -> if (c != null) applyTopColor(c) }
-            handler.postDelayed(topColorPoll, 1500)
+            sampleTopColor { c ->
+                if (c != null) applyTopColor(c)
+                handler.postDelayed(topColorPoll, 1500)
+            }
         }
     }
 
     // ---- Views ----
     private lateinit var root: FrameLayout
     private lateinit var topScrimBar: TopScrimBar     // 酒馆顶框 scrim 条（渐变+光泽+色波）
-    private lateinit var tavernGestureHint: TavernGestureHint
+    private lateinit var tavernStatusHint: TavernStatusHint
     private lateinit var webViewScreen: FrameLayout
     private lateinit var webView: WebView
 
@@ -77,6 +92,23 @@ class MainActivity : BridgeActivity() {
         val keepAlive: Boolean = false
     )
 
+    private data class ActiveExportDocument(
+        val request: TavernDownloadRequest,
+        val uri: Uri,
+        val tempFile: File
+    )
+
+    private data class StatusHintMetrics(
+        val areaLeft: Int,
+        val areaRight: Int,
+        val cameraHeightPx: Int
+    )
+
+    private data class TopCutout(
+        val centerX: Int,
+        val height: Int
+    )
+
     // ---- State ----
     private var serverReady = false
     private var isWebViewVisible = false
@@ -84,6 +116,7 @@ class MainActivity : BridgeActivity() {
     // 启动器支持多实例:目标 URL 与端口由前端实例数据决定,不再硬编码 8000
     private var tavernUrl = "http://127.0.0.1:8000/"
     private var tavernPort = 8000
+    private var currentTavernInstanceId: String? = null
     private var tavernAuthHost: String? = null
     private var tavernAuthUsername: String? = null
     private var tavernAuthPassword: String? = null
@@ -101,6 +134,26 @@ class MainActivity : BridgeActivity() {
     private val fileChooserLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result -> resolveFileChooser(result) }
+    private lateinit var tavernDownloadBridge: TavernDownloadBridge
+    private var pendingExportRequest: TavernDownloadRequest? = null
+    private var activeExportDocument: ActiveExportDocument? = null
+    private val exportTempDirectory: File by lazy {
+        File(cacheDir, "tavern-exports").apply { mkdirs() }
+    }
+    private val exportTimeoutPoll: Runnable = object : Runnable {
+        override fun run() {
+            if (::tavernDownloadBridge.isInitialized && tavernDownloadBridge.hasActiveRequest()) {
+                tavernDownloadBridge.expireInactive(
+                    waitingTimeoutMillis = 2 * 60 * 1000L,
+                    writingTimeoutMillis = 2 * 60 * 1000L
+                )
+                handler.postDelayed(this, 10_000)
+            }
+        }
+    }
+    private val exportDocumentLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result -> resolveTavernExport(result) }
 
     private val fullscreenBackCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() = exitFullscreen()
@@ -113,6 +166,9 @@ class MainActivity : BridgeActivity() {
         private const val BG = 0xFF070408.toInt()
         private const val STATE_SERVER_READY = "server_ready"
         private const val STATE_WEBVIEW_VISIBLE = "webview_visible"
+        private const val STATE_TAVERN_URL = "tavern_url"
+        private const val STATE_TAVERN_PORT = "tavern_port"
+        private const val STATE_TAVERN_INSTANCE_ID = "tavern_instance_id"
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -143,6 +199,15 @@ class MainActivity : BridgeActivity() {
 
         val wasServerReady = savedInstanceState?.getBoolean(STATE_SERVER_READY, false) ?: false
         val wasWebViewVisible = savedInstanceState?.getBoolean(STATE_WEBVIEW_VISIBLE, false) ?: false
+        savedInstanceState?.getString(STATE_TAVERN_URL)?.takeIf { it.isNotBlank() }?.let {
+            tavernUrl = it
+        }
+        savedInstanceState?.getInt(STATE_TAVERN_PORT, 0)?.takeIf { it > 0 }?.let {
+            tavernPort = it
+        }
+        savedInstanceState?.getString(STATE_TAVERN_INSTANCE_ID)?.takeIf { it.isNotBlank() }?.let {
+            currentTavernInstanceId = it
+        }
 
         // ---- Native overlay for WebView + FCC (hidden until entering tavern) ----
         root = FrameLayout(this).apply {
@@ -181,6 +246,7 @@ class MainActivity : BridgeActivity() {
                     kotlin.math.abs(vx) > 300) {
                     if (isWebViewVisible) {
                         // 酒馆 → 启动器
+                        tavernStatusHint.markUsed()
                         exitTavern()
                     } else if (serverReady && tavernUrl.isNotBlank()) {
                         // 启动器 → 酒馆（实例还在跑）
@@ -223,6 +289,14 @@ class MainActivity : BridgeActivity() {
             setBackgroundColor(BG)
         }
 
+        tavernDownloadBridge = TavernDownloadBridge(
+            onSaveRequested = { request -> handler.post { launchTavernExportPicker(request) } },
+            onStartTransfer = { request -> handler.post { startTavernExportTransfer(request) } },
+            onTerminal = { event -> handler.post { handleTavernExportTerminal(event) } },
+            onTransientError = { message -> handler.post { showTavernExportError(message) } }
+        )
+        cleanupStaleExportTempFiles()
+
         webView = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -235,8 +309,17 @@ class MainActivity : BridgeActivity() {
                 settings.forceDark = android.webkit.WebSettings.FORCE_DARK_AUTO
             }
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+            addJavascriptInterface(tavernDownloadBridge, "SillyClientAndroidDownloads")
+            setDownloadListener { url, _, contentDisposition, mimeType, contentLength ->
+                requestTavernUrlDownload(url, contentDisposition, mimeType, contentLength)
+            }
 
             webViewClient = object : WebViewClient() {
+                override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                    tavernDownloadBridge.invalidateSession()
+                    super.onPageStarted(view, url, favicon)
+                }
+
                 override fun onReceivedHttpAuthRequest(
                     view: WebView?,
                     handler: HttpAuthHandler?,
@@ -262,6 +345,7 @@ class MainActivity : BridgeActivity() {
                 override fun onPageFinished(v: WebView?, url: String?) {
                     super.onPageFinished(v, url)
                     android.util.Log.i(TAG, "Page loaded: $url")
+                    installTavernDownloadSupport(url)
                     installChameleonProbes()
                 }
             }
@@ -309,8 +393,15 @@ class MainActivity : BridgeActivity() {
 
         webViewScreen.addView(webView, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(webViewScreen, FrameLayout.LayoutParams(MATCH, MATCH))
-        tavernGestureHint = TavernGestureHint(this).also {
-            it.attach(root, statusBarFixedPx)
+        val statusHintMetrics = statusHintMetrics()
+        tavernStatusHint = TavernStatusHint(this).also {
+            it.attach(
+                root,
+                statusBarFixedPx,
+                statusHintMetrics.areaLeft,
+                statusHintMetrics.areaRight,
+                statusHintMetrics.cameraHeightPx
+            )
         }
 
         // IME 适配：输入法弹出时，给 webViewScreen 加底部 padding，让内容不被遮挡
@@ -337,6 +428,7 @@ class MainActivity : BridgeActivity() {
             handler.post {
                 switchToWebView(false)
                 enterImmersive()
+                currentTavernInstanceId?.let { tavernStatusHint.show(it) }
             }
             setStatus("Ready")
             pushReady(true)
@@ -363,6 +455,13 @@ class MainActivity : BridgeActivity() {
         super.onSaveInstanceState(outState)
         outState.putBoolean(STATE_SERVER_READY, serverReady)
         outState.putBoolean(STATE_WEBVIEW_VISIBLE, isWebViewVisible)
+        if (tavernUrl.isNotBlank()) {
+            outState.putString(STATE_TAVERN_URL, tavernUrl)
+            outState.putInt(STATE_TAVERN_PORT, tavernPort)
+        }
+        currentTavernInstanceId?.takeIf { it.isNotBlank() }?.let {
+            outState.putString(STATE_TAVERN_INSTANCE_ID, it)
+        }
     }
 
     /** Exposed for TarvenEnvPlugin. */
@@ -540,6 +639,260 @@ class MainActivity : BridgeActivity() {
         callback.onReceiveValue(uris.takeIf { it.isNotEmpty() }?.toTypedArray())
     }
 
+    /** 只向当前配置酒馆的同源顶层页面发放一次性下载能力。 */
+    private fun installTavernDownloadSupport(pageUrl: String?) {
+        if (!TavernDownloadFiles.sameOrigin(tavernUrl, pageUrl)) {
+            tavernDownloadBridge.invalidateSession()
+            return
+        }
+        if (tavernDownloadBridge.hasActiveRequest()) return
+
+        val token = UUID.randomUUID().toString()
+        if (!tavernDownloadBridge.installSession(token)) return
+        webView.evaluateJavascript(TavernDownloadScript.build(token)) { installed ->
+            if (installed != "true") {
+                android.util.Log.e(TAG, "Unable to install Tavern download interception")
+                tavernDownloadBridge.invalidateSession(token)
+            }
+        }
+    }
+
+    /** DownloadListener 兜底：普通附件和漏过 click 拦截的 blob/data URL 仍走同一保存桥。 */
+    private fun requestTavernUrlDownload(
+        url: String?,
+        contentDisposition: String?,
+        mimeType: String?,
+        contentLength: Long
+    ) {
+        val value = url?.takeIf { it.isNotBlank() } ?: return
+        if (!TavernDownloadFiles.sameOrigin(tavernUrl, webView.url)) {
+            showTavernExportError("Rejected download from a non-Tavern page")
+            return
+        }
+
+        val guessedName = runCatching {
+            URLUtil.guessFileName(value, contentDisposition, mimeType)
+        }.getOrDefault("")
+        val fileName = TavernDownloadFiles.sanitizeFileName(guessedName, mimeType)
+        val safeMimeType = TavernDownloadFiles.normalizeMimeType(mimeType)
+        // DownloadListener contentLength may describe the compressed wire size, while fetch streams
+        // the decoded body. Keep HTTP fallbacks size-agnostic and rely on the JS stream count.
+        val expectedBytes = -1L
+        val script = """
+            (() => {
+              const request = window.__sillyClientAndroidRequestUrlDownload;
+              if (typeof request !== 'function') return false;
+              return request(
+                ${JSONObject.quote(value)},
+                ${JSONObject.quote(fileName)},
+                ${JSONObject.quote(safeMimeType)},
+                ${JSONObject.quote(expectedBytes.toString())}
+              ) === true;
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(script) { handled ->
+            if (handled != "true") showTavernExportError("Tavern page did not accept the download")
+        }
+    }
+
+    private fun launchTavernExportPicker(request: TavernDownloadRequest) {
+        if (pendingExportRequest != null || activeExportDocument != null) {
+            tavernDownloadBridge.cancelFromHost(
+                request,
+                "Another export is already active",
+                notifyPage = true,
+                notifyUser = true
+            )
+            return
+        }
+
+        pendingExportRequest = request
+        handler.removeCallbacks(exportTimeoutPoll)
+        handler.postDelayed(exportTimeoutPoll, 10_000)
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = request.mimeType
+            putExtra(Intent.EXTRA_TITLE, request.fileName)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        }
+        try {
+            exportDocumentLauncher.launch(intent)
+        } catch (error: Exception) {
+            pendingExportRequest = null
+            tavernDownloadBridge.cancelFromHost(
+                request,
+                "Unable to open Android document picker: ${error.message}",
+                notifyPage = true,
+                notifyUser = true
+            )
+        }
+    }
+
+    private fun resolveTavernExport(result: ActivityResult) {
+        val request = pendingExportRequest
+        pendingExportRequest = null
+
+        if (request == null) return
+
+        val destination = result.data?.data
+        if (result.resultCode != RESULT_OK || destination == null) {
+            tavernDownloadBridge.cancelFromHost(
+                request,
+                "Android document picker was cancelled",
+                notifyPage = true,
+                notifyUser = false
+            )
+            return
+        }
+        if (!tavernDownloadBridge.isAwaitingDestination(request)) return
+
+        val tempFile = File(
+            exportTempDirectory,
+            "tavern-export-${request.id}-${System.currentTimeMillis()}.tmp"
+        )
+        if (runCatching { tempFile.createNewFile() }.isFailure) {
+            tavernDownloadBridge.cancelFromHost(
+                request,
+                "Unable to create an export staging file",
+                notifyPage = true,
+                notifyUser = true
+            )
+            return
+        }
+        activeExportDocument = ActiveExportDocument(request, destination, tempFile)
+        Thread {
+            try {
+                val output = FileOutputStream(tempFile)
+                if (!tavernDownloadBridge.attachDestination(request, output)) {
+                    runCatching { output.close() }
+                    cleanupExportTempFile(tempFile)
+                    handler.post { clearActiveExport(request) }
+                }
+            } catch (error: Exception) {
+                tavernDownloadBridge.cancelFromHost(
+                    request,
+                    "Unable to open export destination: ${error.message}",
+                    notifyPage = true,
+                    notifyUser = true
+                )
+            }
+        }.start()
+    }
+
+    private fun startTavernExportTransfer(request: TavernDownloadRequest) {
+        if (!::webView.isInitialized) {
+            tavernDownloadBridge.cancelFromHost(
+                request,
+                "Tavern WebView is unavailable",
+                notifyPage = false,
+                notifyUser = true
+            )
+            return
+        }
+        val script = """
+            (() => {
+              const start = window.__sillyClientAndroidStartDownload;
+              if (typeof start !== 'function') return false;
+              start(${JSONObject.quote(request.id)});
+              return true;
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(script) { started ->
+            if (started != "true") {
+                tavernDownloadBridge.cancelFromHost(
+                    request,
+                    "Tavern page lost the pending export",
+                    notifyPage = false,
+                    notifyUser = true
+                )
+            }
+        }
+    }
+
+    private fun handleTavernExportTerminal(event: TavernDownloadTerminalEvent) {
+        val request = event.request
+        if (pendingExportRequest?.id == request.id) pendingExportRequest = null
+
+        val document = activeExportDocument?.takeIf { sameExportRequest(it.request, request) }
+        if (document != null) activeExportDocument = null
+
+        if (event.notifyPage && ::webView.isInitialized) {
+            val script = """
+                (() => {
+                  const release = window.__sillyClientAndroidReleaseDownload;
+                  return typeof release === 'function' && release(${JSONObject.quote(request.id)}) === true;
+                })();
+            """.trimIndent()
+            runCatching { webView.evaluateJavascript(script, null) }
+        }
+
+        if (event.success) {
+            if (document != null) {
+                commitTavernExportAsync(document)
+            } else if (!isFinishing && !isDestroyed) {
+                Toast.makeText(this, "文件已导出", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            if (document != null) cleanupExportTempFile(document.tempFile)
+            android.util.Log.e(TAG, event.message ?: "Tavern export failed")
+            if (event.notifyUser) showTavernExportError(event.message ?: "Tavern export failed")
+        }
+        tavernDownloadBridge.releaseTerminal(request)
+    }
+
+    private fun showTavernExportError(message: String) {
+        android.util.Log.e(TAG, message)
+        if (!isFinishing && !isDestroyed) {
+            Toast.makeText(this, "文件导出失败，请重试", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun commitTavernExportAsync(document: ActiveExportDocument) {
+        Thread {
+            try {
+                val output = contentResolver.openOutputStream(document.uri, "w")
+                    ?: throw IOException("Document provider returned no output stream")
+                document.tempFile.inputStream().use { input ->
+                    output.use { sink -> input.copyTo(sink) }
+                }
+                cleanupExportTempFile(document.tempFile)
+                handler.post {
+                    clearActiveExport(document.request)
+                    if (!isFinishing && !isDestroyed) {
+                        Toast.makeText(this, "文件已导出", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (error: Exception) {
+                cleanupExportTempFile(document.tempFile)
+                android.util.Log.e(TAG, "Unable to commit export", error)
+                handler.post {
+                    clearActiveExport(document.request)
+                    showTavernExportError("Unable to save export: ${error.message}")
+                }
+            }
+        }.start()
+    }
+
+    private fun clearActiveExport(request: TavernDownloadRequest) {
+        val current = activeExportDocument
+        if (current != null && sameExportRequest(current.request, request)) {
+            activeExportDocument = null
+        }
+    }
+
+    private fun cleanupExportTempFile(file: File) {
+        runCatching { file.delete() }
+    }
+
+    private fun cleanupStaleExportTempFiles() {
+        exportTempDirectory.listFiles()?.forEach(::cleanupExportTempFile)
+    }
+
+    private fun sameExportRequest(
+        left: TavernDownloadRequest,
+        right: TavernDownloadRequest
+    ): Boolean = left.id == right.id && left.sessionSerial == right.sessionSerial
+
     /**
      * ╔══════════════════════════════════════════════════════════════════╗
      * ║  DO NOT CHANGE the layout strategy.                              ║
@@ -557,6 +910,11 @@ class MainActivity : BridgeActivity() {
         instanceId: String? = null,
         showGestureHint: Boolean = false
     ): Boolean {
+        android.util.Log.i(
+            TAG,
+            "enterTavern instanceId=$instanceId showGestureHint=$showGestureHint current=${currentTavernInstanceId}"
+        )
+        currentTavernInstanceId = instanceId?.trim()?.takeIf { it.isNotEmpty() } ?: currentTavernInstanceId
         // 远程实例:直接进入(无需 serverReady);本地实例:需 serverReady
         if (targetUrl != null) {
             tavernUrl = targetUrl
@@ -579,7 +937,8 @@ class MainActivity : BridgeActivity() {
         webViewScreen.layoutParams = lp
         enterImmersive()
         switchToWebView(true)
-        if (showGestureHint) tavernGestureHint.show(instanceId)
+        // 版本更新后同一实例也会重新提示，是否展示由原生版本标记决定。
+        if (!instanceId.isNullOrBlank()) tavernStatusHint.show(instanceId)
         // 顶条带自动取色由 installChameleonProbes 驱动（控制台转向 Capacitor 接入）
         // 页面若已加载，onPageFinished 不会重触发，故在此 kick 轮询。
         handler.removeCallbacks(topColorPoll)
@@ -588,8 +947,7 @@ class MainActivity : BridgeActivity() {
     }
 
     /** 判断是否本地回环地址(127.0.0.1 / localhost)。 */
-    private fun isLocalUrl(url: String): Boolean =
-        url.startsWith("http://127.0.0.1") || url.startsWith("http://localhost")
+    private fun isLocalUrl(url: String): Boolean = TavernDownloadFiles.isLoopbackHttpUrl(url)
 
     /**
      * 手势退出：只隐藏 WebView，不停服务。
@@ -597,13 +955,10 @@ class MainActivity : BridgeActivity() {
      */
     fun exitTavern() {
         if (!isWebViewVisible) return
-        tavernGestureHint.dismiss()
+        lastAppliedTopColor = null
+        tavernStatusHint.dismiss()
         handler.removeCallbacks(topColorPoll)
-        topScrimBar.reset()
         clearSystemGestureExclusions()
-        val lp = webViewScreen.layoutParams as FrameLayout.LayoutParams
-        lp.topMargin = 0
-        webViewScreen.layoutParams = lp
         // tavernRunning=true：实例还在跑，前端不置 stopped
         switchToHome(true, tavernRunning = true)
     }
@@ -623,6 +978,7 @@ class MainActivity : BridgeActivity() {
         webViewScreen.layoutParams = lp
         enterImmersive()
         switchToWebView(true)
+        currentTavernInstanceId?.let { tavernStatusHint.show(it) }
         handler.removeCallbacks(topColorPoll)
         handler.postDelayed(topColorPoll, 350)
     }
@@ -632,7 +988,9 @@ class MainActivity : BridgeActivity() {
      * 由前端"停止"按钮调用。
      */
     fun closeTavern() {
-        tavernGestureHint.dismiss()
+        lastAppliedTopColor = null
+        tavernStatusHint.dismiss()
+        tavernDownloadBridge.invalidateSession()
         if (isWebViewVisible) {
             handler.removeCallbacks(topColorPoll)
             topScrimBar.reset()
@@ -657,6 +1015,7 @@ class MainActivity : BridgeActivity() {
         clearTavernBasicAuth()
         // tavernRunning=false：前端置 stopped
         pushMode("launcher", tavernRunning = false)
+        currentTavernInstanceId = null
         pushReady(false)
     }
 
@@ -673,7 +1032,13 @@ class MainActivity : BridgeActivity() {
     }
 
     private fun pushMode(mode: String, tavernRunning: Boolean = false) {
-        TarvenEnvPlugin.notify("mode", JSObject().put("mode", mode).put("tavernRunning", tavernRunning))
+        TarvenEnvPlugin.notify(
+            "mode",
+            JSObject()
+                .put("mode", mode)
+                .put("tavernRunning", tavernRunning)
+                .put("instanceId", currentTavernInstanceId)
+        )
     }
 
     private fun switchToWebView(animate: Boolean) {
@@ -683,20 +1048,53 @@ class MainActivity : BridgeActivity() {
         webViewScreen.visibility = View.VISIBLE
         pushMode("tavern", true)
         if (animate) {
-            webViewScreen.alpha = 0f
-            webViewScreen.animate().alpha(1f).setDuration(220).start()
+            root.animate().cancel()
+            webViewScreen.alpha = 1f
+            root.alpha = 0f
+            root.animate()
+                .alpha(1f)
+                .setDuration(340)
+                .setInterpolator(DecelerateInterpolator(1.6f))
+                .start()
         } else {
             webViewScreen.alpha = 1f
+            root.alpha = 1f
         }
     }
 
     private fun switchToHome(animate: Boolean, tavernRunning: Boolean = false) {
-        isWebViewVisible = false
-        // Hide native overlay — Capacitor console shows underneath.
-        webViewScreen.visibility = View.GONE
-        root.visibility = View.GONE
-        pushMode("launcher", tavernRunning)
-        pushReady(true)
+        if (animate && webViewScreen.isShown) {
+            root.animate().cancel()
+            root.animate()
+                .alpha(0f)
+                .setDuration(340)
+                .setInterpolator(DecelerateInterpolator(1.6f))
+                .withEndAction {
+                    if (isDestroyed || isFinishing) return@withEndAction
+                    isWebViewVisible = false
+                    topScrimBar.reset()
+                    val lp = webViewScreen.layoutParams as FrameLayout.LayoutParams
+                    lp.topMargin = 0
+                    webViewScreen.layoutParams = lp
+                    webViewScreen.visibility = View.GONE
+                    root.visibility = View.GONE
+                    root.alpha = 1f
+                    pushMode("launcher", tavernRunning)
+                    pushReady(true)
+                }
+                .start()
+        } else {
+            isWebViewVisible = false
+            topScrimBar.reset()
+            val lp = webViewScreen.layoutParams as FrameLayout.LayoutParams
+            lp.topMargin = 0
+            webViewScreen.layoutParams = lp
+            // Hide native overlay — Capacitor console shows underneath.
+            webViewScreen.visibility = View.GONE
+            root.visibility = View.GONE
+            pushMode("launcher", tavernRunning)
+            pushReady(true)
+        }
     }
 
     // ╔══════════════════════════════════════════════════════════════════╗
@@ -749,24 +1147,32 @@ class MainActivity : BridgeActivity() {
     // ║  com.sillyclient.ui.TopColor；渲染见 com.sillyclient.ui.TopScrimBar。║
     // ╚══════════════════════════════════════════════════════════════════╝
     private fun sampleTopColor(onResult: (Int?) -> Unit) {
+        if (samplingTopColor) {
+            onResult(null)
+            return
+        }
         val w = webView.width
-        if (w <= 0 || !webView.isShown) { onResult(null); return }  // 未绘制/无 surface 时跳过
+        if (w <= 0 || !webView.isShown) {
+            onResult(null)
+            return
+        }
+        samplingTopColor = true
         val loc = IntArray(2)
         webView.getLocationInWindow(loc)
         val top = loc[1] + 1                       // WebView 顶边下 1px
         val stripH = 3
         val srcRect = Rect(loc[0], top, loc[0] + w, top + stripH)
         val bmp = Bitmap.createBitmap(w, stripH, Bitmap.Config.ARGB_8888)
+        val pixels = IntArray(w * stripH)
         try {
             PixelCopy.request(window, srcRect, bmp, { result ->
+                samplingTopColor = false
                 if (result == PixelCopy.SUCCESS) {
                     var rs = 0; var gs = 0; var bs = 0; var n = 0
-                    for (y in 0 until stripH) {
-                        for (x in 0 until w) {
-                            val p = bmp.getPixel(x, y)
-                            if (Color.alpha(p) > 200) {
-                                rs += Color.red(p); gs += Color.green(p); bs += Color.blue(p); n++
-                            }
+                    bmp.getPixels(pixels, 0, w, 0, 0, w, stripH)
+                    for (p in pixels) {
+                        if (Color.alpha(p) > 200) {
+                            rs += Color.red(p); gs += Color.green(p); bs += Color.blue(p); n++
                         }
                     }
                     bmp.recycle()
@@ -782,6 +1188,7 @@ class MainActivity : BridgeActivity() {
             }, handler)
         } catch (_: Exception) {
             // 窗口无 surface（恢复态/转场）→ 放弃本次，轮询稍后重试
+            samplingTopColor = false
             bmp.recycle()
             onResult(null)
         }
@@ -789,7 +1196,13 @@ class MainActivity : BridgeActivity() {
 
     /** 取色 → 顶框 scrim 条色波 + 光泽呼吸。 */
     private fun applyTopColor(color: Int) {
+        if (lastAppliedTopColor == color) {
+            tavernStatusHint.onColorChanged(color)
+            return
+        }
+        lastAppliedTopColor = color
         topScrimBar.setColor(color)
+        tavernStatusHint.onColorChanged(color)
     }
 
     /** 探针：页面加载后 + 每次 touch-up + 酒馆内 1.5s 周期轮询（单链去重）。 */
@@ -1464,6 +1877,35 @@ class MainActivity : BridgeActivity() {
     private fun post(r: Runnable) { handler.post(r) }
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
+    /** 状态栏提示文字区域：避开前摄，优先落在镜头与对应边框之间的半区。 */
+    private fun statusHintMetrics(): StatusHintMetrics {
+        val screenWidth = resources.displayMetrics.widthPixels
+        val margin = dp(12)
+        val cutout = topCutout()
+        val (areaLeft, areaRight) = if (cutout == null) {
+            margin to (screenWidth / 2 - margin)
+        } else if (cutout.centerX < screenWidth * 0.4f) {
+            cutout.centerX + margin to screenWidth - margin
+        } else {
+            margin to cutout.centerX - margin
+        }
+        return StatusHintMetrics(areaLeft, areaRight, cutout?.height ?: 0)
+    }
+
+    private fun topCutout(): TopCutout? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return null
+        val cutout = window.decorView.rootWindowInsets?.displayCutout ?: return null
+        return cutout.boundingRects
+            .filter { it.top < statusBarFixedPx && it.bottom > 0 }
+            .maxByOrNull { it.width() * it.height() }
+            ?.let {
+                TopCutout(
+                    centerX = (it.left + it.right) / 2,
+                    height = it.height()
+                )
+            }
+    }
+
     /**
      * Hardware radar: read the physical camera cutout height — never lies, never changes.
      * Fallback: system status_bar_height resource → 24dp absolute last-resort.
@@ -1492,11 +1934,18 @@ class MainActivity : BridgeActivity() {
 
     override fun onDestroy() {
         handler.removeCallbacks(topColorPoll)
-        if (::tavernGestureHint.isInitialized) tavernGestureHint.dismiss()
+        handler.removeCallbacks(exportTimeoutPoll)
+        if (::tavernStatusHint.isInitialized) tavernStatusHint.dismiss()
         pendingFileChooser?.onReceiveValue(null)
         pendingFileChooser = null
+        pendingExportRequest = null
+        val incompleteExport = activeExportDocument
+        activeExportDocument = null
+        if (::tavernDownloadBridge.isInitialized) tavernDownloadBridge.destroy()
+        incompleteExport?.tempFile?.let(::cleanupExportTempFile)
         serverProcess?.destroy()
         serverProcess = null
+        if (::webView.isInitialized) webView.removeJavascriptInterface("SillyClientAndroidDownloads")
         webView.destroy()
         super.onDestroy()
     }

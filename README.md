@@ -14,13 +14,14 @@ SillyClient 的 Android 客户端，同时保存 Android 与 Windows 共用的 R
 
 ## 构建
 
-先构建并同步控制台：
+本仓库维护 Android 适配后的前端源码，先构建并同步控制台：
 
 ```bash
 cd web/capacitor-ui
 pnpm install --frozen-lockfile
-pnpm run build:android
+pnpm run build
 cd ../..
+node scripts/sync-frontend.mjs
 ```
 
 再构建 APK：
@@ -42,14 +43,14 @@ adb shell monkey -p com.sillyclient -c android.intent.category.LAUNCHER 1
 
 | 路径 | 内容 |
 | --- | --- |
-| `web/capacitor-ui/` | 共享 React 控制台的唯一源码 |
+| `web/capacitor-ui/` | Android 适配后的 React 控制台源码 |
 | `app/src/main/java/com/sillyclient/` | Kotlin 宿主、运行时和平台接口 |
 | `app/src/main/assets/public/` | 已同步的控制台构建产物 |
 | `app/src/main/assets/bootstrap/` | Android 运行时所需的 rootfs 压缩包 |
 | `app/src/main/jniLibs/arm64-v8a/` | Bionic Node.js 与 C++ 运行库 |
 | `docs/` | Android 架构和开发说明 |
 
-`rootfs-libs.zip`、`rootfs-usr.zip` 和 `libtarven-node.so` 体积较大，但它们是离线启动 Node.js 的发布输入，不是构建缓存。界面资源则以 `web/capacitor-ui/` 为源码，`app/src/main/assets/public/` 只是可重复生成的 APK 内副本。
+`rootfs-libs.zip`、`rootfs-usr.zip` 和 `libtarven-node.so` 体积较大，但它们是离线启动 Node.js 的发布输入，不是构建缓存。界面资源以本仓库 `web/capacitor-ui/` 为源码，`app/src/main/assets/public/` 只是可重复生成的 APK 内副本。
 
 `TarvenEnv` 是现有桥接协议中的内部标识，不是产品名。对外名称、应用 ID 和 Gradle 工程名统一使用 SillyClient。
 

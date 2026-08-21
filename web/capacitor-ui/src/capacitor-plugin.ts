@@ -113,6 +113,9 @@ export interface TarvenEnvPlugin {
   /** 调用系统文件选择器,选择 SillyTavern zip 文件,复制到 tmp 并返回路径。 */
   pickZipFile(): Promise<{ path: string; sizeBytes: number }>
 
+  /** 调用系统保存位置选择器,写入文本/JSON 文件。 */
+  saveTextFile(options: { fileName: string; mimeType: string; content: string }): Promise<void>
+
   /** 自检:扫描本地已存在的酒馆实例目录。 */
   scanInstances(): Promise<{ instances: ScannedInstance[] }>
 

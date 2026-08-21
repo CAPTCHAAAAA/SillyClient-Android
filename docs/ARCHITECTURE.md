@@ -16,7 +16,7 @@ flowchart TD
 
 ### React 控制台
 
-`web/capacitor-ui/` 保存跨平台界面和 TypeScript 接口。它负责表单、状态和日志展示，不直接操作 Android 文件或进程。
+本仓库 `web/capacitor-ui/` 保存 Android 适配后的跨平台界面和 TypeScript 接口源码。它负责表单、状态和日志展示，不直接操作 Android 文件或进程。
 
 ### Capacitor 接口
 
@@ -50,6 +50,6 @@ flowchart TD
 
 ## 生成文件
 
-`app/src/main/assets/public/` 来自 `web/capacitor-ui/dist/`，但为了 APK 可直接从仓库构建而提交。任何界面修改都先改源码，再运行同步脚本；不要手工修改 assets 中的哈希文件。`sillyclient-build.json` 由同步脚本生成，用来确认源码、生产构建与 APK 内资产属于同一版本。
+`app/src/main/assets/public/` 来自本仓库 `web/capacitor-ui/dist/`，但为了 APK 可直接从仓库构建而提交。任何界面修改都先改本仓库源码，再运行同步脚本；不要手工修改 assets 中的哈希文件。`sillyclient-build.json` 由同步脚本生成，用来确认源码、生产构建与 APK 内资产属于同一版本。
 
 跨仓库边界和发布决策记录在[主仓库架构文档](https://github.com/CAPTCHAAAAA/SillyClient/blob/main/docs/ARCHITECTURE.md)。

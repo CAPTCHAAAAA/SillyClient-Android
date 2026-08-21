@@ -4,7 +4,15 @@ import { fileURLToPath } from 'node:url';
 import { frontendAssetsDigest, verifyFrontendManifest } from './frontend-integrity.mjs';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const buildDirectory = path.join(repositoryRoot, 'web', 'capacitor-ui', 'dist');
+const argumentMap = new Map();
+for (let index = 2; index < process.argv.length; index += 2) {
+  argumentMap.set(process.argv[index], process.argv[index + 1]);
+}
+const buildDirectory = path.resolve(
+  argumentMap.get('--source') ||
+    path.join(repositoryRoot, 'web', 'capacitor-ui', 'dist'),
+);
+const sourceRoot = path.dirname(buildDirectory);
 const assetsDirectory = path.join(repositoryRoot, 'app', 'src', 'main', 'assets', 'public');
 
 if (!fs.existsSync(path.join(buildDirectory, 'index.html'))) {
@@ -16,7 +24,7 @@ if (!builtAssets.some((name) => name.endsWith('.js')) || !builtAssets.some((name
   throw new Error('Fresh frontend build does not contain JavaScript and CSS assets.');
 }
 
-const manifest = verifyFrontendManifest(repositoryRoot, assetsDirectory);
+const manifest = verifyFrontendManifest(sourceRoot, assetsDirectory);
 if (manifest.assetsSha256 !== frontendAssetsDigest(buildDirectory)) {
   throw new Error('Committed Android assets do not match the fresh frontend build.');
 }

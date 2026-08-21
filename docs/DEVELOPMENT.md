@@ -6,8 +6,9 @@
 cd web/capacitor-ui
 pnpm install --frozen-lockfile
 pnpm run typecheck
-pnpm run build:android
+pnpm run build
 cd ../..
+node scripts/sync-frontend.mjs
 ./gradlew :app:assembleDebug
 ```
 
@@ -18,6 +19,7 @@ cd ../..
 ```bash
 pnpm --dir web/capacitor-ui run typecheck
 pnpm --dir web/capacitor-ui run build
+node scripts/sync-frontend.mjs
 ./gradlew testDebugUnitTest :app:assembleDebug
 ./gradlew lintDebug
 git diff --check
@@ -38,8 +40,8 @@ adb shell run-as com.sillyclient cat files/tarven/logs/server.log
 
 | 任务 | 位置 |
 | --- | --- |
-| 控制台界面与主题 | `web/capacitor-ui/src/` |
-| 跨平台接口声明 | `web/capacitor-ui/src/capacitor-plugin.ts` |
+| 控制台界面与主题 | 本仓库 `web/capacitor-ui/src/` |
+| 跨平台接口声明 | 本仓库 `web/capacitor-ui/src/capacitor-plugin.ts` |
 | Android 接口实现 | `app/src/main/java/com/sillyclient/plugin/` |
 | 下载、解压和 Node.js 进程 | `app/src/main/java/com/sillyclient/runtime/` |
 | WebView、沉浸式和系统栏 | `MainActivity.kt`、`ui/TopScrimBar.kt` |

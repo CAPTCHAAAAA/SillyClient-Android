@@ -82,7 +82,9 @@ class TopScrimBar(private val activity: Activity) {
                     val top = TopColor.lerp(from[0], to[0], topMix)
                     val mid = TopColor.lerp(from[1], to[1], midMix)
                     val bot = TopColor.lerp(from[2], to[2], botMix)
-                    currentStops = intArrayOf(top, mid, bot)
+                    currentStops[0] = top
+                    currentStops[1] = mid
+                    currentStops[2] = bot
                     scrimDrawable.setColors(currentStops)
                 }
                 start()

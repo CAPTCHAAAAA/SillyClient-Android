@@ -76,18 +76,18 @@ function digestTree(root, options) {
   return hash.digest('hex');
 }
 
-export function frontendSourceDigest(repositoryRoot) {
-  return digestTree(path.join(repositoryRoot, 'web', 'capacitor-ui'), { sourceTree: true });
+export function frontendSourceDigest(sourceRoot) {
+  return digestTree(sourceRoot, { sourceTree: true });
 }
 
 export function frontendAssetsDigest(assetsDirectory) {
   return digestTree(assetsDirectory);
 }
 
-export function writeFrontendManifest(repositoryRoot, assetsDirectory) {
+export function writeFrontendManifest(sourceRoot, assetsDirectory) {
   const manifest = {
     schema: 1,
-    sourceSha256: frontendSourceDigest(repositoryRoot),
+    sourceSha256: frontendSourceDigest(sourceRoot),
     assetsSha256: frontendAssetsDigest(assetsDirectory),
   };
   fs.writeFileSync(
@@ -96,14 +96,14 @@ export function writeFrontendManifest(repositoryRoot, assetsDirectory) {
   );
 }
 
-export function verifyFrontendManifest(repositoryRoot, assetsDirectory) {
+export function verifyFrontendManifest(sourceRoot, assetsDirectory) {
   const manifestPath = path.join(assetsDirectory, manifestName);
   if (!fs.existsSync(manifestPath)) {
-    throw new Error(`Missing ${manifestName}. Run pnpm run build:android.`);
+    throw new Error(`Missing ${manifestName}. Build the main frontend and sync it.`);
   }
 
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-  const sourceSha256 = frontendSourceDigest(repositoryRoot);
+  const sourceSha256 = frontendSourceDigest(sourceRoot);
   const assetsSha256 = frontendAssetsDigest(assetsDirectory);
   if (manifest.schema !== 1) throw new Error('Unsupported frontend manifest schema.');
   if (manifest.sourceSha256 !== sourceSha256) {
