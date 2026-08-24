@@ -16,6 +16,7 @@ import android.view.ViewGroup
 import android.view.animation.LinearInterpolator
 import android.widget.FrameLayout
 import android.widget.TextView
+import androidx.appcompat.widget.AppCompatTextView
 
 /**
  * 酒馆状态栏内的一次性返回手势提示。
@@ -136,7 +137,7 @@ class TavernStatusHint(private val activity: Activity) {
 }
 
 /** TextView 子类：最初验证过的渐变流光渲染。 */
-private class ShimmerTextView(context: Context) : TextView(context) {
+private class ShimmerTextView(context: Context) : AppCompatTextView(context) {
 
     init {
         setTextColor(0xFFE0E0E0.toInt())
