@@ -39,6 +39,8 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.graphics.Insets
 import com.getcapacitor.JSObject
+import com.sillyclient.runtime.CompanionPresetInstaller
+import com.sillyclient.runtime.CompanionPresetRequest
 import com.sillyclient.runtime.RuntimePaths
 import com.sillyclient.runtime.RuntimeFileUtils
 import com.sillyclient.download.TavernDownloadBridge
@@ -469,7 +471,15 @@ class MainActivity : BridgeActivity() {
     fun isTavernVisible(): Boolean = isWebViewVisible
     fun getTavernUrl(): String = tavernUrl
 
-    fun provisionAndStart(port: Int = 8000, instanceId: String = "default", version: String = "stable", config: InstanceConfig = InstanceConfig(), zipballUrl: String? = null, localZipPath: String? = null) {
+    fun provisionAndStart(
+        port: Int = 8000,
+        instanceId: String = "default",
+        version: String = "stable",
+        config: InstanceConfig = InstanceConfig(),
+        zipballUrl: String? = null,
+        localZipPath: String? = null,
+        companionPreset: CompanionPresetRequest? = null
+    ) {
         serverReady = false
         tavernPort = port
         tavernUrl = "http://127.0.0.1:$port/"
@@ -555,6 +565,23 @@ class MainActivity : BridgeActivity() {
                 updateProgress(50, "Server source exists")
             }
 
+            val companionPresetTransaction = if (companionPreset != null) {
+                try {
+                    updateProgress(94, "Applying theme preset")
+                    CompanionPresetInstaller.install(this, targetServerDir, companionPreset).also { transaction ->
+                        appendLog(if (transaction.applied) "[OK] 已应用 SC Bordeaux 主题预设" else "[OK] SC Bordeaux 主题预设已就绪")
+                    }
+                } catch (error: Exception) {
+                    appendLog("[ERR] 主题预设应用失败: ${error.message}")
+                    if (!hasServer) targetServerDir.deleteRecursively()
+                    setStatus("Preset failed")
+                    pushError("主题预设应用失败: ${error.message ?: "未知错误"}")
+                    return@Thread
+                }
+            } else {
+                null
+            }
+
             // 写入实例运行配置(管理面板设置 → config.yaml)
             writeInstanceConfig(targetServerDir, config)
 
@@ -564,6 +591,7 @@ class MainActivity : BridgeActivity() {
             val started = startServer(paths, targetServerDir)
             if (!started) {
                 appendLog("[ERR] Server start failed")
+                companionPresetTransaction?.rollback()
                 if (!hasServer) targetServerDir.deleteRecursively()
                 setStatus("Start failed")
                 pushError("Node.js 服务启动失败,请重试或检查实例完整性")
@@ -573,7 +601,11 @@ class MainActivity : BridgeActivity() {
             appendLog("> Polling $tavernUrl...")
             updateProgress(99, "Waiting for server")
 
-            pollUntilReady()
+            if (pollUntilReady()) {
+                companionPresetTransaction?.commit()
+            } else {
+                companionPresetTransaction?.rollback()
+            }
         }.start()
     }
 
@@ -1796,7 +1828,7 @@ class MainActivity : BridgeActivity() {
     data class Quint<A, B, C, D, E>(val first: A, val second: B, val third: C, val fourth: D, val fifth: E)
     data class Quartet<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
-    private fun pollUntilReady() {
+    private fun pollUntilReady(): Boolean {
         var a = 0
         while (a < 180) {
             if (tryConnect(tavernUrl)) {
@@ -1805,7 +1837,7 @@ class MainActivity : BridgeActivity() {
                 pushReady(true)
                 updateHomeReady()
                 refreshLogToCompose()
-                return
+                return true
             }
             // 检查进程是否已退出
             val p = serverProcess
@@ -1814,7 +1846,7 @@ class MainActivity : BridgeActivity() {
                 appendLog("[ERR] Check server.log for details")
                 setStatus("Server crashed")
                 pushError("Node.js 进程已退出 (code ${p.exitValue()}),请检查 server.log")
-                return
+                return false
             }
             a++
             if (a % 10 == 0) appendLog("... still waiting ($a/180)")
@@ -1823,6 +1855,7 @@ class MainActivity : BridgeActivity() {
         appendLog("[ERR] Server did not respond within 180s")
         setStatus("No response")
         pushError("服务器在 180 秒内未响应")
+        return false
     }
 
     private fun tryConnect(url: String) = try {

@@ -14,6 +14,8 @@ import com.getcapacitor.annotation.ActivityCallback
 import com.sillyclient.MainActivity
 import com.sillyclient.auth.RemoteBasicAuthStore
 import com.sillyclient.download.TavernDownloadFiles
+import com.sillyclient.runtime.CompanionPresetInstaller
+import com.sillyclient.runtime.CompanionPresetRequest
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -58,6 +60,17 @@ class TarvenEnvPlugin : Plugin() {
         val version = call.data.optString("version", "stable")
         val zipballUrl = call.data.optString("zipballUrl", "")
         val localZipPath = call.data.optString("localZipPath", "")
+        val companionPreset = call.data.optJSONObject("companionPreset")?.let { preset ->
+            val request = CompanionPresetRequest(
+                bundleId = preset.optString("bundleId", ""),
+                revision = preset.optInt("revision", -1)
+            )
+            if (request.bundleId != CompanionPresetInstaller.BUNDLE_ID || request.revision != CompanionPresetInstaller.REVISION) {
+                call.reject("不支持的主题预设版本")
+                return
+            }
+            request
+        }
         val configObj = call.data.optJSONObject("config")
         val config = if (configObj != null) {
             MainActivity.InstanceConfig(
@@ -80,7 +93,7 @@ class TarvenEnvPlugin : Plugin() {
         }
         val urlArg = if (zipballUrl.isEmpty()) null else zipballUrl
         val localArg = if (localZipPath.isEmpty()) null else localZipPath
-        act.runOnUiThread { act.provisionAndStart(port, instanceId, version, config, urlArg, localArg) }
+        act.runOnUiThread { act.provisionAndStart(port, instanceId, version, config, urlArg, localArg, companionPreset) }
         call.resolve()
     }
 
