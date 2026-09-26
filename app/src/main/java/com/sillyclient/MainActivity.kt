@@ -129,6 +129,9 @@ class MainActivity : BridgeActivity() {
     /** 下拉刷新手势状态。 */
     private var pullStartY = 0f
     private var pullReadyToReload = false
+    private var touchDownX = 0f
+    private var touchDownY = 0f
+    private var touchDownTime = 0L
 
     private var fullscreenView: View? = null
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
@@ -264,6 +267,15 @@ class MainActivity : BridgeActivity() {
         //   启动器模式：滑动 → returnToTavern()（回酒馆，如果还在跑）
         topGestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: MotionEvent): Boolean = true
+
+            override fun onSingleTapUp(e: MotionEvent): Boolean {
+                // 点击顶部状态栏/变色龙区域：立即触发硬件加速白色光波！
+                topScrimBar.sweepGloss()
+                if (isWebViewVisible) {
+                    sampleTopColor { c -> if (c != null) applyTopColor(c) }
+                }
+                return true
+            }
 
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
                 if (e1 == null) return false
@@ -1376,22 +1388,38 @@ class MainActivity : BridgeActivity() {
         tavernStatusHint.onColorChanged(color)
     }
 
-    /** 探针：页面加载后驱动取色；触控仅响应下拉刷新，彻底剥离触控抬手截屏与多余点击合成。 */
+    /** 探针：页面加载后驱动取色；触控精准识别顶部点击光波与下拉刷新，滑动过程零打扰。 */
     private fun installChameleonProbes() {
         handler.removeCallbacks(topColorPoll)
         handler.postDelayed(topColorPoll, 300)
         webView.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
+                    touchDownX = event.rawX
+                    touchDownY = event.rawY
+                    touchDownTime = System.currentTimeMillis()
                     pullStartY = event.rawY
                     pullReadyToReload = pullToRefreshEnabled && webView.scrollY == 0
                 }
                 MotionEvent.ACTION_UP -> {
-                    // 下拉刷新:从顶部向下拉超过 120px 时刷新
+                    val dt = System.currentTimeMillis() - touchDownTime
+                    val dx = kotlin.math.abs(event.rawX - touchDownX)
+                    val dy = kotlin.math.abs(event.rawY - touchDownY)
+                    val isTap = dt < 350 && dx < 30 && dy < 30
+
+                    // 1. 下拉刷新:从顶部向下拉超过 120px 时刷新
                     if (pullReadyToReload && (event.rawY - pullStartY) > 120) {
                         webView.reload()
                         topScrimBar.sweepGloss() // 下拉刷新时触发顶栏光泽扫过
                         pushLog("↓ 下拉刷新酒馆界面")
+                    } else if (isTap) {
+                        // 2. 精准轻触（Tap）：点击顶部导航区时立即触发硬件加速光波反馈
+                        // statusBarFixedPx + 180dp 覆盖整个状态栏与酒馆顶栏、角色列表栏区域
+                        val density = resources.displayMetrics.density
+                        val topRegionThreshold = statusBarFixedPx + 180 * density
+                        if (touchDownY <= topRegionThreshold) {
+                            topScrimBar.sweepGloss()
+                        }
                     }
                     pullReadyToReload = false
                 }
