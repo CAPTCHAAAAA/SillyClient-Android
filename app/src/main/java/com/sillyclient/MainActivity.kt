@@ -68,7 +68,7 @@ class MainActivity : BridgeActivity() {
         if (isWebViewVisible) {
             sampleTopColor { c ->
                 if (c != null) applyTopColor(c)
-                handler.postDelayed(topColorPoll, 1500)
+                handler.postDelayed(topColorPoll, 5000)
             }
         }
     }
@@ -197,6 +197,32 @@ class MainActivity : BridgeActivity() {
         }
         // Match window background to Compose BG — eliminates native flash
         window.decorView.setBackgroundColor(BG)
+
+        // 硬件加速与高刷新率 (90Hz / 120Hz / 144Hz) 驱动
+        window.setFlags(
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+            WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                val disp = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    display
+                } else {
+                    @Suppress("DEPRECATION")
+                    windowManager.defaultDisplay
+                }
+                val maxRefreshMode = disp?.supportedModes?.maxByOrNull { it.refreshRate }
+                if (maxRefreshMode != null && maxRefreshMode.refreshRate > 60f) {
+                    val lp = window.attributes
+                    lp.preferredDisplayModeId = maxRefreshMode.modeId
+                    window.attributes = lp
+                    android.util.Log.i(TAG, "Configured high refresh rate mode: ${maxRefreshMode.refreshRate}Hz")
+                }
+            } catch (e: Exception) {
+                android.util.Log.w(TAG, "Unable to request high refresh rate mode", e)
+            }
+        }
+
         statusBarFixedPx = readStatusBarFixedPx()
 
         val wasServerReady = savedInstanceState?.getBoolean(STATE_SERVER_READY, false) ?: false
@@ -300,14 +326,24 @@ class MainActivity : BridgeActivity() {
         cleanupStaleExportTempFiles()
 
         webView = WebView(this).apply {
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            overScrollMode = View.OVER_SCROLL_NEVER
+
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
+            @Suppress("DEPRECATION")
+            settings.databaseEnabled = true
             settings.allowFileAccess = false
             // 文件选择器返回 content:// URI。保持 file:// 关闭，允许 WebView 读取用户明确选择的内容。
             settings.allowContentAccess = true
             settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
+            settings.mediaPlaybackRequiresUserGesture = false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                settings.offscreenPreRaster = true
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                @Suppress("DEPRECATION")
                 settings.forceDark = android.webkit.WebSettings.FORCE_DARK_AUTO
             }
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
@@ -1087,14 +1123,32 @@ class MainActivity : BridgeActivity() {
                 .alpha(1f)
                 .setDuration(340)
                 .setInterpolator(DecelerateInterpolator(1.6f))
+                .withEndAction {
+                    if (isDestroyed || isFinishing) return@withEndAction
+                    if (isWebViewVisible) {
+                        bridge?.webView?.apply {
+                            onPause()
+                            visibility = View.GONE
+                        }
+                    }
+                }
                 .start()
         } else {
             webViewScreen.alpha = 1f
             root.alpha = 1f
+            bridge?.webView?.apply {
+                onPause()
+                visibility = View.GONE
+            }
         }
     }
 
     private fun switchToHome(animate: Boolean, tavernRunning: Boolean = false) {
+        // 唤醒底座 Capacitor 控制台
+        bridge?.webView?.apply {
+            visibility = View.VISIBLE
+            onResume()
+        }
         if (animate && webViewScreen.isShown) {
             root.animate().cancel()
             root.animate()
@@ -1170,15 +1224,101 @@ class MainActivity : BridgeActivity() {
     }
 
     // ╔══════════════════════════════════════════════════════════════════╗
-    // ║  DO NOT CHANGE — 顶框自适应取色（PixelCopy → TopScrimBar）。       ║
-    // ║  读 WebView 顶部 3px×全宽条带 → 平均非透明像素 → 喂 TopScrimBar。  ║
-    // ║  · 条带平均而非单像素：抗抖动、稳主色。                            ║
-    // ║  · isShown + try/catch：恢复态/转场无 surface 时跳过，轮询稍后重试。║
-    // ║  · 触发分工：周期轮询(1.5s)+touch-up 仅做色波；gloss 白色光波仅点击。║
-    // ║  取色层 Android 落地（远端页真实像素无可移植 API）；色数学生见      ║
-    // ║  com.sillyclient.ui.TopColor；渲染见 com.sillyclient.ui.TopScrimBar。║
+    // ║  顶框自适应取色（DOM ComputedStyle 探针优先 + 零抖动 PixelCopy 兜底）║
+    // ║  1. 引擎 A (DOM ComputedStyle 探针)：直取酒馆 #top-bar、            ║
+    // ║     --SmartThemeBlurTintColor 及 body 真实计算背景色，100% 零 GPU    ║
+    // ║     渲染管线中断，彻底杜绝 120Hz/90Hz 高刷滑动微卡顿；               ║
+    // ║  2. 引擎 B (PixelCopy 兜底)：仅在跨域/空白页且非频繁场景执行一次。  ║
     // ╚══════════════════════════════════════════════════════════════════╝
+    private val domProbeScript = """
+        (() => {
+            function parseCssColor(str) {
+                if (!str || str === 'transparent' || str === 'inherit' || str === 'initial') return null;
+                const m = str.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
+                if (m) {
+                    const a = m[4] !== undefined ? parseFloat(m[4]) : 1.0;
+                    if (a > 0.05) return { r: parseInt(m[1], 10), g: parseInt(m[2], 10), b: parseInt(m[3], 10), a: a };
+                }
+                if (str.startsWith('#')) {
+                    let hex = str.substring(1);
+                    if (hex.length === 3) hex = hex[0]+hex[0] + hex[1]+hex[1] + hex[2]+hex[2];
+                    if (hex.length === 6) {
+                        return {
+                            r: parseInt(hex.substring(0, 2), 16),
+                            g: parseInt(hex.substring(2, 4), 16),
+                            b: parseInt(hex.substring(4, 6), 16),
+                            a: 1.0
+                        };
+                    }
+                }
+                return null;
+            }
+            function blend(fg, bg) {
+                if (!fg) return bg;
+                if (fg.a >= 0.999) return fg;
+                const bgR = bg ? bg.r : 36;
+                const bgG = bg ? bg.g : 36;
+                const bgB = bg ? bg.b : 37;
+                const a = fg.a;
+                return {
+                    r: Math.round(fg.r * a + bgR * (1 - a)),
+                    g: Math.round(fg.g * a + bgG * (1 - a)),
+                    b: Math.round(fg.b * a + bgB * (1 - a)),
+                    a: 1.0
+                };
+            }
+            let bodyBg = null;
+            if (document.body) {
+                bodyBg = parseCssColor(window.getComputedStyle(document.body).backgroundColor);
+            }
+            const topBar = document.getElementById('top-bar');
+            if (topBar) {
+                const cs = window.getComputedStyle(topBar);
+                const c = parseCssColor(cs.backgroundColor);
+                if (c) {
+                    const res = (c.a >= 0.90) ? c : blend(c, bodyBg);
+                    return res ? (0xFF000000 | (res.r << 16) | (res.g << 8) | res.b) : null;
+                }
+            }
+            try {
+                const rootStyle = window.getComputedStyle(document.documentElement);
+                const tint = rootStyle.getPropertyValue('--SmartThemeBlurTintColor');
+                if (tint) {
+                    const tc = parseCssColor(tint.trim());
+                    if (tc) {
+                        const res = (tc.a >= 0.90) ? tc : blend(tc, bodyBg);
+                        return res ? (0xFF000000 | (res.r << 16) | (res.g << 8) | res.b) : null;
+                    }
+                }
+            } catch (_) {}
+            const meta = document.querySelector('meta[name="theme-color"]');
+            if (meta) {
+                const mc = parseCssColor(meta.getAttribute('content'));
+                if (mc) return (0xFF000000 | (mc.r << 16) | (mc.g << 8) | mc.b);
+            }
+            if (bodyBg) return (0xFF000000 | (bodyBg.r << 16) | (bodyBg.g << 8) | bodyBg.b);
+            return null;
+        })()
+    """.trimIndent()
+
     private fun sampleTopColor(onResult: (Int?) -> Unit) {
+        if (!isWebViewVisible || !::webView.isInitialized || !webView.isShown) {
+            onResult(null)
+            return
+        }
+        // 引擎 A：DOM 探针优先（0 开销、0 GPU 卡顿）
+        webView.evaluateJavascript(domProbeScript) { res ->
+            val color = res?.trim('"', ' ', '\'')?.toIntOrNull()
+            if (color != null && color != 0) {
+                onResult(color)
+            } else {
+                // 引擎 B：PixelCopy 兜底
+                sampleTopColorPixelCopy(onResult)
+            }
+        }
+    }
+
+    private fun sampleTopColorPixelCopy(onResult: (Int?) -> Unit) {
         if (samplingTopColor) {
             onResult(null)
             return
@@ -1219,7 +1359,6 @@ class MainActivity : BridgeActivity() {
                 }
             }, handler)
         } catch (_: Exception) {
-            // 窗口无 surface（恢复态/转场）→ 放弃本次，轮询稍后重试
             samplingTopColor = false
             bmp.recycle()
             onResult(null)
@@ -1237,10 +1376,10 @@ class MainActivity : BridgeActivity() {
         tavernStatusHint.onColorChanged(color)
     }
 
-    /** 探针：页面加载后 + 每次 touch-up + 酒馆内 1.5s 周期轮询（单链去重）。 */
+    /** 探针：页面加载后驱动取色；触控仅响应下拉刷新，彻底剥离触控抬手截屏与多余点击合成。 */
     private fun installChameleonProbes() {
         handler.removeCallbacks(topColorPoll)
-        handler.postDelayed(topColorPoll, 0)
+        handler.postDelayed(topColorPoll, 300)
         webView.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
@@ -1248,17 +1387,13 @@ class MainActivity : BridgeActivity() {
                     pullReadyToReload = pullToRefreshEnabled && webView.scrollY == 0
                 }
                 MotionEvent.ACTION_UP -> {
-                    webView.performClick()
                     // 下拉刷新:从顶部向下拉超过 120px 时刷新
                     if (pullReadyToReload && (event.rawY - pullStartY) > 120) {
                         webView.reload()
+                        topScrimBar.sweepGloss() // 下拉刷新时触发顶栏光泽扫过
                         pushLog("↓ 下拉刷新酒馆界面")
                     }
                     pullReadyToReload = false
-                    topScrimBar.sweepGloss()   // 点击白色光波
-                    handler.postDelayed({
-                        if (isWebViewVisible) sampleTopColor { c -> if (c != null) applyTopColor(c) }
-                    }, 200)
                 }
             }
             false
