@@ -46,11 +46,11 @@ class TopScrimBar(private val activity: Activity) {
             layoutParams = FrameLayout.LayoutParams(MATCH, barBand).apply { gravity = Gravity.TOP }
             isClickable = false
         }
-        val gh = (barBand * 0.3f).toInt().coerceAtLeast(1)
+        val gh = (barBand * 0.45f).toInt().coerceAtLeast(1)
         gloss = View(activity).apply {
             background = GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
-                intArrayOf(0x18FFFFFF.toInt(), 0x00FFFFFF.toInt())
+                intArrayOf(0x30FFFFFF.toInt(), 0x00FFFFFF.toInt())
             )
             alpha = 0f
             layoutParams = FrameLayout.LayoutParams(MATCH, gh).apply { gravity = Gravity.TOP }
@@ -92,27 +92,25 @@ class TopScrimBar(private val activity: Activity) {
         }
     }
 
-    /** 点击白色光波（RenderThread 硬件加速驱动：480ms 渐显至 0.55f，保持 1200ms，720ms 渐隐至 0f，总计 2400ms；0% 主线程开销）。 */
+    /** 点击白色光波（2400ms 原版经典节奏，渐显/保持/渐隐，支持平滑连击重置）。 */
     fun sweepGloss() {
         activity.runOnUiThread {
             if (!::gloss.isInitialized) return@runOnUiThread
-            gloss.animate().cancel()
-            gloss.alpha = 0f
-            // 阶段 1：硬件加速平滑渐显至 0.55f（480ms，对应 2400ms 的前 20%）
-            gloss.animate()
-                .alpha(0.55f)
-                .setDuration(480)
-                .setInterpolator(DecelerateInterpolator(1.8f))
-                .withEndAction {
-                    // 阶段 2 & 3：保持 1200ms（50%）后，硬件加速平滑渐隐至 0f（720ms，30%）
-                    gloss.animate()
-                        .alpha(0f)
-                        .setStartDelay(1200)
-                        .setDuration(720)
-                        .setInterpolator(DecelerateInterpolator(1.8f))
-                        .start()
+            glossAnimator?.cancel()
+            val startAlpha = gloss.alpha
+            glossAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = 2400
+                interpolator = DecelerateInterpolator(2f)
+                addUpdateListener { va ->
+                    val t = va.animatedFraction
+                    gloss.alpha = when {
+                        t < 0.2f -> startAlpha + (0.65f - startAlpha) * (t / 0.2f)
+                        t < 0.7f -> 0.65f
+                        else     -> (1f - t) / 0.3f * 0.65f
+                    }
                 }
-                .start()
+                start()
+            }
         }
     }
 
@@ -121,13 +119,10 @@ class TopScrimBar(private val activity: Activity) {
         activity.runOnUiThread {
             waveAnimator?.cancel()
             glossAnimator?.cancel()
-            if (::gloss.isInitialized) {
-                gloss.animate().cancel()
-                gloss.alpha = 0f
-            }
             if (!::scrim.isInitialized) return@runOnUiThread
             currentStops = intArrayOf(0xFF2A2A2A.toInt(), 0xFF1E1E1E.toInt(), 0xFF181818.toInt())
             scrimDrawable.setColors(currentStops)
+            if (::gloss.isInitialized) gloss.alpha = 0f
         }
     }
 }

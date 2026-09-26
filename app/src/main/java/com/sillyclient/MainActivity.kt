@@ -15,6 +15,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.PixelCopy
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
@@ -132,6 +133,7 @@ class MainActivity : BridgeActivity() {
     private var touchDownX = 0f
     private var touchDownY = 0f
     private var touchDownTime = 0L
+    private var isTouchScrolling = false
 
     private var fullscreenView: View? = null
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
@@ -306,7 +308,13 @@ class MainActivity : BridgeActivity() {
             ).apply { gravity = Gravity.TOP }
             setOnTouchListener { view, event ->
                 topGestureDetector.onTouchEvent(event)
-                if (event.action == MotionEvent.ACTION_UP) view.performClick()
+                if (event.action == MotionEvent.ACTION_UP) {
+                    view.performClick()
+                    topScrimBar.sweepGloss()
+                    if (isWebViewVisible) {
+                        sampleTopColor { c -> if (c != null) applyTopColor(c) }
+                    }
+                }
                 true
             }
         }
@@ -1388,40 +1396,47 @@ class MainActivity : BridgeActivity() {
         tavernStatusHint.onColorChanged(color)
     }
 
-    /** 探针：页面加载后驱动取色；触控精准识别顶部点击光波与下拉刷新，滑动过程零打扰。 */
+    /** 探针：页面加载后驱动取色；触控原汁原味响应轻触点击光波与下拉刷新，滑动过程零打扰。 */
     private fun installChameleonProbes() {
         handler.removeCallbacks(topColorPoll)
         handler.postDelayed(topColorPoll, 300)
+        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
         webView.setOnTouchListener { _, event ->
-            when (event.action) {
+            when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     touchDownX = event.rawX
                     touchDownY = event.rawY
-                    touchDownTime = System.currentTimeMillis()
                     pullStartY = event.rawY
                     pullReadyToReload = pullToRefreshEnabled && webView.scrollY == 0
+                    isTouchScrolling = false
                 }
-                MotionEvent.ACTION_UP -> {
-                    val dt = System.currentTimeMillis() - touchDownTime
+                MotionEvent.ACTION_MOVE -> {
                     val dx = kotlin.math.abs(event.rawX - touchDownX)
                     val dy = kotlin.math.abs(event.rawY - touchDownY)
-                    val isTap = dt < 350 && dx < 30 && dy < 30
-
+                    if (dx > touchSlop * 2 || dy > touchSlop * 2) {
+                        isTouchScrolling = true
+                    }
+                }
+                MotionEvent.ACTION_UP -> {
+                    webView.performClick()
                     // 1. 下拉刷新:从顶部向下拉超过 120px 时刷新
                     if (pullReadyToReload && (event.rawY - pullStartY) > 120) {
                         webView.reload()
                         topScrimBar.sweepGloss() // 下拉刷新时触发顶栏光泽扫过
                         pushLog("↓ 下拉刷新酒馆界面")
-                    } else if (isTap) {
-                        // 2. 精准轻触（Tap）：点击顶部导航区时立即触发硬件加速光波反馈
-                        // statusBarFixedPx + 180dp 覆盖整个状态栏与酒馆顶栏、角色列表栏区域
-                        val density = resources.displayMetrics.density
-                        val topRegionThreshold = statusBarFixedPx + 180 * density
-                        if (touchDownY <= topRegionThreshold) {
-                            topScrimBar.sweepGloss()
-                        }
+                    } else if (!isTouchScrolling) {
+                        // 2. 原版原汁原味：用户轻触点击界面，100% 触发顶部白色光波与顶栏色彩更新！
+                        topScrimBar.sweepGloss()
+                        handler.postDelayed({
+                            if (isWebViewVisible) sampleTopColor { c -> if (c != null) applyTopColor(c) }
+                        }, 200)
                     }
                     pullReadyToReload = false
+                    isTouchScrolling = false
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    pullReadyToReload = false
+                    isTouchScrolling = false
                 }
             }
             false
