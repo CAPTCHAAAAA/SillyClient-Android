@@ -1455,8 +1455,9 @@ class MainActivity : BridgeActivity() {
                     }
                 }
                 MotionEvent.ACTION_UP -> {
-                    // 1. 下拉刷新:从顶部向下拉超过 120px 时刷新
-                    if (pullReadyToReload && (event.rawY - pullStartY) > 120) {
+                    // 1. 下拉刷新:仅在显式开启且触控起始于顶栏边缘区、下滑距离超过 240px 时触发，严防滑动误触
+                    val isTopEdge = pullStartY <= (statusBarFixedPx + 180)
+                    if (pullReadyToReload && isTopEdge && (event.rawY - pullStartY) > 240) {
                         webView.reload()
                         topScrimBar.sweepGloss() // 下拉刷新时触发顶栏光泽扫过
                         pushLog("↓ 下拉刷新酒馆界面")
@@ -1486,12 +1487,13 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    /** 注入方案三：弹性微视差柔性展开与 GPU 硬件合成隔离，彻底消除重排并提升流畅度。 */
+    /** 注入方案三：弹性微视差柔性关键帧展开 + 移动端滑动防误触护盾，彻底消除重排与 hover 误触。 */
     private fun injectDrawerPerformanceOptimizations() {
         if (!::webView.isInitialized) return
         val perfScript = """
             (function() {
                 try {
+                    // 1. 安装/更新关键帧动画与防误触样式表
                     let style = document.getElementById('sc-drawer-perf');
                     if (!style) {
                         style = document.createElement('style');
@@ -1499,33 +1501,107 @@ class MainActivity : BridgeActivity() {
                         (document.head || document.documentElement).appendChild(style);
                     }
                     style.textContent = `
-                        /* 1. 方案三：弹性微视差柔性展开（纯 GPU Compositor 变换，0 几何重排） */
+                        /* ==== 1. 方案三：弹性微视差柔性展开（关键帧动画，100% 必定播放） ==== */
+                        @keyframes sc-drawer-spring-in {
+                            0% {
+                                opacity: 0;
+                                transform: translate3d(0, -20px, 0) scaleY(0.92);
+                            }
+                            65% {
+                                opacity: 1;
+                                transform: translate3d(0, 2.5px, 0) scaleY(1.015);
+                            }
+                            100% {
+                                opacity: 1;
+                                transform: translate3d(0, 0, 0) scaleY(1);
+                            }
+                        }
+                        @keyframes sc-drawer-fade-out {
+                            0% {
+                                opacity: 1;
+                                transform: translate3d(0, 0, 0) scaleY(1);
+                            }
+                            100% {
+                                opacity: 0;
+                                transform: translate3d(0, -12px, 0) scaleY(0.95);
+                            }
+                        }
                         .drawer-content {
                             transform-origin: top center !important;
                             will-change: transform, opacity !important;
                             -webkit-backface-visibility: hidden !important;
                             backface-visibility: hidden !important;
                         }
-                        /* 关闭态：微位移 + 微缩放收起 */
-                        .drawer-content:not(.openDrawer) {
-                            height: 0 !important;
-                            opacity: 0 !important;
-                            visibility: hidden !important;
-                            pointer-events: none !important;
-                            transform: translate3d(0, -14px, 0) scaleY(0.93) !important;
-                            transition: transform 140ms cubic-bezier(0.32, 0.72, 0, 1), opacity 130ms ease-out, visibility 140ms !important;
-                        }
-                        /* 展开态：物理阻尼柔性滑落回弹入场 */
+                        /* 展开态：物理阻尼柔性关键帧滑落回弹（无视 display 突变，必定执行） */
                         .drawer-content.openDrawer {
                             display: block !important;
                             visibility: visible !important;
                             height: auto !important;
                             opacity: 1 !important;
                             pointer-events: auto !important;
-                            transform: translate3d(0, 0, 0) scaleY(1) !important;
-                            transition: transform 200ms cubic-bezier(0.16, 1, 0.3, 1), opacity 160ms ease-out !important;
+                            animation: sc-drawer-spring-in 240ms cubic-bezier(0.16, 1, 0.3, 1) both !important;
                         }
-                        /* 2. 抽屉内部滚动容器：独立 GPU 合成切片，滑动由 Compositor 线程处理 */
+                        .drawer-content.closedDrawer {
+                            animation: sc-drawer-fade-out 120ms cubic-bezier(0.32, 0.72, 0, 1) both !important;
+                        }
+                        /* 左右抽屉滑入动画（如有） */
+                        @keyframes sc-drawer-slide-left-in {
+                            0% { opacity: 0; transform: translate3d(-24px, 0, 0); }
+                            100% { opacity: 1; transform: translate3d(0, 0, 0); }
+                        }
+                        @keyframes sc-drawer-slide-right-in {
+                            0% { opacity: 0; transform: translate3d(24px, 0, 0); }
+                            100% { opacity: 1; transform: translate3d(0, 0, 0); }
+                        }
+                        .fillLeft.openDrawer {
+                            animation: sc-drawer-slide-left-in 220ms cubic-bezier(0.16, 1, 0.3, 1) both !important;
+                        }
+                        .fillRight.openDrawer {
+                            animation: sc-drawer-slide-right-in 220ms cubic-bezier(0.16, 1, 0.3, 1) both !important;
+                        }
+
+                        /* ==== 2. 移动端滑动交互护盾：滑动中封闭沿途全部 hover 与误点 ==== */
+                        body.sc-is-scrolling * {
+                            pointer-events: none !important;
+                        }
+
+                        /* ==== 3. 触控屏专属防误触基线：彻底消除桌面端粘滞 Hover 动效 ==== */
+                        @media (hover: none), (pointer: coarse) {
+                            /* 屏蔽所有非点击状态下的 hover 缩放与悬浮位移 */
+                            *:hover {
+                                transform: none !important;
+                            }
+                            /* 彻底杜绝滑动划过图标时展开文字标签挤压排版 */
+                            .has_hover_label:hover .label {
+                                opacity: 0 !important;
+                                max-width: 0 !important;
+                            }
+                            .has_hover_label:hover .label_icon {
+                                opacity: 1 !important;
+                                max-width: 100px !important;
+                            }
+                            /* 角色列表和文件夹项 hover 背景不变色，避免滑动经过时卡住高亮 */
+                            .character_select:hover,
+                            .bogus_folder_select:hover,
+                            .avatar-container:hover {
+                                background-color: transparent !important;
+                            }
+                            /* 点击 (:active) 时提供干净利落的触控反馈 */
+                            .character_select:active,
+                            .menu_button:active,
+                            .drawer-icon:active {
+                                opacity: 0.72 !important;
+                            }
+                        }
+
+                        /* ==== 4. 触控体验基础优化：消除 300ms 延迟与系统灰色高亮 ==== */
+                        html, body {
+                            touch-action: manipulation !important;
+                            -webkit-tap-highlight-color: transparent !important;
+                            -webkit-touch-callout: none !important;
+                        }
+
+                        /* ==== 5. 抽屉内部与列表滚动优化 ==== */
                         .drawer-content.openDrawer,
                         #rm_print_characters_block,
                         .scrollableInner,
@@ -1533,12 +1609,12 @@ class MainActivity : BridgeActivity() {
                             -webkit-overflow-scrolling: touch !important;
                             will-change: scroll-position !important;
                         }
-                        /* 3. 角色卡长列表项：内容边界隔离，防止滚动时图层击穿 */
                         #rm_print_characters_block .character_select_container,
                         #rm_print_characters_block .group_select_container {
                             contain: content !important;
                         }
-                        /* 4. 模态弹窗遮罩：去除双层重叠毛玻璃叠杀，改用高质感半透明遮罩，减免 50% GPU 模糊负载 */
+
+                        /* ==== 6. 模态弹窗遮罩：减免 50% GPU 模糊负载 ==== */
                         #shadow_popup,
                         #shadow_character_popup {
                             backdrop-filter: none !important;
@@ -1546,6 +1622,64 @@ class MainActivity : BridgeActivity() {
                             background-color: rgba(0, 0, 0, 0.7) !important;
                         }
                     `;
+
+                    // 2. 注入全局滑动护盾监听器（Scroll & Touch Shield Controller）
+                    if (!window.__scScrollShieldInstalled) {
+                        window.__scScrollShieldInstalled = true;
+                        let shieldTimer = null;
+                        let startX = 0;
+                        let startY = 0;
+                        let isDragging = false;
+
+                        const activateShield = () => {
+                            if (!document.body.classList.contains('sc-is-scrolling')) {
+                                document.body.classList.add('sc-is-scrolling');
+                            }
+                            clearTimeout(shieldTimer);
+                            shieldTimer = setTimeout(() => {
+                                document.body.classList.remove('sc-is-scrolling');
+                                isDragging = false;
+                            }, 85);
+                        };
+
+                        window.addEventListener('touchstart', (e) => {
+                            if (e.touches && e.touches.length === 1) {
+                                startX = e.touches[0].clientX;
+                                startY = e.touches[0].clientY;
+                                isDragging = false;
+                            }
+                        }, { passive: true, capture: true });
+
+                        window.addEventListener('touchmove', (e) => {
+                            if (e.touches && e.touches.length === 1) {
+                                const dx = Math.abs(e.touches[0].clientX - startX);
+                                const dy = Math.abs(e.touches[0].clientY - startY);
+                                if (dx > 7 || dy > 7) {
+                                    isDragging = true;
+                                    activateShield();
+                                }
+                            }
+                        }, { passive: true, capture: true });
+
+                        window.addEventListener('touchend', () => {
+                            if (isDragging) {
+                                clearTimeout(shieldTimer);
+                                shieldTimer = setTimeout(() => {
+                                    document.body.classList.remove('sc-is-scrolling');
+                                    isDragging = false;
+                                }, 60);
+                            } else {
+                                document.body.classList.remove('sc-is-scrolling');
+                            }
+                        }, { passive: true, capture: true });
+
+                        window.addEventListener('touchcancel', () => {
+                            document.body.classList.remove('sc-is-scrolling');
+                            isDragging = false;
+                        }, { passive: true, capture: true });
+
+                        window.addEventListener('scroll', activateShield, { passive: true, capture: true });
+                    }
                 } catch (_) {}
             })();
         """.trimIndent()
