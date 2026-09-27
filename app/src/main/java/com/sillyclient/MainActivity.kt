@@ -67,6 +67,11 @@ class MainActivity : BridgeActivity() {
     private var samplingTopColor = false
     private val topColorPoll: Runnable = Runnable {
         if (isWebViewVisible) {
+            if (isTouchScrolling) {
+                handler.removeCallbacks(topColorPoll)
+                handler.postDelayed(topColorPoll, 1500)
+                return@Runnable
+            }
             sampleTopColor { c ->
                 if (c != null) applyTopColor(c)
                 handler.removeCallbacks(topColorPoll)
@@ -311,14 +316,10 @@ class MainActivity : BridgeActivity() {
                 statusBarFixedPx
             ).apply { gravity = Gravity.TOP }
             setOnTouchListener { view, event ->
-                topGestureDetector.onTouchEvent(event)
                 if (event.action == MotionEvent.ACTION_UP) {
                     view.performClick()
-                    topScrimBar.sweepGloss()
-                    if (isWebViewVisible) {
-                        sampleTopColor { c -> if (c != null) applyTopColor(c) }
-                    }
                 }
+                topGestureDetector.onTouchEvent(event)
                 true
             }
         }
@@ -350,8 +351,11 @@ class MainActivity : BridgeActivity() {
         cleanupStaleExportTempFiles()
 
         webView = WebView(this).apply {
-            setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            setLayerType(View.LAYER_TYPE_NONE, null)
             overScrollMode = View.OVER_SCROLL_NEVER
+            isNestedScrollingEnabled = false
+            isVerticalScrollBarEnabled = false
+            isHorizontalScrollBarEnabled = false
 
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -363,6 +367,7 @@ class MainActivity : BridgeActivity() {
             settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
             settings.mediaPlaybackRequiresUserGesture = false
+            settings.setNeedInitialFocus(false)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 settings.offscreenPreRaster = true
             }
@@ -1429,34 +1434,45 @@ class MainActivity : BridgeActivity() {
                     pullStartY = event.rawY
                     pullReadyToReload = pullToRefreshEnabled && webView.scrollY == 0
                     isTouchScrolling = false
+                    // 触控按下时立即停止后台取色轮询，确保滑动期间 0 外部干扰
+                    handler.removeCallbacks(topColorPoll)
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = kotlin.math.abs(event.rawX - touchDownX)
                     val dy = kotlin.math.abs(event.rawY - touchDownY)
-                    if (dx > touchSlop * 2 || dy > touchSlop * 2) {
+                    if (dx > touchSlop || dy > touchSlop) {
                         isTouchScrolling = true
+                        if (dx > dy * 0.8f || event.rawY < pullStartY) {
+                            pullReadyToReload = false
+                        }
                     }
                 }
                 MotionEvent.ACTION_UP -> {
-                    webView.performClick()
                     // 1. 下拉刷新:从顶部向下拉超过 120px 时刷新
                     if (pullReadyToReload && (event.rawY - pullStartY) > 120) {
                         webView.reload()
                         topScrimBar.sweepGloss() // 下拉刷新时触发顶栏光泽扫过
                         pushLog("↓ 下拉刷新酒馆界面")
                     } else if (!isTouchScrolling) {
-                        // 2. 原版原汁原味：用户轻触点击界面，100% 触发顶部白色光波与顶栏色彩更新！
+                        // 2. 原版原汁原味：用户轻触静态点击界面，触发顶部白色光波与顶栏色彩更新！
                         topScrimBar.sweepGloss()
                         handler.postDelayed({
-                            if (isWebViewVisible) sampleTopColor { c -> if (c != null) applyTopColor(c) }
+                            if (isWebViewVisible && !isTouchScrolling) {
+                                sampleTopColor { c -> if (c != null) applyTopColor(c) }
+                            }
                         }, 200)
                     }
                     pullReadyToReload = false
                     isTouchScrolling = false
+                    // 滑动或点击结束后，延迟 1500ms 等界面完全静止再恢复周期性取色轮询
+                    handler.removeCallbacks(topColorPoll)
+                    handler.postDelayed(topColorPoll, 1500)
                 }
                 MotionEvent.ACTION_CANCEL -> {
                     pullReadyToReload = false
                     isTouchScrolling = false
+                    handler.removeCallbacks(topColorPoll)
+                    handler.postDelayed(topColorPoll, 1500)
                 }
             }
             false
