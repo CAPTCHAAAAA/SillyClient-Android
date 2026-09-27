@@ -208,6 +208,9 @@ class MainActivity : BridgeActivity() {
             WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED
         )
+        try {
+            WebView.setWebContentsDebuggingEnabled(false)
+        } catch (_: Exception) {}
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             try {
                 val disp = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -348,6 +351,7 @@ class MainActivity : BridgeActivity() {
         webView = WebView(this).apply {
             setLayerType(View.LAYER_TYPE_HARDWARE, null)
             overScrollMode = View.OVER_SCROLL_NEVER
+            isNestedScrollingEnabled = false
 
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -359,6 +363,10 @@ class MainActivity : BridgeActivity() {
             settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
             settings.mediaPlaybackRequiresUserGesture = false
+            settings.useWideViewPort = true
+            settings.loadWithOverviewMode = true
+            settings.layoutAlgorithm = android.webkit.WebSettings.LayoutAlgorithm.NORMAL
+            settings.setNeedInitialFocus(false)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 settings.offscreenPreRaster = true
             }
@@ -405,6 +413,7 @@ class MainActivity : BridgeActivity() {
                     android.util.Log.i(TAG, "Page loaded: $url")
                     installTavernDownloadSupport(url)
                     installChameleonProbes()
+                    injectPerformanceOptimizations()
                 }
             }
 
@@ -1031,6 +1040,7 @@ class MainActivity : BridgeActivity() {
         // 页面若已加载，onPageFinished 不会重触发，故在此 kick 轮询。
         handler.removeCallbacks(topColorPoll)
         handler.postDelayed(topColorPoll, 350)
+        injectPerformanceOptimizations()
         return true
     }
 
@@ -1441,6 +1451,45 @@ class MainActivity : BridgeActivity() {
             }
             false
         }
+    }
+
+    /** 注入酒馆专用 GPU 硬件图层隔离与长列表平滑滚动样式，削减渲染瓶颈。 */
+    private fun injectPerformanceOptimizations() {
+        if (!::webView.isInitialized) return
+        val perfScript = """
+            (function() {
+                try {
+                    if (document.getElementById('sc-perf-styles')) return;
+                    const style = document.createElement('style');
+                    style.id = 'sc-perf-styles';
+                    style.textContent = `
+                        /* 1. 聊天主视口：独立硬件加速合成层（Composited Layer）与布局隔离，滑动时 0 重排 */
+                        #chat {
+                            will-change: transform;
+                            transform: translateZ(0);
+                            contain: layout style;
+                            -webkit-overflow-scrolling: touch;
+                        }
+                        /* 2. 消息流：跳过视口外长列表旧消息的昂贵光栅化 */
+                        .mes {
+                            contain-intrinsic-size: 0 90px;
+                            content-visibility: auto;
+                        }
+                        /* 3. 顶栏图层隔离：独立 GPU 纹理，与聊天内容分层渲染 */
+                        #top-bar {
+                            transform: translateZ(0);
+                            contain: layout style;
+                        }
+                        /* 4. 彻底消除 Chromium 移动端 300ms 点击延迟 */
+                        * {
+                            touch-action: manipulation;
+                        }
+                    `;
+                    (document.head || document.documentElement).appendChild(style);
+                } catch (_) {}
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(perfScript, null)
     }
 
     private fun exitFullscreen() {
