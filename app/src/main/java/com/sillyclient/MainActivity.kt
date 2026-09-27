@@ -38,6 +38,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsAnimationCompat
 import androidx.core.graphics.Insets
 import com.getcapacitor.JSObject
 import com.sillyclient.runtime.CompanionPresetInstaller
@@ -377,7 +378,7 @@ class MainActivity : BridgeActivity() {
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 @Suppress("DEPRECATION")
-                settings.forceDark = android.webkit.WebSettings.FORCE_DARK_AUTO
+                settings.forceDark = android.webkit.WebSettings.FORCE_DARK_OFF
             }
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
             addJavascriptInterface(tavernDownloadBridge, "SillyClientAndroidDownloads")
@@ -476,9 +477,44 @@ class MainActivity : BridgeActivity() {
             )
         }
 
-        // IME 适配：输入法弹出时，给 webViewScreen 加底部 padding，让内容不被遮挡
-        // setDecorFitsSystemWindows(false) + CONSUMED 会吞掉所有 insets，
-        // 所以在 webViewScreen 上单独监听 IME insets。
+        // IME 零延迟适配：
+        // 1. 在系统键盘动画启动的第一帧（0ms / onStart）立即一步到位垫起高度，彻底消除 250ms 滞后延迟；
+        // 2. 在动画过程中（onProgress）不逐帧 setPadding，彻底杜绝 60Hz 强制重排掉帧卡顿；
+        // 3. 在动画结束时（onEnd）做最终精确对齐，并保留 setOnApplyWindowInsetsListener 静态兜底。
+        ViewCompat.setWindowInsetsAnimationCallback(
+            webViewScreen,
+            object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
+                override fun onPrepare(animation: WindowInsetsAnimationCompat) {}
+
+                override fun onStart(
+                    animation: WindowInsetsAnimationCompat,
+                    bounds: WindowInsetsAnimationCompat.BoundsCompat
+                ): WindowInsetsAnimationCompat.BoundsCompat {
+                    if ((animation.typeMask and WindowInsetsCompat.Type.ime()) != 0) {
+                        val targetHeight = bounds.upperBound.bottom
+                        val imeVisible = ViewCompat.getRootWindowInsets(webViewScreen)
+                            ?.isVisible(WindowInsetsCompat.Type.ime()) ?: (targetHeight > 0)
+                        webViewScreen.setPadding(0, 0, 0, if (imeVisible) targetHeight else 0)
+                    }
+                    return super.onStart(animation, bounds)
+                }
+
+                override fun onProgress(
+                    insets: WindowInsetsCompat,
+                    runningAnimations: MutableList<WindowInsetsAnimationCompat>
+                ): WindowInsetsCompat = insets
+
+                override fun onEnd(animation: WindowInsetsAnimationCompat) {
+                    if ((animation.typeMask and WindowInsetsCompat.Type.ime()) != 0) {
+                        val rootInsets = ViewCompat.getRootWindowInsets(webViewScreen)
+                        val imeVisible = rootInsets?.isVisible(WindowInsetsCompat.Type.ime()) ?: false
+                        val imeHeight = rootInsets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
+                        webViewScreen.setPadding(0, 0, 0, if (imeVisible) imeHeight else 0)
+                    }
+                }
+            }
+        )
+
         ViewCompat.setOnApplyWindowInsetsListener(webViewScreen) { v, insets ->
             val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
             val imeHeight = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
@@ -1487,13 +1523,36 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    /** 抽屉与内核优化：结合方案 B 离屏硬件层与彻底击毙 ST 逐像素重排，120Hz 纯 GPU 平移，纯正毛玻璃不透底。 */
+    /** 抽屉与内核深度优化：
+     * 1. 彻底处决 jQuery 逐帧软动画核心（fx.off = true），二级抽屉 slideToggle 耗时从 400ms 降至 0ms 瞬间秒开；
+     * 2. 一级抽屉与二级抽屉全部 transition/animation: none，零几何形变，纯正毛玻璃不透底；
+     * 3. 施加 contain: layout style 布局沙箱，阻断二级抽屉向外击穿大重排；
+     * 4. 角色列表与世界书条目声明 content-visibility: auto，跳过离屏计算；
+     * 5. 取消进聊天自动弹键盘。
+     */
     private fun injectDrawerPerformanceOptimizations() {
         if (!::webView.isInitialized) return
         val perfScript = """
             (function() {
                 try {
-                    // 1. 主线程解冻：声明 field-sizing 支持，绕过酒馆展开抽屉时的强制同步重排死循环
+                    // 1. 深度内核级拦截：彻底关闭 jQuery 全局动画引擎
+                    // 将所有 slideToggle, slideDown, slideUp, animate, fadeIn, fadeOut 执行时间直接归零（0ms 秒开秒关）！
+                    function disableJQueryAnimations() {
+                        if (window.jQuery) {
+                            window.jQuery.fx.off = true;
+                            if (window.jQuery.fx.speeds) {
+                                window.jQuery.fx.speeds._default = 0;
+                                window.jQuery.fx.speeds.fast = 0;
+                                window.jQuery.fx.speeds.slow = 0;
+                            }
+                        }
+                    }
+                    disableJQueryAnimations();
+                    if (!window.__scJQueryFxWatcher) {
+                        window.__scJQueryFxWatcher = setInterval(disableJQueryAnimations, 500);
+                    }
+
+                    // 2. 主线程解冻：声明 field-sizing 支持，绕过酒馆展开抽屉时的强制同步重排死循环
                     if (window.CSS && !CSS.supports('field-sizing', 'content')) {
                         const originalSupports = CSS.supports.bind(CSS);
                         CSS.supports = function(property, value) {
@@ -1502,7 +1561,7 @@ class MainActivity : BridgeActivity() {
                         };
                     }
 
-                    // 2. 注入全局方案 B 硬件加速样式表（彻底处决 ST 原版 height 连续重排，保留 100% 毛玻璃）
+                    // 3. 注入全局 0 延迟秒开样式表（彻底处决一级抽屉、二级抽屉、折叠面板所有动画与过渡，瞬间秒开秒关，保留 100% 原版毛玻璃）
                     let style = document.getElementById('sc-drawer-perf');
                     if (!style) {
                         style = document.createElement('style');
@@ -1510,77 +1569,110 @@ class MainActivity : BridgeActivity() {
                         (document.head || document.documentElement).appendChild(style);
                     }
                     style.textContent = `
-                        /* ==== 1. 彻底处决 ST 原版 250ms 逐像素高度连续重排，高度一次性定格 ==== */
+                        /* ==== 1. 一级抽屉：彻底处决动画与过渡，0 延迟秒开（Zero-Latency Instant Snap） ==== */
                         .drawer-content {
                             transition: none !important;
-                            height: auto !important;
-                            contain: layout style !important;
-                            will-change: transform, opacity !important;
-                            -webkit-backface-visibility: hidden !important;
-                            backface-visibility: hidden !important;
-                        }
-
-                        /* ==== 2. 方案 B：通知栏级纯 GPU 硬件层离屏平移（160ms，0 几何重排，0 卡死） ==== */
-                        @keyframes sc-drawer-notification-in {
-                            0% {
-                                opacity: 0;
-                                transform: translate3d(0, -18px, 0);
-                            }
-                            100% {
-                                opacity: 1;
-                                transform: translate3d(0, 0, 0);
-                            }
+                            animation: none !important;
                         }
                         .drawer-content.openDrawer {
                             display: block !important;
                             visibility: visible !important;
                             height: auto !important;
                             opacity: 1 !important;
-                            animation: sc-drawer-notification-in 160ms cubic-bezier(0.16, 1, 0.3, 1) both !important;
+                            transform: none !important;
+                            transition: none !important;
+                            animation: none !important;
                         }
 
-                        /* 左右抽屉滑入（如有） */
-                        @keyframes sc-drawer-slide-left-in {
-                            0% { opacity: 0; transform: translate3d(-20px, 0, 0); }
-                            100% { opacity: 1; transform: translate3d(0, 0, 0); }
+                        /* 左右抽屉同样 0 延迟秒开 */
+                        .fillLeft,
+                        .fillRight {
+                            transition: none !important;
+                            animation: none !important;
                         }
-                        @keyframes sc-drawer-slide-right-in {
-                            0% { opacity: 0; transform: translate3d(20px, 0, 0); }
-                            100% { opacity: 1; transform: translate3d(0, 0, 0); }
-                        }
-                        .fillLeft.openDrawer {
-                            animation: sc-drawer-slide-left-in 160ms cubic-bezier(0.16, 1, 0.3, 1) both !important;
-                        }
+                        .fillLeft.openDrawer,
                         .fillRight.openDrawer {
-                            animation: sc-drawer-slide-right-in 160ms cubic-bezier(0.16, 1, 0.3, 1) both !important;
+                            transition: none !important;
+                            animation: none !important;
+                            transform: none !important;
                         }
 
-                        /* ==== 3. 自适应输入框高度优化 ==== */
+                        /* ==== 2. 二级抽屉（inline-drawer）与折叠面板：彻底处决过渡动画，施加 Containment 局部布局沙箱 ==== */
+                        .inline-drawer-content {
+                            transition: none !important;
+                            animation: none !important;
+                            contain: layout style; /* 局部布局沙箱：二级抽屉的展开折叠绝不向上击穿引发大页面重排 */
+                        }
+                        .inline-drawer-header,
+                        .inline-drawer-toggle,
+                        .inline-drawer-icon,
+                        .standoutHeader {
+                            transition: none !important;
+                            animation: none !important;
+                        }
+
+                        /* ==== 3. 虚拟化跳过离屏计算：角色卡列表与长文本面板 ==== */
+                        #rm_print_characters_block .character_select,
+                        #world_popup_entries_list .inline-drawer {
+                            content-visibility: auto;
+                            contain-intrinsic-size: auto 86px;
+                        }
+
+                        /* ==== 4. 自适应输入框高度优化 ==== */
                         textarea.autoSetHeight {
                             field-sizing: content;
                         }
 
-                        /* ==== 4. 抽屉内部与角色列表滚动流畅度优化 ==== */
+                        /* ==== 5. 抽屉内部与列表原生弹性滚动 ==== */
                         .drawer-content.openDrawer,
                         #rm_print_characters_block,
                         .scrollableInner,
                         .scrollableInnerFull {
                             -webkit-overflow-scrolling: touch !important;
-                            will-change: scroll-position !important;
-                        }
-                        #rm_print_characters_block .character_select_container,
-                        #rm_print_characters_block .group_select_container {
-                            contain: content !important;
-                        }
-
-                        /* ==== 5. 模态弹窗遮罩：去除双层重叠毛玻璃叠杀，减免 50% GPU 负载 ==== */
-                        #shadow_popup,
-                        #shadow_character_popup {
-                            backdrop-filter: none !important;
-                            -webkit-backdrop-filter: none !important;
-                            background-color: rgba(0, 0, 0, 0.72) !important;
                         }
                     `;
+
+                    // 4. 彻底取消一进角色对话页面就自动展开输入法的设计
+                    if (!window.__scAutoFocusBlockerInstalled) {
+                        window.__scAutoFocusBlockerInstalled = true;
+                        let userTappedTextarea = false;
+
+                        // 仅当用户手指真实点在输入框上时才允许聚焦弹键盘
+                        document.addEventListener('touchstart', (e) => {
+                            if (e.target && (e.target.id === 'send_textarea' || (e.target.closest && e.target.closest('#send_textarea')))) {
+                                userTappedTextarea = true;
+                            } else {
+                                userTappedTextarea = false;
+                            }
+                        }, { capture: true, passive: true });
+
+                        document.addEventListener('mousedown', (e) => {
+                            if (e.target && (e.target.id === 'send_textarea' || (e.target.closest && e.target.closest('#send_textarea')))) {
+                                userTappedTextarea = true;
+                            } else {
+                                userTappedTextarea = false;
+                            }
+                        }, { capture: true, passive: true });
+
+                        const origTextareaFocus = HTMLTextAreaElement.prototype.focus;
+                        HTMLTextAreaElement.prototype.focus = function(options) {
+                            if (this.id === 'send_textarea' && !userTappedTextarea) {
+                                // 进页面时的自动 focus，静默跳过，绝不弹出软键盘
+                                return;
+                            }
+                            return origTextareaFocus.call(this, options);
+                        };
+
+                        if (window.jQuery) {
+                            const origTrigger = window.jQuery.fn.trigger;
+                            window.jQuery.fn.trigger = function(type, data) {
+                                if (this.is('#send_textarea') && !userTappedTextarea && (type === 'focus' || type === 'click' || type === 'focusin')) {
+                                    return this;
+                                }
+                                return origTrigger.apply(this, arguments);
+                            };
+                        }
+                    }
                 } catch (_) {}
             })();
         """.trimIndent()
