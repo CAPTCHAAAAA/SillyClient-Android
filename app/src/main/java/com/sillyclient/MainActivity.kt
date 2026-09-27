@@ -69,7 +69,8 @@ class MainActivity : BridgeActivity() {
         if (isWebViewVisible) {
             sampleTopColor { c ->
                 if (c != null) applyTopColor(c)
-                handler.postDelayed(topColorPoll, 5000)
+                handler.removeCallbacks(topColorPoll)
+                handler.postDelayed(topColorPoll, 1500)
             }
         }
     }
@@ -1037,9 +1038,12 @@ class MainActivity : BridgeActivity() {
         // 版本更新后同一实例也会重新提示，是否展示由原生版本标记决定。
         if (!instanceId.isNullOrBlank()) tavernStatusHint.show(instanceId)
         // 顶条带自动取色由 installChameleonProbes 驱动（控制台转向 Capacitor 接入）
-        // 页面若已加载，onPageFinished 不会重触发，故在此 kick 轮询。
+        lastAppliedTopColor = null
         handler.removeCallbacks(topColorPoll)
-        handler.postDelayed(topColorPoll, 350)
+        handler.post(topColorPoll)
+        handler.postDelayed(topColorPoll, 150)
+        handler.postDelayed(topColorPoll, 400)
+        handler.postDelayed(topColorPoll, 800)
         injectPerformanceOptimizations()
         return true
     }
@@ -1053,6 +1057,7 @@ class MainActivity : BridgeActivity() {
      */
     fun exitTavern() {
         if (!isWebViewVisible) return
+        isWebViewVisible = false
         lastAppliedTopColor = null
         tavernStatusHint.dismiss()
         handler.removeCallbacks(topColorPoll)
@@ -1077,8 +1082,13 @@ class MainActivity : BridgeActivity() {
         enterImmersive()
         switchToWebView(true)
         currentTavernInstanceId?.let { tavernStatusHint.show(it) }
+        lastAppliedTopColor = null
         handler.removeCallbacks(topColorPoll)
-        handler.postDelayed(topColorPoll, 350)
+        handler.post(topColorPoll)
+        handler.postDelayed(topColorPoll, 150)
+        handler.postDelayed(topColorPoll, 400)
+        handler.postDelayed(topColorPoll, 800)
+        injectPerformanceOptimizations()
     }
 
     /**
@@ -1188,6 +1198,7 @@ class MainActivity : BridgeActivity() {
                 .withEndAction {
                     if (isDestroyed || isFinishing) return@withEndAction
                     isWebViewVisible = false
+                    lastAppliedTopColor = null
                     topScrimBar.reset()
                     val lp = webViewScreen.layoutParams as FrameLayout.LayoutParams
                     lp.topMargin = 0
@@ -1201,6 +1212,7 @@ class MainActivity : BridgeActivity() {
                 .start()
         } else {
             isWebViewVisible = false
+            lastAppliedTopColor = null
             topScrimBar.reset()
             val lp = webViewScreen.layoutParams as FrameLayout.LayoutParams
             lp.topMargin = 0
@@ -1332,19 +1344,25 @@ class MainActivity : BridgeActivity() {
     """.trimIndent()
 
     private fun sampleTopColor(onResult: (Int?) -> Unit) {
-        if (!isWebViewVisible || !::webView.isInitialized || !webView.isShown) {
+        if (!isWebViewVisible || !::webView.isInitialized) {
             onResult(null)
             return
         }
-        // 引擎 A：DOM 探针优先（0 开销、0 GPU 卡顿）
-        webView.evaluateJavascript(domProbeScript) { res ->
-            val color = res?.trim('"', ' ', '\'')?.toIntOrNull()
-            if (color != null && color != 0) {
-                onResult(color)
-            } else {
-                // 引擎 B：PixelCopy 兜底
-                sampleTopColorPixelCopy(onResult)
+        // 引擎 A：DOM 探针优先（0 开销、0 GPU 卡顿，且不受转场过渡 alpha 影响）
+        try {
+            webView.evaluateJavascript(domProbeScript) { res ->
+                val color = res?.trim('"', ' ', '\'')?.toIntOrNull()
+                if (color != null && color != 0) {
+                    onResult(color)
+                } else if (webView.isShown && webView.width > 0) {
+                    // 引擎 B：PixelCopy 兜底
+                    sampleTopColorPixelCopy(onResult)
+                } else {
+                    onResult(null)
+                }
             }
+        } catch (_: Exception) {
+            onResult(null)
         }
     }
 
