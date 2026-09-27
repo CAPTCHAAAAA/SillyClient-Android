@@ -1523,28 +1523,50 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    /** 宿主增强：彻底放弃对抽屉展开的侵入式劫持（还原纯净底座），仅保留进聊天防自动弹键盘与输入法优化。 */
+    /** 宿主增强：底层消灭点击展开卡顿停顿
+     * 1. 彻底消灭毒瘤 1：废除 display: none，抽屉常驻排版流并以 visibility: hidden 隐藏，点击时仅切换可见性，消灭 100ms 排版树重建雪崩；
+     * 2. 彻底消灭毒瘤 2：捕获阶段秒切已开抽屉，短路消灭酒馆原版 await delay(125ms) 的人为发呆迟钝；
+     * 3. 彻底消灭毒瘤 3：关闭 jQuery.fx 软动画引擎，二级抽屉 400ms 定时器清零，施加 contain: layout style 局部沙箱；
+     * 4. 保持进聊天防自动弹键盘与输入法 0 延迟首帧避让。
+     */
     private fun injectDrawerPerformanceOptimizations() {
         if (!::webView.isInitialized) return
         val perfScript = """
             (function() {
                 try {
-                    // 1. 彻底拔除自定义抽屉样式表，放弃全部侵入式展开动画
-                    const oldStyle = document.getElementById('sc-drawer-perf');
-                    if (oldStyle) {
-                        oldStyle.remove();
+                    // 1. 深度关闭 jQuery 全局软动画引擎，处决二级抽屉 400ms 定时器
+                    function disableJQueryAnimations() {
+                        if (window.jQuery) {
+                            window.jQuery.fx.off = true;
+                            if (window.jQuery.fx.speeds) {
+                                window.jQuery.fx.speeds._default = 0;
+                                window.jQuery.fx.speeds.fast = 0;
+                                window.jQuery.fx.speeds.slow = 0;
+                            }
+                        }
+                    }
+                    disableJQueryAnimations();
+                    if (!window.__scJQueryFxWatcher) {
+                        window.__scJQueryFxWatcher = setInterval(disableJQueryAnimations, 500);
                     }
 
-                    // 2. 清理 jQuery.fx 劫持与定时器
-                    if (window.__scJQueryFxWatcher) {
-                        clearInterval(window.__scJQueryFxWatcher);
-                        window.__scJQueryFxWatcher = null;
-                    }
-                    if (window.jQuery && window.jQuery.fx) {
-                        window.jQuery.fx.off = false;
+                    // 2. 切除毒瘤 2：消灭 ST 原版的 125ms 人为异步停顿
+                    // 在捕获阶段，当用户点击任一抽屉按钮时，立即瞬间关闭已开抽屉，绕过 await delay(125)
+                    if (!window.__scDrawerFastSwitchInstalled) {
+                        window.__scDrawerFastSwitchInstalled = true;
+                        document.addEventListener('click', (e) => {
+                            const toggle = e.target && e.target.closest && e.target.closest('.drawer-toggle, .drawer-opener');
+                            if (toggle && window.jQuery) {
+                                const activeDrawers = window.jQuery('.openDrawer:not(.pinnedOpen)');
+                                if (activeDrawers.length) {
+                                    activeDrawers.removeClass('openDrawer').addClass('closedDrawer');
+                                    window.jQuery('.openIcon:not(.drawerPinnedOpen)').removeClass('openIcon').addClass('closedIcon');
+                                }
+                            }
+                        }, { capture: true });
                     }
 
-                    // 3. 主线程解冻：声明 field-sizing 支持，绕过酒馆展开抽屉时的强制同步重排死循环
+                    // 3. 声明 CSS field-sizing 支持，绕过 textarea 同步重排死循环
                     if (window.CSS && !CSS.supports('field-sizing', 'content')) {
                         const originalSupports = CSS.supports.bind(CSS);
                         CSS.supports = function(property, value) {
@@ -1553,7 +1575,81 @@ class MainActivity : BridgeActivity() {
                         };
                     }
 
-                    // 4. 彻底取消一进角色对话页面就自动展开输入法的设计（用户刚需，坚决保留）
+                    // 4. 切除毒瘤 1：抽屉常驻排版流 + 0ms 瞬间可见切换（消灭 100ms 排版树销毁重建雪崩）
+                    let style = document.getElementById('sc-drawer-perf');
+                    if (!style) {
+                        style = document.createElement('style');
+                        style.id = 'sc-drawer-perf';
+                        (document.head || document.documentElement).appendChild(style);
+                    }
+                    style.textContent = `
+                        /* ==== 一级大抽屉：常驻排版流 + 0 延迟可见性瞬间切换（消灭 100ms 重排顿挫） ==== */
+                        .drawer-content {
+                            display: block !important;
+                            visibility: hidden !important;
+                            pointer-events: none !important;
+                            transition: none !important;
+                            animation: none !important;
+                        }
+                        .drawer-content.openDrawer {
+                            display: block !important;
+                            visibility: visible !important;
+                            pointer-events: auto !important;
+                            height: auto !important;
+                            transition: none !important;
+                            animation: none !important;
+                        }
+
+                        .fillLeft,
+                        .fillRight {
+                            display: flex !important;
+                            visibility: hidden !important;
+                            pointer-events: none !important;
+                            transition: none !important;
+                            animation: none !important;
+                        }
+                        .fillLeft.openDrawer,
+                        .fillRight.openDrawer {
+                            display: flex !important;
+                            visibility: visible !important;
+                            pointer-events: auto !important;
+                            height: 100% !important;
+                            transition: none !important;
+                            animation: none !important;
+                        }
+
+                        /* ==== 二级抽屉（inline-drawer）：Containment 局部布局沙箱 ==== */
+                        .inline-drawer-content {
+                            transition: none !important;
+                            animation: none !important;
+                            contain: layout style !important;
+                        }
+                        .inline-drawer-header,
+                        .inline-drawer-toggle,
+                        .inline-drawer-icon,
+                        .standoutHeader {
+                            transition: none !important;
+                            animation: none !important;
+                        }
+
+                        /* ==== 虚拟化跳过离屏计算：角色卡与长列表 ==== */
+                        #rm_print_characters_block .character_select,
+                        #world_popup_entries_list .inline-drawer {
+                            content-visibility: auto;
+                            contain-intrinsic-size: auto 86px;
+                        }
+
+                        /* ==== 输入框原生自适应与原生平滑滚动 ==== */
+                        textarea.autoSetHeight {
+                            field-sizing: content;
+                        }
+                        .drawer-content.openDrawer,
+                        #rm_print_characters_block,
+                        .scrollableInner,
+                        .scrollableInnerFull {
+                            -webkit-overflow-scrolling: touch !important;
+                        }
+                    `;
                     if (!window.__scAutoFocusBlockerInstalled) {
                         window.__scAutoFocusBlockerInstalled = true;
                         let userTappedTextarea = false;
