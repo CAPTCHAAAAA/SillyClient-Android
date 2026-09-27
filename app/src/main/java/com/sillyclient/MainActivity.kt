@@ -1523,36 +1523,28 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    /** 抽屉与内核深度优化：
-     * 1. 彻底处决 jQuery 逐帧软动画核心（fx.off = true），二级抽屉 slideToggle 耗时从 400ms 降至 0ms 瞬间秒开；
-     * 2. 一级抽屉与二级抽屉全部 transition/animation: none，零几何形变，纯正毛玻璃不透底；
-     * 3. 施加 contain: layout style 布局沙箱，阻断二级抽屉向外击穿大重排；
-     * 4. 角色列表与世界书条目声明 content-visibility: auto，跳过离屏计算；
-     * 5. 取消进聊天自动弹键盘。
-     */
+    /** 宿主增强：彻底放弃对抽屉展开的侵入式劫持（还原纯净底座），仅保留进聊天防自动弹键盘与输入法优化。 */
     private fun injectDrawerPerformanceOptimizations() {
         if (!::webView.isInitialized) return
         val perfScript = """
             (function() {
                 try {
-                    // 1. 深度内核级拦截：彻底关闭 jQuery 全局动画引擎
-                    // 将所有 slideToggle, slideDown, slideUp, animate, fadeIn, fadeOut 执行时间直接归零（0ms 秒开秒关）！
-                    function disableJQueryAnimations() {
-                        if (window.jQuery) {
-                            window.jQuery.fx.off = true;
-                            if (window.jQuery.fx.speeds) {
-                                window.jQuery.fx.speeds._default = 0;
-                                window.jQuery.fx.speeds.fast = 0;
-                                window.jQuery.fx.speeds.slow = 0;
-                            }
-                        }
-                    }
-                    disableJQueryAnimations();
-                    if (!window.__scJQueryFxWatcher) {
-                        window.__scJQueryFxWatcher = setInterval(disableJQueryAnimations, 500);
+                    // 1. 彻底拔除自定义抽屉样式表，放弃全部侵入式展开动画
+                    const oldStyle = document.getElementById('sc-drawer-perf');
+                    if (oldStyle) {
+                        oldStyle.remove();
                     }
 
-                    // 2. 主线程解冻：声明 field-sizing 支持，绕过酒馆展开抽屉时的强制同步重排死循环
+                    // 2. 清理 jQuery.fx 劫持与定时器
+                    if (window.__scJQueryFxWatcher) {
+                        clearInterval(window.__scJQueryFxWatcher);
+                        window.__scJQueryFxWatcher = null;
+                    }
+                    if (window.jQuery && window.jQuery.fx) {
+                        window.jQuery.fx.off = false;
+                    }
+
+                    // 3. 主线程解冻：声明 field-sizing 支持，绕过酒馆展开抽屉时的强制同步重排死循环
                     if (window.CSS && !CSS.supports('field-sizing', 'content')) {
                         const originalSupports = CSS.supports.bind(CSS);
                         CSS.supports = function(property, value) {
@@ -1561,95 +1553,7 @@ class MainActivity : BridgeActivity() {
                         };
                     }
 
-                    // 3. 注入全局 0 延迟秒开样式表（彻底处决一级抽屉、二级抽屉、折叠面板所有动画与过渡，瞬间秒开秒关，保留 100% 原版毛玻璃）
-                    let style = document.getElementById('sc-drawer-perf');
-                    if (!style) {
-                        style = document.createElement('style');
-                        style.id = 'sc-drawer-perf';
-                        (document.head || document.documentElement).appendChild(style);
-                    }
-                    style.textContent = `
-                        /* ==== 1. 一级抽屉：120ms 微动量极速吸附（6px 微位移 + 0.985 微缩放 + 强阻尼急刹，0 几何重排） ==== */
-                        @keyframes sc-drawer-snap-in {
-                            0% {
-                                opacity: 0;
-                                transform: translate3d(0, -6px, 0) scale(0.985);
-                            }
-                            100% {
-                                opacity: 1;
-                                transform: translate3d(0, 0, 0) scale(1);
-                            }
-                        }
-                        .drawer-content {
-                            transition: none !important;
-                            transform-origin: top center !important;
-                        }
-                        .drawer-content.openDrawer {
-                            display: block !important;
-                            visibility: visible !important;
-                            height: auto !important;
-                            opacity: 1 !important;
-                            animation: sc-drawer-snap-in 120ms cubic-bezier(0.05, 0.9, 0.1, 1) both !important;
-                        }
-
-                        /* 左右抽屉同样 120ms 微动量滑入（8px 微位移） */
-                        @keyframes sc-drawer-slide-left-in {
-                            0% { opacity: 0; transform: translate3d(-8px, 0, 0); }
-                            100% { opacity: 1; transform: translate3d(0, 0, 0); }
-                        }
-                        @keyframes sc-drawer-slide-right-in {
-                            0% { opacity: 0; transform: translate3d(8px, 0, 0); }
-                            100% { opacity: 1; transform: translate3d(0, 0, 0); }
-                        }
-                        .fillLeft.openDrawer {
-                            animation: sc-drawer-slide-left-in 120ms cubic-bezier(0.05, 0.9, 0.1, 1) both !important;
-                        }
-                        .fillRight.openDrawer {
-                            animation: sc-drawer-slide-right-in 120ms cubic-bezier(0.05, 0.9, 0.1, 1) both !important;
-                        }
-
-                        /* ==== 2. 二级抽屉（inline-drawer）：0ms 几何展开 + 90ms 纯透明度微显影 + Containment 局部布局沙箱 ==== */
-                        @keyframes sc-inline-fade-in {
-                            0% { opacity: 0; }
-                            100% { opacity: 1; }
-                        }
-                        .inline-drawer-content {
-                            transition: none !important;
-                            contain: layout style !important; /* 局部布局沙箱：二级抽屉的展开折叠绝不向上击穿引发大页面重排 */
-                        }
-                        .inline-drawer-content[style*="display: block"] {
-                            animation: sc-inline-fade-in 90ms ease-out both !important;
-                        }
-                        .inline-drawer-header,
-                        .inline-drawer-toggle,
-                        .inline-drawer-icon,
-                        .standoutHeader {
-                            transition: none !important;
-                            animation: none !important;
-                        }
-
-                        /* ==== 3. 虚拟化跳过离屏计算：角色卡列表与长文本面板 ==== */
-                        #rm_print_characters_block .character_select,
-                        #world_popup_entries_list .inline-drawer {
-                            content-visibility: auto;
-                            contain-intrinsic-size: auto 86px;
-                        }
-
-                        /* ==== 4. 自适应输入框高度优化 ==== */
-                        textarea.autoSetHeight {
-                            field-sizing: content;
-                        }
-
-                        /* ==== 5. 抽屉内部与列表原生弹性滚动 ==== */
-                        .drawer-content.openDrawer,
-                        #rm_print_characters_block,
-                        .scrollableInner,
-                        .scrollableInnerFull {
-                            -webkit-overflow-scrolling: touch !important;
-                        }
-                    `;
-
-                    // 4. 彻底取消一进角色对话页面就自动展开输入法的设计
+                    // 4. 彻底取消一进角色对话页面就自动展开输入法的设计（用户刚需，坚决保留）
                     if (!window.__scAutoFocusBlockerInstalled) {
                         window.__scAutoFocusBlockerInstalled = true;
                         let userTappedTextarea = false;
