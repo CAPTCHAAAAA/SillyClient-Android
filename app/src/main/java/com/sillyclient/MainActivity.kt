@@ -1569,39 +1569,56 @@ class MainActivity : BridgeActivity() {
                         (document.head || document.documentElement).appendChild(style);
                     }
                     style.textContent = `
-                        /* ==== 1. 一级抽屉：彻底处决动画与过渡，0 延迟秒开（Zero-Latency Instant Snap） ==== */
+                        /* ==== 1. 一级抽屉：120ms 微动量极速吸附（6px 微位移 + 0.985 微缩放 + 强阻尼急刹，0 几何重排） ==== */
+                        @keyframes sc-drawer-snap-in {
+                            0% {
+                                opacity: 0;
+                                transform: translate3d(0, -6px, 0) scale(0.985);
+                            }
+                            100% {
+                                opacity: 1;
+                                transform: translate3d(0, 0, 0) scale(1);
+                            }
+                        }
                         .drawer-content {
                             transition: none !important;
-                            animation: none !important;
+                            transform-origin: top center !important;
                         }
                         .drawer-content.openDrawer {
                             display: block !important;
                             visibility: visible !important;
                             height: auto !important;
                             opacity: 1 !important;
-                            transform: none !important;
-                            transition: none !important;
-                            animation: none !important;
+                            animation: sc-drawer-snap-in 120ms cubic-bezier(0.05, 0.9, 0.1, 1) both !important;
                         }
 
-                        /* 左右抽屉同样 0 延迟秒开 */
-                        .fillLeft,
-                        .fillRight {
-                            transition: none !important;
-                            animation: none !important;
+                        /* 左右抽屉同样 120ms 微动量滑入（8px 微位移） */
+                        @keyframes sc-drawer-slide-left-in {
+                            0% { opacity: 0; transform: translate3d(-8px, 0, 0); }
+                            100% { opacity: 1; transform: translate3d(0, 0, 0); }
                         }
-                        .fillLeft.openDrawer,
+                        @keyframes sc-drawer-slide-right-in {
+                            0% { opacity: 0; transform: translate3d(8px, 0, 0); }
+                            100% { opacity: 1; transform: translate3d(0, 0, 0); }
+                        }
+                        .fillLeft.openDrawer {
+                            animation: sc-drawer-slide-left-in 120ms cubic-bezier(0.05, 0.9, 0.1, 1) both !important;
+                        }
                         .fillRight.openDrawer {
-                            transition: none !important;
-                            animation: none !important;
-                            transform: none !important;
+                            animation: sc-drawer-slide-right-in 120ms cubic-bezier(0.05, 0.9, 0.1, 1) both !important;
                         }
 
-                        /* ==== 2. 二级抽屉（inline-drawer）与折叠面板：彻底处决过渡动画，施加 Containment 局部布局沙箱 ==== */
+                        /* ==== 2. 二级抽屉（inline-drawer）：0ms 几何展开 + 90ms 纯透明度微显影 + Containment 局部布局沙箱 ==== */
+                        @keyframes sc-inline-fade-in {
+                            0% { opacity: 0; }
+                            100% { opacity: 1; }
+                        }
                         .inline-drawer-content {
                             transition: none !important;
-                            animation: none !important;
-                            contain: layout style; /* 局部布局沙箱：二级抽屉的展开折叠绝不向上击穿引发大页面重排 */
+                            contain: layout style !important; /* 局部布局沙箱：二级抽屉的展开折叠绝不向上击穿引发大页面重排 */
+                        }
+                        .inline-drawer-content[style*="display: block"] {
+                            animation: sc-inline-fade-in 90ms ease-out both !important;
                         }
                         .inline-drawer-header,
                         .inline-drawer-toggle,
