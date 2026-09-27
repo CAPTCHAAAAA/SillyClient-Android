@@ -1487,13 +1487,13 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    /** 抽屉与滚动优化：纯净轻量淡入，100% 保留毛玻璃质感，严禁触碰聊天流以绝消息回弹。 */
+    /** 抽屉与内核优化：结合方案 B 离屏硬件层与彻底击毙 ST 逐像素重排，120Hz 纯 GPU 平移，纯正毛玻璃不透底。 */
     private fun injectDrawerPerformanceOptimizations() {
         if (!::webView.isInitialized) return
         val perfScript = """
             (function() {
                 try {
-                    // 1. 主线程解冻：声明 field-sizing 支持，绕过酒馆展开抽屉时的强制同步重排
+                    // 1. 主线程解冻：声明 field-sizing 支持，绕过酒馆展开抽屉时的强制同步重排死循环
                     if (window.CSS && !CSS.supports('field-sizing', 'content')) {
                         const originalSupports = CSS.supports.bind(CSS);
                         CSS.supports = function(property, value) {
@@ -1502,7 +1502,7 @@ class MainActivity : BridgeActivity() {
                         };
                     }
 
-                    // 2. 注入全局轻量样式表（绝不触碰 #chat 和 .mes，绝不篡改抽屉毛玻璃）
+                    // 2. 注入全局方案 B 硬件加速样式表（彻底处决 ST 原版 height 连续重排，保留 100% 毛玻璃）
                     let style = document.getElementById('sc-drawer-perf');
                     if (!style) {
                         style = document.createElement('style');
@@ -1510,28 +1510,57 @@ class MainActivity : BridgeActivity() {
                         (document.head || document.documentElement).appendChild(style);
                     }
                     style.textContent = `
-                        /* ==== 1. 抽屉展开：原汁原味毛玻璃，极简 120ms 纯净淡入（0 透穿，0 卡死） ==== */
-                        @keyframes sc-drawer-fade {
-                            0% { opacity: 0; }
-                            100% { opacity: 1; }
-                        }
+                        /* ==== 1. 彻底处决 ST 原版 250ms 逐像素高度连续重排，高度一次性定格 ==== */
                         .drawer-content {
-                            will-change: opacity !important;
+                            transition: none !important;
+                            height: auto !important;
+                            contain: layout style !important;
+                            will-change: transform, opacity !important;
+                            -webkit-backface-visibility: hidden !important;
+                            backface-visibility: hidden !important;
+                        }
+
+                        /* ==== 2. 方案 B：通知栏级纯 GPU 硬件层离屏平移（160ms，0 几何重排，0 卡死） ==== */
+                        @keyframes sc-drawer-notification-in {
+                            0% {
+                                opacity: 0;
+                                transform: translate3d(0, -18px, 0);
+                            }
+                            100% {
+                                opacity: 1;
+                                transform: translate3d(0, 0, 0);
+                            }
                         }
                         .drawer-content.openDrawer {
                             display: block !important;
                             visibility: visible !important;
                             height: auto !important;
                             opacity: 1 !important;
-                            animation: sc-drawer-fade 120ms ease-out both !important;
+                            animation: sc-drawer-notification-in 160ms cubic-bezier(0.16, 1, 0.3, 1) both !important;
                         }
 
-                        /* ==== 2. 自适应输入框高度优化 ==== */
+                        /* 左右抽屉滑入（如有） */
+                        @keyframes sc-drawer-slide-left-in {
+                            0% { opacity: 0; transform: translate3d(-20px, 0, 0); }
+                            100% { opacity: 1; transform: translate3d(0, 0, 0); }
+                        }
+                        @keyframes sc-drawer-slide-right-in {
+                            0% { opacity: 0; transform: translate3d(20px, 0, 0); }
+                            100% { opacity: 1; transform: translate3d(0, 0, 0); }
+                        }
+                        .fillLeft.openDrawer {
+                            animation: sc-drawer-slide-left-in 160ms cubic-bezier(0.16, 1, 0.3, 1) both !important;
+                        }
+                        .fillRight.openDrawer {
+                            animation: sc-drawer-slide-right-in 160ms cubic-bezier(0.16, 1, 0.3, 1) both !important;
+                        }
+
+                        /* ==== 3. 自适应输入框高度优化 ==== */
                         textarea.autoSetHeight {
                             field-sizing: content;
                         }
 
-                        /* ==== 3. 抽屉内部与角色列表滚动流畅度优化 ==== */
+                        /* ==== 4. 抽屉内部与角色列表滚动流畅度优化 ==== */
                         .drawer-content.openDrawer,
                         #rm_print_characters_block,
                         .scrollableInner,
@@ -1544,7 +1573,7 @@ class MainActivity : BridgeActivity() {
                             contain: content !important;
                         }
 
-                        /* ==== 4. 模态弹窗遮罩：去除双层重叠毛玻璃叠杀，减免 50% GPU 负载 ==== */
+                        /* ==== 5. 模态弹窗遮罩：去除双层重叠毛玻璃叠杀，减免 50% GPU 负载 ==== */
                         #shadow_popup,
                         #shadow_character_popup {
                             backdrop-filter: none !important;
