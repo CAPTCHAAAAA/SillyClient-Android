@@ -352,6 +352,9 @@ class MainActivity : BridgeActivity() {
 
         webView = WebView(this).apply {
             setLayerType(View.LAYER_TYPE_NONE, null)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
+            }
             overScrollMode = View.OVER_SCROLL_NEVER
             isNestedScrollingEnabled = false
             isVerticalScrollBarEnabled = false
@@ -368,6 +371,7 @@ class MainActivity : BridgeActivity() {
             settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
             settings.mediaPlaybackRequiresUserGesture = false
             settings.setNeedInitialFocus(false)
+            settings.layoutAlgorithm = android.webkit.WebSettings.LayoutAlgorithm.NORMAL
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 settings.offscreenPreRaster = true
             }
@@ -414,6 +418,7 @@ class MainActivity : BridgeActivity() {
                     android.util.Log.i(TAG, "Page loaded: $url")
                     installTavernDownloadSupport(url)
                     installChameleonProbes()
+                    injectDrawerPerformanceOptimizations()
                 }
             }
 
@@ -1043,6 +1048,7 @@ class MainActivity : BridgeActivity() {
         handler.postDelayed(topColorPoll, 150)
         handler.postDelayed(topColorPoll, 400)
         handler.postDelayed(topColorPoll, 800)
+        injectDrawerPerformanceOptimizations()
         return true
     }
 
@@ -1086,6 +1092,7 @@ class MainActivity : BridgeActivity() {
         handler.postDelayed(topColorPoll, 150)
         handler.postDelayed(topColorPoll, 400)
         handler.postDelayed(topColorPoll, 800)
+        injectDrawerPerformanceOptimizations()
     }
 
     /**
@@ -1453,14 +1460,6 @@ class MainActivity : BridgeActivity() {
                         webView.reload()
                         topScrimBar.sweepGloss() // 下拉刷新时触发顶栏光泽扫过
                         pushLog("↓ 下拉刷新酒馆界面")
-                    } else if (!isTouchScrolling) {
-                        // 2. 原版原汁原味：用户轻触静态点击界面，触发顶部白色光波与顶栏色彩更新！
-                        topScrimBar.sweepGloss()
-                        handler.postDelayed({
-                            if (isWebViewVisible && !isTouchScrolling) {
-                                sampleTopColor { c -> if (c != null) applyTopColor(c) }
-                            }
-                        }, 200)
                     }
                     pullReadyToReload = false
                     isTouchScrolling = false
@@ -1477,6 +1476,40 @@ class MainActivity : BridgeActivity() {
             }
             false
         }
+    }
+
+    /** 注入抽屉与面板专属 GPU 硬件合成层与 Blink 布局隔离，杜绝展开时的全屏重排与掉帧。 */
+    private fun injectDrawerPerformanceOptimizations() {
+        if (!::webView.isInitialized) return
+        val perfScript = """
+            (function() {
+                try {
+                    if (document.getElementById('sc-drawer-perf')) return;
+                    const style = document.createElement('style');
+                    style.id = 'sc-drawer-perf';
+                    style.textContent = `
+                        /* 1. 抽屉严格布局与绘制隔离：展开动画期间 0 外部重排，Blink 引擎直接剪枝 */
+                        .drawer-content {
+                            contain: layout paint !important;
+                            will-change: height, transform !important;
+                            transform: translateZ(0) !important;
+                            -webkit-backface-visibility: hidden !important;
+                            backface-visibility: hidden !important;
+                        }
+                        /* 2. 抽屉内部滚动容器：独立 GPU 合成切片，滑动由 Compositor 线程处理 */
+                        .drawer-content.openDrawer,
+                        #rm_print_characters_block,
+                        .scrollableInner,
+                        .scrollableInnerFull {
+                            -webkit-overflow-scrolling: touch !important;
+                            will-change: scroll-position !important;
+                        }
+                    `;
+                    (document.head || document.documentElement).appendChild(style);
+                } catch (_) {}
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(perfScript, null)
     }
 
     private fun exitFullscreen() {
