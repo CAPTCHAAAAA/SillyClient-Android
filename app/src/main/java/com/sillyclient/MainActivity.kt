@@ -1460,6 +1460,14 @@ class MainActivity : BridgeActivity() {
                         webView.reload()
                         topScrimBar.sweepGloss() // 下拉刷新时触发顶栏光泽扫过
                         pushLog("↓ 下拉刷新酒馆界面")
+                    } else if (!isTouchScrolling) {
+                        // 2. 原版原汁原味：用户轻触静态点击界面，100% 触发顶部白色光波！
+                        topScrimBar.sweepGloss()
+                        handler.postDelayed({
+                            if (isWebViewVisible && !isTouchScrolling) {
+                                sampleTopColor { c -> if (c != null) applyTopColor(c) }
+                            }
+                        }, 500)
                     }
                     pullReadyToReload = false
                     isTouchScrolling = false
@@ -1484,17 +1492,34 @@ class MainActivity : BridgeActivity() {
         val perfScript = """
             (function() {
                 try {
-                    if (document.getElementById('sc-drawer-perf')) return;
-                    const style = document.createElement('style');
-                    style.id = 'sc-drawer-perf';
+                    let style = document.getElementById('sc-drawer-perf');
+                    if (!style) {
+                        style = document.createElement('style');
+                        style.id = 'sc-drawer-perf';
+                        (document.head || document.documentElement).appendChild(style);
+                    }
                     style.textContent = `
-                        /* 1. 抽屉严格布局与绘制隔离：展开动画期间 0 外部重排，Blink 引擎直接剪枝 */
+                        /* 1. 抽屉展开：彻底消除逐像素 height 重新排版与实时高斯模糊卡顿，改为现代 GPU 硬件级极速就位与平滑淡入 */
                         .drawer-content {
-                            contain: layout paint !important;
-                            will-change: height, transform !important;
+                            transition: opacity 120ms cubic-bezier(0.16, 1, 0.3, 1), visibility 120ms !important;
+                            will-change: transform, opacity !important;
                             transform: translateZ(0) !important;
                             -webkit-backface-visibility: hidden !important;
                             backface-visibility: hidden !important;
+                        }
+                        .drawer-content:not(.openDrawer) {
+                            height: 0 !important;
+                            opacity: 0 !important;
+                            visibility: hidden !important;
+                            pointer-events: none !important;
+                            transition: opacity 90ms ease-out, visibility 90ms !important;
+                        }
+                        .drawer-content.openDrawer {
+                            display: block !important;
+                            visibility: visible !important;
+                            height: auto !important;
+                            opacity: 1 !important;
+                            pointer-events: auto !important;
                         }
                         /* 2. 抽屉内部滚动容器：独立 GPU 合成切片，滑动由 Compositor 线程处理 */
                         .drawer-content.openDrawer,
@@ -1505,7 +1530,6 @@ class MainActivity : BridgeActivity() {
                             will-change: scroll-position !important;
                         }
                     `;
-                    (document.head || document.documentElement).appendChild(style);
                 } catch (_) {}
             })();
         """.trimIndent()
