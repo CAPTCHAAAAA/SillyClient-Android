@@ -1657,6 +1657,55 @@ class MainActivity : BridgeActivity() {
                             observer.observe(formSheld, { childList: true });
                         }
                     }
+
+                    // 6. 抽屉动画期间冻结所有 backdrop-filter（消除 slideToggle 帧卡顿）
+                    // jQuery slideToggle 逐帧修改内联 style.height 驱动动画：
+                    //   每帧 height 变化 → blur 裁剪区域变化 → GPU 全量重采样 → 掉帧
+                    // 解法：MutationObserver 监听 style 属性变化 → body[data-sc-animating]
+                    // CSS 在该状态下把所有 backdrop-filter 清零，动画结束后自动恢复
+                    if (!window.__scDrawerBlurFreezeInstalled) {
+                        window.__scDrawerBlurFreezeInstalled = true;
+                        let _scAnimTimer = null;
+                        const ANIM_GUARD_MS = 450; // animation_duration(250~350ms) + 缓冲
+
+                        const freezeBlur = () => {
+                            document.body.setAttribute('data-sc-animating', '1');
+                            if (_scAnimTimer) clearTimeout(_scAnimTimer);
+                            _scAnimTimer = setTimeout(() => {
+                                document.body.removeAttribute('data-sc-animating');
+                                _scAnimTimer = null;
+                            }, ANIM_GUARD_MS);
+                        };
+
+                        const styleObserver = new MutationObserver((mutations) => {
+                            for (const m of mutations) {
+                                if (m.type === 'attributes' && m.attributeName === 'style') {
+                                    freezeBlur();
+                                    break;
+                                }
+                            }
+                        });
+
+                        const attachToDrawers = () => {
+                            document.querySelectorAll(
+                                '.drawer-content, .inline-drawer-content, .drawer-icon'
+                            ).forEach(el => {
+                                if (!el.dataset.scFreezeObserved) {
+                                    el.dataset.scFreezeObserved = '1';
+                                    styleObserver.observe(el, {
+                                        attributes: true,
+                                        attributeFilter: ['style']
+                                    });
+                                }
+                            });
+                        };
+
+                        attachToDrawers();
+
+                        // 动态新增的抽屉节点也能被覆盖
+                        const domObserver = new MutationObserver(() => attachToDrawers());
+                        domObserver.observe(document.body, { childList: true, subtree: false });
+                    }
                 } catch (_) {}
             })();
         """.trimIndent()
