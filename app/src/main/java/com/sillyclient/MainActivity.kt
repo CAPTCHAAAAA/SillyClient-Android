@@ -58,10 +58,24 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import java.util.UUID
 import org.json.JSONObject
+import com.sillyclient.runtime.TavernStaticGateway
 
 class MainActivity : BridgeActivity() {
+
+    private val tavernStaticGateway by lazy {
+        TavernStaticGateway { resolveActiveServerDir() }
+    }
+
+    private fun resolveActiveServerDir(): File? {
+        val paths = RuntimePaths.from(this)
+        val id = currentTavernInstanceId?.takeIf { it.isNotBlank() } ?: "default"
+        val dir = paths.serverDirFor(id, create = false)
+        return if (dir.exists()) dir else null
+    }
 
     private val handler = Handler(Looper.getMainLooper())
     private var lastAppliedTopColor: Int? = null
@@ -414,6 +428,14 @@ class MainActivity : BridgeActivity() {
                     super.onReceivedHttpAuthRequest(view, handler, host, realm)
                 }
 
+                override fun shouldInterceptRequest(
+                    view: WebView?,
+                    request: WebResourceRequest?
+                ): WebResourceResponse? {
+                    tavernStaticGateway.shouldInterceptRequest(request)?.let { return it }
+                    return super.shouldInterceptRequest(view, request)
+                }
+
                 override fun onPageFinished(v: WebView?, url: String?) {
                     super.onPageFinished(v, url)
                     android.util.Log.i(TAG, "Page loaded: $url")
@@ -477,10 +499,9 @@ class MainActivity : BridgeActivity() {
             )
         }
 
-        // IME 零延迟适配：
-        // 1. 在系统键盘动画启动的第一帧（0ms / onStart）立即一步到位垫起高度，彻底消除 250ms 滞后延迟；
-        // 2. 在动画过程中（onProgress）不逐帧 setPadding，彻底杜绝 60Hz 强制重排掉帧卡顿；
-        // 3. 在动画结束时（onEnd）做最终精确对齐，并保留 setOnApplyWindowInsetsListener 静态兜底。
+        // IME 零重排零延迟适配（TT 同款架构）：
+        // 废除 webViewScreen.setPadding(...)，绝不改变 WebView 物理高宽，彻底消灭 Viewport Resize 全局重排！
+        // 原生直接将软键盘高度转换为 CSS 像素，驱动 GPU 硬件加速的局部 translate3d 位移。
         ViewCompat.setWindowInsetsAnimationCallback(
             webViewScreen,
             object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
@@ -494,7 +515,7 @@ class MainActivity : BridgeActivity() {
                         val targetHeight = bounds.upperBound.bottom
                         val imeVisible = ViewCompat.getRootWindowInsets(webViewScreen)
                             ?.isVisible(WindowInsetsCompat.Type.ime()) ?: (targetHeight > 0)
-                        webViewScreen.setPadding(0, 0, 0, if (imeVisible) targetHeight else 0)
+                        dispatchImeOffset(if (imeVisible) targetHeight else 0)
                     }
                     return super.onStart(animation, bounds)
                 }
@@ -502,23 +523,29 @@ class MainActivity : BridgeActivity() {
                 override fun onProgress(
                     insets: WindowInsetsCompat,
                     runningAnimations: MutableList<WindowInsetsAnimationCompat>
-                ): WindowInsetsCompat = insets
+                ): WindowInsetsCompat {
+                    val imeType = WindowInsetsCompat.Type.ime()
+                    val imeHeight = insets.getInsets(imeType).bottom
+                    val isImeVisible = insets.isVisible(imeType)
+                    dispatchImeOffset(if (isImeVisible) imeHeight else 0)
+                    return insets
+                }
 
                 override fun onEnd(animation: WindowInsetsAnimationCompat) {
                     if ((animation.typeMask and WindowInsetsCompat.Type.ime()) != 0) {
                         val rootInsets = ViewCompat.getRootWindowInsets(webViewScreen)
                         val imeVisible = rootInsets?.isVisible(WindowInsetsCompat.Type.ime()) ?: false
                         val imeHeight = rootInsets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
-                        webViewScreen.setPadding(0, 0, 0, if (imeVisible) imeHeight else 0)
+                        dispatchImeOffset(if (imeVisible) imeHeight else 0)
                     }
                 }
             }
         )
 
-        ViewCompat.setOnApplyWindowInsetsListener(webViewScreen) { v, insets ->
+        ViewCompat.setOnApplyWindowInsetsListener(webViewScreen) { _, insets ->
             val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
             val imeHeight = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-            v.setPadding(0, 0, 0, if (imeVisible) imeHeight else 0)
+            dispatchImeOffset(if (imeVisible) imeHeight else 0)
             insets
         }
 
@@ -1598,10 +1625,66 @@ class MainActivity : BridgeActivity() {
                             };
                         }
                     }
+                    // 5. 安装 TT 同款零重排 IME 避让容器（将输入底栏封装进 GPU 硬件加速的 lift/spacer 结构）
+                    if (!window.__scImeHostInstalled) {
+                        const formSheld = document.getElementById('form_sheld');
+                        if (formSheld) {
+                            window.__scImeHostInstalled = true;
+                            const lift = document.createElement('div');
+                            lift.setAttribute('data-sc-ime-lift', '');
+                            lift.style.cssText = 'width: 100%; will-change: transform; transition: none;';
+
+                            const spacer = document.createElement('div');
+                            spacer.setAttribute('data-sc-ime-spacer', '');
+                            spacer.setAttribute('aria-hidden', 'true');
+                            spacer.style.cssText = 'display: block; width: 100%; height: 0px; pointer-events: none; transition: none;';
+
+                            while (formSheld.firstChild) {
+                                lift.appendChild(formSheld.firstChild);
+                            }
+                            formSheld.appendChild(spacer);
+                            formSheld.appendChild(lift);
+
+                            const observer = new MutationObserver((mutations) => {
+                                for (const m of mutations) {
+                                    for (const node of m.addedNodes) {
+                                        if (node !== lift && node !== spacer) {
+                                            lift.appendChild(node);
+                                        }
+                                    }
+                                }
+                            });
+                            observer.observe(formSheld, { childList: true });
+                        }
+                    }
                 } catch (_) {}
             })();
         """.trimIndent()
         webView.evaluateJavascript(perfScript, null)
+    }
+
+    private fun dispatchImeOffset(heightPx: Int) {
+        if (!::webView.isInitialized) return
+        val density = resources.displayMetrics.density
+        val heightCssPx = if (density > 0) heightPx / density else heightPx.toFloat()
+        val script = """
+            (function() {
+                try {
+                    const h = ${heightCssPx};
+                    document.documentElement.style.setProperty('--sc-ime-bottom', h + 'px');
+                    const formSheld = document.getElementById('form_sheld');
+                    if (formSheld) {
+                        const lift = formSheld.querySelector('[data-sc-ime-lift]');
+                        const spacer = formSheld.querySelector('[data-sc-ime-spacer]');
+                        if (lift && spacer) {
+                            lift.style.transform = h > 0 ? 'translate3d(0, -' + h + 'px, 0)' : 'none';
+                            spacer.style.height = h + 'px';
+                        }
+                    }
+                } catch(_) {}
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(script, null)
     }
 
     private fun exitFullscreen() {
@@ -1707,9 +1790,17 @@ class MainActivity : BridgeActivity() {
             env["PATH"] = "${paths.tmpDir.absolutePath}/bin:/system/bin:${System.getenv("PATH") ?: ""}"
             env["HOST"] = "127.0.0.1"
             env["PORT"] = tavernPort.toString()
-            env["NODE_OPTIONS"] = "--max-old-space-size=2048"
+            // 移动端 V8 内存限制与轻量模式：防止后台堆暴涨导致 Full GC 冻结渲染
+            env["NODE_OPTIONS"] = "--lite-mode --max-old-space-size=256"
             val p = pb.start()
             serverProcess = p
+            // 降低 Node.js 子进程优先级，限制在能效小核运行，大核与 GPU 算力 100% 留给前台 WebView
+            try {
+                val pidField = p.javaClass.getDeclaredField("pid")
+                pidField.isAccessible = true
+                val pid = pidField.getInt(p)
+                android.os.Process.setThreadPriority(pid, android.os.Process.THREAD_PRIORITY_BACKGROUND)
+            } catch (_: Exception) {}
             return true
         } catch (_: Exception) {
             return false
