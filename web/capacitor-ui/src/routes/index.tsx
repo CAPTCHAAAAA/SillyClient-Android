@@ -130,7 +130,7 @@ const DEMO_INSTANCE: TavernInstance = {
 
 const SC_BORDEAUX_PRESET: CompanionPresetSelection = {
   bundleId: "sc-bordeaux",
-  revision: 1,
+  revision: 2,
 };
 
 function formatOperationStage(stage?: string, percent?: number) {

@@ -50,4 +50,5 @@ dependencies {
     implementation(libs.capacitor.android)
 
     testImplementation(libs.junit)
+    testImplementation("org.json:json:20240303")
 }

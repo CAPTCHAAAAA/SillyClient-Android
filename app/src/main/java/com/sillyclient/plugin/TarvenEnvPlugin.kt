@@ -65,7 +65,7 @@ class TarvenEnvPlugin : Plugin() {
                 bundleId = preset.optString("bundleId", ""),
                 revision = preset.optInt("revision", -1)
             )
-            if (request.bundleId != CompanionPresetInstaller.BUNDLE_ID || request.revision != CompanionPresetInstaller.REVISION) {
+            if (request.bundleId != CompanionPresetInstaller.BUNDLE_ID || request.revision > CompanionPresetInstaller.REVISION) {
                 call.reject("不支持的主题预设版本")
                 return
             }

@@ -2,19 +2,19 @@
   "schema": "sillyclient.companion-preset",
   "version": 1,
   "bundleId": "sc-bordeaux",
-  "revision": 1,
+  "revision": 2,
   "displayName": "SC Bordeaux",
   "theme": {
     "source": "themes/SC Bordeaux.json",
     "target": "data/default-user/themes/SC Bordeaux.json",
-    "sha256": "AB0207DE9DD970557D428B47DBA8BD0859B3FA5FC6FD0050011ECF30BCA16E70"
+    "sha256": "B0C76F575311AB25341E3A52965E503C54B630D49EBE1EC3DE503EF9530B8248"
   },
   "wallpaper": {
     "source": "wallpaper/sillyclient-bg-8k.jpg",
     "target": "data/default-user/backgrounds/sillyclient-bg-8k.jpg",
-    "sha256": "7B17E76B5F726B33D36B04C79DAE40DF5E47CF35835C79C273AF10DBEA07FD1A",
-    "width": 7680,
-    "height": 4320
+    "sha256": "FA17565F1A3CB8AC6FB4F55E3D8FFE2A8200CC1AC60B9C38DEF2D225938E187E",
+    "width": 1440,
+    "height": 3120
   },
   "settings": {
     "themeName": "SC Bordeaux",

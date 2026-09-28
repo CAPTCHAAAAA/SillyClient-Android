@@ -40,10 +40,10 @@ class CompanionPresetTransaction internal constructor(
 
 object CompanionPresetInstaller {
     const val BUNDLE_ID = "sc-bordeaux"
-    const val REVISION = 1
+    const val REVISION = 2
 
-    private const val THEME_HASH = "AB0207DE9DD970557D428B47DBA8BD0859B3FA5FC6FD0050011ECF30BCA16E70"
-    private const val WALLPAPER_HASH = "7B17E76B5F726B33D36B04C79DAE40DF5E47CF35835C79C273AF10DBEA07FD1A"
+    private const val THEME_HASH = "B0C76F575311AB25341E3A52965E503C54B630D49EBE1EC3DE503EF9530B8248"
+    private const val WALLPAPER_HASH = "FA17565F1A3CB8AC6FB4F55E3D8FFE2A8200CC1AC60B9C38DEF2D225938E187E"
     private const val THEME_SOURCE = "themes/SC Bordeaux.json"
     private const val WALLPAPER_SOURCE = "wallpaper/sillyclient-bg-8k.jpg"
     private const val THEME_TARGET = "data/default-user/themes/SC Bordeaux.json"
@@ -56,12 +56,24 @@ object CompanionPresetInstaller {
         serverDir: File,
         request: CompanionPresetRequest
     ): CompanionPresetTransaction {
-        if (request.bundleId != BUNDLE_ID || request.revision != REVISION) {
+        return installInternal(
+            assetReader = { path -> readAsset(context, path) },
+            serverDir = serverDir,
+            request = request
+        )
+    }
+
+    internal fun installInternal(
+        assetReader: (String) -> ByteArray,
+        serverDir: File,
+        request: CompanionPresetRequest
+    ): CompanionPresetTransaction {
+        if (request.bundleId != BUNDLE_ID || request.revision > REVISION) {
             throw IllegalArgumentException("不支持的主题预设版本")
         }
 
         val assetRoot = "companion-presets/${request.bundleId}"
-        val manifest = JSONObject(readAsset(context, "$assetRoot/manifest.json").toString(StandardCharsets.UTF_8))
+        val manifest = JSONObject(assetReader("$assetRoot/manifest.json").toString(StandardCharsets.UTF_8))
         val themeManifest = manifest.getJSONObject("theme")
         val wallpaperManifest = manifest.getJSONObject("wallpaper")
         if (
@@ -79,8 +91,8 @@ object CompanionPresetInstaller {
             throw IllegalStateException("内置主题预设清单校验失败")
         }
 
-        val themeBytes = readAsset(context, "$assetRoot/$THEME_SOURCE")
-        val wallpaperBytes = readAsset(context, "$assetRoot/$WALLPAPER_SOURCE")
+        val themeBytes = assetReader("$assetRoot/$THEME_SOURCE")
+        val wallpaperBytes = assetReader("$assetRoot/$WALLPAPER_SOURCE")
         if (sha256(themeBytes) != THEME_HASH || sha256(wallpaperBytes) != WALLPAPER_HASH) {
             throw IllegalStateException("内置主题预设资源校验失败")
         }
@@ -116,25 +128,41 @@ object CompanionPresetInstaller {
 
         val settings = JSONObject(settingsBase.readText())
         val powerUser = settings.optJSONObject("power_user") ?: JSONObject()
-        val themeKeys = themeSettings.keys()
-        while (themeKeys.hasNext()) {
-            val key = themeKeys.next()
-            if (key != "name" && key != "__proto__" && key != "constructor" && key != "prototype") {
-                powerUser.put(key, themeSettings.get(key))
+        val currentTheme = powerUser.optString("theme")
+        val isFirstInstall = !settingsFile.isFile
+        val isUsingScBordeaux = isFirstInstall ||
+            currentTheme.isEmpty() ||
+            currentTheme.equals(themeName, ignoreCase = true) ||
+            currentTheme.equals("Default", ignoreCase = true)
+
+        if (isUsingScBordeaux) {
+            val themeKeys = themeSettings.keys()
+            while (themeKeys.hasNext()) {
+                val key = themeKeys.next()
+                if (key != "name" && key != "__proto__" && key != "constructor" && key != "prototype") {
+                    powerUser.put(key, themeSettings.get(key))
+                }
             }
+            powerUser.put("theme", themeName)
+            powerUser.put("theme_fallback", themeName)
+            settings.put("power_user", powerUser)
         }
-        powerUser.put("theme", themeName)
-        powerUser.put("theme_fallback", themeName)
-        settings.put("power_user", powerUser)
 
         val background = settings.optJSONObject("background") ?: JSONObject()
-        val backgroundPreset = settingsManifest.getJSONObject("background")
-        val backgroundKeys = backgroundPreset.keys()
-        while (backgroundKeys.hasNext()) {
-            val key = backgroundKeys.next()
-            background.put(key, backgroundPreset.get(key))
+        val currentBackground = background.optString("name")
+        val isUsingDefaultBackground = isFirstInstall ||
+            currentBackground.isEmpty() ||
+            currentBackground == "sillyclient-bg-8k.jpg"
+
+        if (isUsingDefaultBackground) {
+            val backgroundPreset = settingsManifest.getJSONObject("background")
+            val backgroundKeys = backgroundPreset.keys()
+            while (backgroundKeys.hasNext()) {
+                val key = backgroundKeys.next()
+                background.put(key, backgroundPreset.get(key))
+            }
+            settings.put("background", background)
         }
-        settings.put("background", background)
 
         val themeTarget = resolveInside(serverDir, THEME_TARGET)
         val wallpaperTarget = resolveInside(serverDir, WALLPAPER_TARGET)
