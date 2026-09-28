@@ -1790,17 +1790,9 @@ class MainActivity : BridgeActivity() {
             env["PATH"] = "${paths.tmpDir.absolutePath}/bin:/system/bin:${System.getenv("PATH") ?: ""}"
             env["HOST"] = "127.0.0.1"
             env["PORT"] = tavernPort.toString()
-            // 移动端 V8 内存限制与轻量模式：防止后台堆暴涨导致 Full GC 冻结渲染
-            env["NODE_OPTIONS"] = "--lite-mode --max-old-space-size=256"
+            env["NODE_OPTIONS"] = "--max-old-space-size=2048"
             val p = pb.start()
             serverProcess = p
-            // 降低 Node.js 子进程优先级，限制在能效小核运行，大核与 GPU 算力 100% 留给前台 WebView
-            try {
-                val pidField = p.javaClass.getDeclaredField("pid")
-                pidField.isAccessible = true
-                val pid = pidField.getInt(p)
-                android.os.Process.setThreadPriority(pid, android.os.Process.THREAD_PRIORITY_BACKGROUND)
-            } catch (_: Exception) {}
             return true
         } catch (_: Exception) {
             return false
