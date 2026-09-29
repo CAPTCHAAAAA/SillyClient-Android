@@ -1,27 +1,23 @@
 /**
- * SillyClient Performance Engine (P0 + P1 深度性能架构 + 触感 & 智能回底 & 内存隔离)
+ * SillyClient Performance Engine (P0 + P1 深度性能架构 + 全站微震 + 极简回底)
  *
- * P0 核心架构:
- * 1. Performance Monitor HUD (变色龙右上角连续点击 7 次呼出/收起，或双击面板关闭)
- * 2. Frame Scheduler (统一合并调度器，Read/Write 严格分离，杜绝 Layout Thrashing)
- * 3. Streaming Batcher (30FPS 流式推流缓冲池，解耦网络突发与 DOM 渲染)
- * 4. DOM Mutation Batching (突变速率统计与聚合监控)
- *
- * P1 深度优化:
- * 5. Native DOM Virtualization & Layout Containment (视口外消息原生级跳过渲染，局部布局沙箱)
- * 6. Markdown/KaTeX/Code 沙箱隔离 (超长代码块与复杂表格独立横向滚动，手势不偏航)
- * 7. Invisible Animation Governor (视口外动画/GIF 自动挂起冻结，不占 GPU)
- * 8. Interaction Priority Governor (滑动/手势期间帧预算全量倾斜，暂停背景重采样)
- * 9. Native Haptic Bridge (原生线性马达微米级精密触感反馈)
- * 10. Minimalist Scroll-to-Bottom Button (极简半透明向下符号回底按钮)
- * 11. Image & Avatar Memory Guard (历史大图与头像 lazy/async 内存熔断保护)
+ * 核心功能:
+ * 1. Performance Monitor HUD (美化符合 SC 整体前端规范，支持双击/7连击收起，内置触感开关)
+ * 2. 全站交互线性马达微震 (发送、抽屉、Swipe、角色卡、按钮全覆盖，支持开关记忆)
+ * 3. 极简半透明向下符号回底按钮 (脱离底部 >160px 平滑显隐，多容器自适应吸附回底)
+ * 4. Frame Scheduler (统一合并调度器，Read/Write 严格分离)
+ * 5. Streaming Batcher (30FPS 流式推流缓冲池)
+ * 6. Native DOM Virtualization & Layout Containment (视口外原生虚拟化，代码块/KaTeX横向沙箱)
+ * 7. Invisible Animation Freeze (视口外动画/GIF 自动挂起冻结)
+ * 8. Interaction Priority Governor (滑动/手势期间帧预算全量倾斜)
+ * 9. Image & Avatar Memory Guard (历史大图与头像 lazy/async 内存熔断保护)
  */
 (function() {
     if (window.__scRenderEngineInstalled) return;
     window.__scRenderEngineInstalled = true;
 
     // ========================================================
-    // 0. 全局引擎状态
+    // 0. 全局引擎状态 & 触感持久化配置
     // ========================================================
     const engineState = {
         fps: 90.0,
@@ -36,19 +32,54 @@
         virtualizationActive: false,
         frozenAnimCount: 0,
         isInteracting: false,
+        hapticEnabled: localStorage.getItem('__sc_haptic_enabled') !== '0',
         hudVisible: false
     };
 
     // ========================================================
-    // 1. NATIVE HAPTIC BRIDGE (原生线性马达精密触感)
+    // 1. NATIVE HAPTIC BRIDGE (原生线性马达精密触感引擎)
     // ========================================================
     window.__scHaptic = function(type) {
+        if (!engineState.hapticEnabled) return;
         try {
             if (window.SillyClientHaptic && window.SillyClientHaptic.trigger) {
                 window.SillyClientHaptic.trigger(type || 'tick');
             }
         } catch(_) {}
     };
+
+    // 酒馆全站高频交互触觉委托捕获
+    document.addEventListener('pointerdown', (e) => {
+        if (!engineState.hapticEnabled) return;
+        const target = e.target;
+        if (!target || !(target instanceof Element)) return;
+
+        // 1. 发送与生成中止
+        if (target.closest('#send_but, .send_button, #abort_button, #send_textarea_container button')) {
+            window.__scHaptic('click');
+            return;
+        }
+        // 2. 左右侧边栏与抽屉切换按钮
+        if (target.closest('#right-nav-panel, #left-nav-panel, #nav-toggle, .drawer-toggle, #open_character_drawer, #open_world_info, #floating_prompt_manager, #option_toggle, #persona-management-button')) {
+            window.__scHaptic('tick');
+            return;
+        }
+        // 3. Swipe 滑动切换与消息操作菜单
+        if (target.closest('.swipe_left, .swipe_right, .swipe_counter, .mes_edit, .mes_copy, .mes_del, .mes_favorite, .mes_btn')) {
+            window.__scHaptic('tick');
+            return;
+        }
+        // 4. 角色卡选择与头像轻触
+        if (target.closest('.character_select, .avatar, .select_character, .character_item, #character_list .character, .dry_run_character')) {
+            window.__scHaptic('tick');
+            return;
+        }
+        // 5. 顶栏操作项、弹窗确认与通用按钮
+        if (target.closest('#top-bar button, .menu_button, .list-group-item, .dialog_button, .popup_button, .interactive_element')) {
+            window.__scHaptic('tick');
+            return;
+        }
+    }, { capture: true, passive: true });
 
     // ========================================================
     // 2. FRAME SCHEDULER (统一单帧调度器)
@@ -76,13 +107,11 @@
 
         flush: function() {
             const start = performance.now();
-            // 先一次性执行所有读取 (避免与写混用造成的 forced reflow)
             const reads = this.readQueue.splice(0);
             for (let i = 0; i < reads.length; i++) {
                 try { reads[i](); } catch(e) {}
             }
 
-            // 再一次性批量写入 DOM
             const writes = this.writeQueue.splice(0);
             for (let i = 0; i < writes.length; i++) {
                 try { writes[i](); } catch(e) {}
@@ -96,14 +125,13 @@
 
     // ========================================================
     // 3. STREAMING BATCHER (30FPS 流式推流缓冲合并器)
-    // 目标：将 token 接收频率(50~100Hz)与 DOM 渲染(30FPS)解耦
     // ========================================================
     const streamingBatcher = {
         targetEl: null,
         buffer: '',
         timer: null,
         lastFlushTime: 0,
-        flushInterval: 1000 / 30, // 30 FPS 刷新率 (33.3ms)
+        flushInterval: 1000 / 30,
         tokenCountThisSec: 0,
         streamingFpsCount: 0,
         isStreamingActive: false,
@@ -235,12 +263,11 @@
                 }
                 engineState.frozenAnimCount = frozenElements.size;
             }, {
-                rootMargin: '80px 0px 80px 0px' // 视口上下预留 80px 缓冲区，避免边缘顿挫
+                rootMargin: '80px 0px 80px 0px'
             });
         } catch(e) {}
     }
 
-    // 历史超长图文与超大头像内存熔断保护
     function protectImagesMemory() {
         const imgs = document.querySelectorAll('#chat img, .mes_avatar');
         for (let i = 0; i < imgs.length; i++) {
@@ -287,6 +314,34 @@
     // 8. 极简半透明向下符号回底按钮 (Minimalist Scroll-to-Bottom Button)
     // ========================================================
     let scrollDownBtn = null;
+
+    function getScrollContainerInfo() {
+        const candidates = [
+            document.getElementById('chat'),
+            document.querySelector('#chat'),
+            document.documentElement,
+            document.body,
+            document.getElementById('sheld')
+        ].filter(Boolean);
+
+        let maxDist = 0;
+        let activeScroller = null;
+
+        for (let i = 0; i < candidates.length; i++) {
+            const el = candidates[i];
+            const scrollH = el.scrollHeight;
+            const clientH = el.clientHeight;
+            if (scrollH > clientH + 10) {
+                const dist = scrollH - el.scrollTop - clientH;
+                if (dist > maxDist) {
+                    maxDist = dist;
+                    activeScroller = el;
+                }
+            }
+        }
+        return { dist: maxDist, scroller: activeScroller };
+    }
+
     function createScrollDownButton() {
         if (scrollDownBtn || !document.body) return;
         scrollDownBtn = document.createElement('div');
@@ -297,27 +352,28 @@
             align-items: center;
             justify-content: center;
             position: fixed;
-            bottom: calc(var(--sc-nav-bottom, 18px) + 72px);
-            right: 16px;
-            width: 36px;
-            height: 36px;
+            bottom: calc(var(--sc-nav-bottom, 16px) + 72px);
+            right: 18px;
+            width: 38px;
+            height: 38px;
             border-radius: 50%;
-            background: rgba(22, 18, 22, 0.65);
-            backdrop-filter: blur(12px) saturate(1.2);
-            -webkit-backdrop-filter: blur(12px) saturate(1.2);
+            background: rgba(18, 20, 26, 0.72);
+            backdrop-filter: blur(16px) saturate(1.3);
+            -webkit-backdrop-filter: blur(16px) saturate(1.3);
             border: 1px solid rgba(255, 255, 255, 0.14);
-            box-shadow: 0 4px 18px rgba(0, 0, 0, 0.38);
-            color: rgba(255, 255, 255, 0.85);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.42), 0 0 0 1px rgba(255, 255, 255, 0.05);
+            color: rgba(255, 255, 255, 0.88);
             cursor: pointer;
             opacity: 0;
             transform: scale(0.85) translateY(6px);
             pointer-events: none;
-            z-index: 99998;
-            transition: opacity 180ms cubic-bezier(0.12, 0.98, 0.24, 1), transform 180ms cubic-bezier(0.12, 0.98, 0.24, 1);
+            z-index: 999999;
+            transition: opacity 180ms cubic-bezier(0.12, 0.98, 0.24, 1), transform 180ms cubic-bezier(0.12, 0.98, 0.24, 1), background 140ms ease;
             user-select: none;
+            -webkit-tap-highlight-color: transparent;
         `;
         scrollDownBtn.innerHTML = `
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="6 9 12 15 18 9"></polyline>
             </svg>
         `;
@@ -325,12 +381,12 @@
         scrollDownBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             window.__scHaptic('tick');
-            const chat = document.getElementById('chat');
-            if (chat && chat.scrollHeight > chat.clientHeight) {
-                chat.scrollTo({ top: chat.scrollHeight, behavior: 'smooth' });
-            } else {
-                window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+            const { scroller } = getScrollContainerInfo();
+            if (scroller) {
+                scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' });
             }
+            window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+            document.documentElement.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
         });
 
         document.body.appendChild(scrollDownBtn);
@@ -339,10 +395,9 @@
     function checkScrollDownState() {
         if (!scrollDownBtn) createScrollDownButton();
         if (!scrollDownBtn) return;
-        const chat = document.getElementById('chat');
-        const scroller = (chat && chat.scrollHeight > chat.clientHeight) ? chat : document.documentElement;
-        const distFromBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-        if (distFromBottom > 420) {
+        const { dist } = getScrollContainerInfo();
+        // 只要离开底部超过 160px，平滑浮现小钮
+        if (dist > 160) {
             scrollDownBtn.style.opacity = '1';
             scrollDownBtn.style.transform = 'scale(1) translateY(0)';
             scrollDownBtn.style.pointerEvents = 'auto';
@@ -352,7 +407,12 @@
             scrollDownBtn.style.pointerEvents = 'none';
         }
     }
+
     window.addEventListener('scroll', checkScrollDownState, { passive: true, capture: true });
+    document.addEventListener('scroll', checkScrollDownState, { passive: true, capture: true });
+    document.addEventListener('touchmove', checkScrollDownState, { passive: true, capture: true });
+    setInterval(checkScrollDownState, 400);
+
     if (document.body) {
         createScrollDownButton();
     } else {
@@ -360,9 +420,8 @@
     }
 
     // ========================================================
-    // 9. PERFORMANCE MONITOR (FPS, P95/P99, LongTask, DOM)
+    // 9. PERFORMANCE MONITOR & HUD (美化对齐 SC 整体前端规范)
     // ========================================================
-    // LongTask 监测 (Chromium PerformanceObserver)
     if (window.PerformanceObserver) {
         try {
             const longTaskObserver = new PerformanceObserver((list) => {
@@ -373,7 +432,6 @@
         } catch(e) {}
     }
 
-    // 实时 FPS 与 P95/P99 计算器 (滑动窗口 60 帧)
     const frameTimes = [];
     let lastTimestamp = performance.now();
 
@@ -400,16 +458,12 @@
     }
     requestAnimationFrame(frameLoop);
 
-    // 每秒采样一次 DOM 数量 (滑动交互期间跳过，避免阻塞主线程)
     setInterval(() => {
         if (!engineState.isInteracting) {
             engineState.domCount = document.getElementsByTagName('*').length;
         }
     }, 1200);
 
-    // ========================================================
-    // HUD UI 渲染组件 (极客暗金毛玻璃微浮窗)
-    // ========================================================
     let hudElement = null;
 
     function createHud() {
@@ -421,18 +475,18 @@
             position: fixed;
             top: calc(var(--topBarBlockSize, 42px) + 8px);
             right: 12px;
-            width: 232px;
-            background: rgba(18, 14, 18, 0.86);
-            backdrop-filter: blur(16px) saturate(1.25);
-            -webkit-backdrop-filter: blur(16px) saturate(1.25);
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            border-radius: 12px;
-            padding: 10px 12px;
+            width: 236px;
+            background: rgba(15, 17, 23, 0.88);
+            backdrop-filter: blur(24px) saturate(1.4);
+            -webkit-backdrop-filter: blur(24px) saturate(1.4);
+            border: 1px solid rgba(255, 255, 255, 0.10);
+            border-radius: 16px;
+            padding: 12px 14px;
             font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
             font-size: 11px;
             color: #E2E8F0;
             z-index: 999999;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.50);
+            box-shadow: 0 16px 40px -4px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.05);
             pointer-events: auto;
             user-select: none;
             transition: opacity 160ms cubic-bezier(0.12, 0.98, 0.24, 1), transform 160ms cubic-bezier(0.12, 0.98, 0.24, 1);
@@ -446,48 +500,97 @@
         });
 
         hudElement.innerHTML = `
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:4px;">
-                <span style="font-weight:700; color:#F59E0B; letter-spacing:0.5px;">⚡ SC ENGINE</span>
-                <span id="sc-perf-health" style="font-size:10px; padding:1px 5px; border-radius:4px; background:#10B981; color:#064E3B; font-weight:700;">Healthy</span>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; border-bottom:1px solid rgba(255,255,255,0.08); padding-bottom:6px;">
+                <div style="display:flex; align-items:center; gap:6px;">
+                    <span style="display:inline-block; width:6px; height:6px; border-radius:50%; background:#10B981; box-shadow:0 0 8px #10B981;"></span>
+                    <span style="font-weight:700; color:#EAB308; letter-spacing:0.6px; font-size:11px;">SC PERFORMANCE</span>
+                </div>
+                <span id="sc-perf-health" style="font-size:9.5px; padding:2px 6px; border-radius:999px; background:rgba(16, 185, 129, 0.15); color:#34D399; font-weight:600; border:1px solid rgba(16, 185, 129, 0.3);">90Hz Ultra</span>
             </div>
-            <div style="display:grid; grid-template-columns: 1fr auto; row-gap:3.5px; font-size:10.5px;">
-                <span style="color:#94A3B8;">FPS</span>
+            <div style="display:grid; grid-template-columns: 1fr auto; row-gap:4px; font-size:10.5px;">
+                <span style="color:#64748B;">FPS</span>
                 <span id="sc-perf-fps" style="font-weight:600; color:#38BDF8;">--</span>
 
-                <span style="color:#94A3B8;">Frame Time</span>
+                <span style="color:#64748B;">Frame Time</span>
                 <span id="sc-perf-frame">-- ms</span>
 
-                <span style="color:#94A3B8;">P95 / P99</span>
+                <span style="color:#64748B;">P95 / P99</span>
                 <span id="sc-perf-p95">-- / --</span>
 
-                <span style="color:#94A3B8;">Long Tasks</span>
+                <span style="color:#64748B;">Long Tasks</span>
                 <span id="sc-perf-longtasks" style="color:#F43F5E;">0</span>
 
-                <span style="color:#94A3B8;">DOM Count</span>
+                <span style="color:#64748B;">DOM Count</span>
                 <span id="sc-perf-dom">--</span>
 
-                <span style="color:#94A3B8;">Mutations</span>
+                <span style="color:#64748B;">Mutations</span>
                 <span id="sc-perf-mut">--/s</span>
 
-                <span style="color:#94A3B8;">Streaming</span>
+                <span style="color:#64748B;">Streaming</span>
                 <span id="sc-perf-stream">Idle</span>
 
-                <span style="color:#94A3B8;">JS Frame</span>
+                <span style="color:#64748B;">JS Frame</span>
                 <span id="sc-perf-js">-- ms</span>
 
-                <span style="color:#94A3B8;">Virtualization</span>
+                <span style="color:#64748B;">Virtualization</span>
                 <span id="sc-perf-virt" style="color:#10B981; font-weight:600;">Active</span>
 
-                <span style="color:#94A3B8;">Frozen Anims</span>
+                <span style="color:#64748B;">Frozen Anims</span>
                 <span id="sc-perf-frozen" style="color:#A78BFA;">0</span>
 
-                <span style="color:#94A3B8;">Governor</span>
+                <span style="color:#64748B;">Governor</span>
                 <span id="sc-perf-gov" style="color:#38BDF8;">Smooth</span>
             </div>
-            <div style="margin-top:8px; text-align:center; font-size:9px; color:#64748B;">
+
+            <!-- 触感反馈控制开关 -->
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.08);">
+                <div style="display:flex; flex-direction:column;">
+                    <span style="color:#94A3B8; font-size:10.5px; font-weight:500;">触感反馈</span>
+                    <span style="color:#475569; font-size:9px;">全站微米级振动</span>
+                </div>
+                <div id="sc-haptic-toggle-btn" style="
+                    position: relative;
+                    width: 36px;
+                    height: 20px;
+                    background: ${engineState.hapticEnabled ? '#10B981' : '#334155'};
+                    border-radius: 999px;
+                    cursor: pointer;
+                    transition: background 180ms cubic-bezier(0.12, 0.98, 0.24, 1);
+                ">
+                    <div id="sc-haptic-knob" style="
+                        position: absolute;
+                        top: 2px;
+                        left: ${engineState.hapticEnabled ? '18px' : '2px'};
+                        width: 16px;
+                        height: 16px;
+                        background: #FFFFFF;
+                        border-radius: 50%;
+                        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+                        transition: left 180ms cubic-bezier(0.12, 0.98, 0.24, 1);
+                    "></div>
+                </div>
+            </div>
+
+            <div style="margin-top:10px; text-align:center; font-size:9px; color:#475569;">
                 连续点击右上角 7 次或双击面板关闭
             </div>
         `;
+
+        // 绑定触感开关切换
+        const toggleBtn = hudElement.querySelector('#sc-haptic-toggle-btn');
+        const knob = hudElement.querySelector('#sc-haptic-knob');
+        if (toggleBtn && knob) {
+            toggleBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                engineState.hapticEnabled = !engineState.hapticEnabled;
+                localStorage.setItem('__sc_haptic_enabled', engineState.hapticEnabled ? '1' : '0');
+                toggleBtn.style.background = engineState.hapticEnabled ? '#10B981' : '#334155';
+                knob.style.left = engineState.hapticEnabled ? '18px' : '2px';
+                if (engineState.hapticEnabled) {
+                    window.__scHaptic('click');
+                }
+            });
+        }
 
         document.body.appendChild(hudElement);
 
@@ -514,7 +617,7 @@
             if (elMut) elMut.textContent = engineState.mutationsPerSec + '/s';
             if (elStream) {
                 elStream.textContent = engineState.streamingFps > 0 ? (engineState.streamingFps + ' FPS') : 'Idle';
-                elStream.style.color = engineState.streamingFps > 0 ? '#10B981' : '#94A3B8';
+                elStream.style.color = engineState.streamingFps > 0 ? '#10B981' : '#64748B';
             }
             if (elJs) elJs.textContent = engineState.lastFrameJsTime.toFixed(1) + 'ms';
             if (elVirt) elVirt.textContent = engineState.virtualizationActive ? 'Active' : 'Bypassed';
@@ -526,21 +629,21 @@
 
             if (elHealth) {
                 if (engineState.fps >= 75 && engineState.p95 < 18) {
-                    elHealth.textContent = 'Ultra 90Hz';
-                    elHealth.style.background = '#10B981';
-                    elHealth.style.color = '#064E3B';
+                    elHealth.textContent = '90Hz Ultra';
+                    elHealth.style.background = 'rgba(16, 185, 129, 0.15)';
+                    elHealth.style.color = '#34D399';
                 } else if (engineState.fps >= 55) {
                     elHealth.textContent = 'Healthy';
-                    elHealth.style.background = '#10B981';
-                    elHealth.style.color = '#064E3B';
+                    elHealth.style.background = 'rgba(16, 185, 129, 0.15)';
+                    elHealth.style.color = '#34D399';
                 } else if (engineState.fps >= 35) {
                     elHealth.textContent = 'Warning';
-                    elHealth.style.background = '#F59E0B';
-                    elHealth.style.color = '#78350F';
+                    elHealth.style.background = 'rgba(245, 158, 11, 0.15)';
+                    elHealth.style.color = '#FBBF24';
                 } else {
                     elHealth.textContent = 'Lagging';
-                    elHealth.style.background = '#EF4444';
-                    elHealth.style.color = '#7F1D1D';
+                    elHealth.style.background = 'rgba(239, 68, 68, 0.15)';
+                    elHealth.style.color = '#F87171';
                 }
             }
         }, 200);
