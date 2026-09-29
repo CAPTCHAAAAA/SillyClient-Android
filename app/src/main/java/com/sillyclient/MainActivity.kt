@@ -1658,53 +1658,98 @@ class MainActivity : BridgeActivity() {
                         }
                     }
 
-                    // 6. 抽屉动画期间冻结所有 backdrop-filter（消除 slideToggle 帧卡顿）
-                    // jQuery slideToggle 逐帧修改内联 style.height 驱动动画：
-                    //   每帧 height 变化 → blur 裁剪区域变化 → GPU 全量重采样 → 掉帧
-                    // 解法：MutationObserver 监听 style 属性变化 → body[data-sc-animating]
-                    // CSS 在该状态下把所有 backdrop-filter 清零，动画结束后自动恢复
-                    if (!window.__scDrawerBlurFreezeInstalled) {
-                        window.__scDrawerBlurFreezeInstalled = true;
-                        let _scAnimTimer = null;
-                        const ANIM_GUARD_MS = 450; // animation_duration(250~350ms) + 缓冲
+                    // 6. 接管二级抽屉（.inline-drawer-content）的展开收回
+                    // 根因：jQuery slideToggle 默认 400ms，每 13ms 用 JS 改写 style.height
+                    //   引发父级一级抽屉（带 blur）每秒 60 次全量重排与高斯模糊着色器重算。
+                    // 解法：瞬时排版到位（1 次微弱 layout）+ 90ms 原生合成器纯透明度微显影（0 JS 开销），
+                    //   彻底消灭文字形变与高度抖动，实现 Telegram 级触控丝滑反馈！
+                    if (window.jQuery && !window.__scSlideTogglePatched) {
+                        window.__scSlideTogglePatched = true;
+                        const jq = window.jQuery;
+                        const SELECTOR = '.inline-drawer-content';
 
-                        const freezeBlur = () => {
-                            document.body.setAttribute('data-sc-animating', '1');
-                            if (_scAnimTimer) clearTimeout(_scAnimTimer);
-                            _scAnimTimer = setTimeout(() => {
-                                document.body.removeAttribute('data-sc-animating');
-                                _scAnimTimer = null;
-                            }, ANIM_GUARD_MS);
-                        };
+                        const origToggle = jq.fn.slideToggle;
+                        const origDown   = jq.fn.slideDown;
+                        const origUp     = jq.fn.slideUp;
 
-                        const styleObserver = new MutationObserver((mutations) => {
-                            for (const m of mutations) {
-                                if (m.type === 'attributes' && m.attributeName === 'style') {
-                                    freezeBlur();
-                                    break;
+                        const isHidden = (el) =>
+                            el.style.display === 'none' ||
+                            window.getComputedStyle(el).display === 'none';
+
+                        const fastAnimate = (el, toOpen, cb) => {
+                            if (toOpen) {
+                                el.style.display = 'block';
+                                try {
+                                    if (el.animate) {
+                                        el.animate([
+                                            { opacity: 0.15 },
+                                            { opacity: 1 }
+                                        ], {
+                                            duration: 90,
+                                            easing: 'cubic-bezier(0.12, 0.98, 0.24, 1)',
+                                            fill: 'forwards'
+                                        });
+                                    }
+                                } catch(_) {}
+                                if (typeof cb === 'function') cb.call(el);
+                            } else {
+                                try {
+                                    if (el.animate) {
+                                        const anim = el.animate([
+                                            { opacity: 1 },
+                                            { opacity: 0 }
+                                        ], {
+                                            duration: 60,
+                                            easing: 'ease-in',
+                                            fill: 'forwards'
+                                        });
+                                        anim.onfinish = () => {
+                                            el.style.display = 'none';
+                                            if (typeof cb === 'function') cb.call(el);
+                                        };
+                                    } else {
+                                        el.style.display = 'none';
+                                        if (typeof cb === 'function') cb.call(el);
+                                    }
+                                } catch(_) {
+                                    el.style.display = 'none';
+                                    if (typeof cb === 'function') cb.call(el);
                                 }
                             }
-                        });
-
-                        const attachToDrawers = () => {
-                            document.querySelectorAll(
-                                '.drawer-content, .inline-drawer-content, .drawer-icon'
-                            ).forEach(el => {
-                                if (!el.dataset.scFreezeObserved) {
-                                    el.dataset.scFreezeObserved = '1';
-                                    styleObserver.observe(el, {
-                                        attributes: true,
-                                        attributeFilter: ['style']
-                                    });
-                                }
-                            });
                         };
 
-                        attachToDrawers();
+                        jq.fn.slideToggle = function(duration, easing, complete) {
+                            const cb = typeof easing === 'function' ? easing : complete;
+                            const inline = this.filter(SELECTOR);
+                            const rest   = this.not(SELECTOR);
+                            inline.each(function() {
+                                fastAnimate(this, isHidden(this), cb);
+                            });
+                            if (rest.length) origToggle.apply(rest, arguments);
+                            return this;
+                        };
 
-                        // 动态新增的抽屉节点也能被覆盖
-                        const domObserver = new MutationObserver(() => attachToDrawers());
-                        domObserver.observe(document.body, { childList: true, subtree: false });
+                        jq.fn.slideDown = function(duration, easing, complete) {
+                            const cb = typeof easing === 'function' ? easing : complete;
+                            const inline = this.filter(SELECTOR);
+                            const rest   = this.not(SELECTOR);
+                            inline.each(function() {
+                                fastAnimate(this, true, cb);
+                            });
+                            if (rest.length) origDown.apply(rest, arguments);
+                            return this;
+                        };
+
+                        jq.fn.slideUp = function(duration, easing, complete) {
+                            const cb = typeof easing === 'function' ? easing : complete;
+                            const inline = this.filter(SELECTOR);
+                            const rest   = this.not(SELECTOR);
+                            inline.each(function() {
+                                fastAnimate(this, false, cb);
+                            });
+                            if (rest.length) origUp.apply(rest, arguments);
+                            return this;
+                        };
                     }
                 } catch (_) {}
             })();
