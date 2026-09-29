@@ -31,7 +31,7 @@
         virtualizationActive: false,
         frozenAnimCount: 0,
         isInteracting: false,
-        hapticEnabled: localStorage.getItem('__sc_haptic_enabled') !== '0',
+        hapticEnabled: localStorage.getItem('__sc_haptic_enabled') === '1',
         hudVisible: false
     };
 
@@ -160,11 +160,26 @@
             this.lastFlushTime = performance.now();
             this.streamingFpsCount++;
 
+            const chat = document.getElementById('chat');
+            let shouldStickBottom = false;
+
+            // 1. 严格在单帧调度器 Read 阶段判定用户是否处于底部附近 (< 120px)
+            if (chat) {
+                scheduler.read(function() {
+                    const scrollDist = chat.scrollHeight - chat.scrollTop - chat.clientHeight;
+                    shouldStickBottom = scrollDist < 120;
+                });
+            }
+
+            // 2. 严格在单帧调度器 Write 阶段原子化写入内容并驱动平滑吸底（杜绝回流颠簸）
             scheduler.write(function() {
                 if (el.nodeType === 3) {
                     el.nodeValue += content;
                 } else if (el.innerHTML !== undefined) {
                     el.innerHTML += content;
+                }
+                if (shouldStickBottom && chat) {
+                    chat.scrollTop = chat.scrollHeight;
                 }
             });
         }
@@ -207,6 +222,24 @@
             const style = document.createElement('style');
             style.id = 'sc-p1-containment';
             style.textContent = `
+                /* 1. 消除外层 html/body 双重滚动分层争抢，让单一物理滚动图层收敛在 #chat */
+                html, body {
+                    overflow: hidden !important;
+                    height: 100% !important;
+                    overscroll-behavior: none !important;
+                }
+                #chat {
+                    overscroll-behavior-y: contain !important;
+                    -webkit-overflow-scrolling: touch !important;
+                    transform: translateZ(0); /* 提升为主合成层，隔离顶栏重绘 */
+                    touch-action: pan-y pinch-zoom; /* 纵向滑动直通合成器，绕过主线程 JS 计算 */
+                }
+                /* 2. 现代输入框原生尺寸通道：消除 JS 频繁读取 scrollHeight 造成的强制回流 */
+                #send_textarea {
+                    field-sizing: content !important;
+                    max-height: 160px !important;
+                    contain: layout style !important;
+                }
                 /* 视口外长消息跳过渲染树与绘制，保留全部 DOM 节点与事件绑定 */
                 #chat .mes {
                     content-visibility: auto;
@@ -217,6 +250,11 @@
                 #chat .mes:last-child {
                     content-visibility: visible !important;
                 }
+                /* 头像与静态资源局部绘制隔离：杜绝 GIF 头像扩散重绘 */
+                .mes_avatar {
+                    contain: paint layout !important;
+                    transform: translateZ(0);
+                }
                 /* 代码块、复杂表格与公式横向滚动沙箱：防止撑破气泡与垂直滑动偏航 */
                 #chat .mes_text pre,
                 #chat .mes_text table,
@@ -225,6 +263,10 @@
                     overflow-x: auto !important;
                     -webkit-overflow-scrolling: touch !important;
                     contain: layout paint;
+                }
+                /* 消除移动端 300ms 点击延迟与双击探测 */
+                button, .menu_button, .drawer-toggle, #send_but {
+                    touch-action: manipulation;
                 }
                 /* 离屏冻结类：挂起不可见视口元素的 CSS 动画 */
                 .__sc-anim-frozen, .__sc-anim-frozen * {
@@ -288,11 +330,22 @@
             animObserver.observe(candidates[i]);
         }
     }
-    setInterval(() => {
-        if (!engineState.isInteracting) {
-            scanAndObserveAnimations();
+
+    // 利用 requestIdleCallback 在浏览器主线程空闲阶段（>3ms）执行后台扫描，杜绝关键帧竞争
+    function scheduleIdleScan() {
+        const run = (deadline) => {
+            if (!engineState.isInteracting && (!deadline || deadline.timeRemaining() > 3)) {
+                scanAndObserveAnimations();
+            }
+            setTimeout(scheduleIdleScan, 4000);
+        };
+        if (window.requestIdleCallback) {
+            window.requestIdleCallback(run, { timeout: 6000 });
+        } else {
+            setTimeout(run, 4000);
         }
-    }, 3000);
+    }
+    setTimeout(scheduleIdleScan, 2000);
 
     // ========================================================
     // 7. P1: 交互优先调频器 (Interaction Priority Governor)
@@ -352,11 +405,12 @@
     }
     requestAnimationFrame(frameLoop);
 
+    // DOM 数量仅在 HUD 可见时，或低频空闲采样，日常运行零开销
     setInterval(() => {
-        if (!engineState.isInteracting) {
+        if (!engineState.isInteracting && engineState.hudVisible) {
             engineState.domCount = document.getElementsByTagName('*').length;
         }
-    }, 1200);
+    }, 2000);
 
     let hudElement = null;
 
@@ -547,6 +601,7 @@
         if (!hudElement) createHud();
         engineState.hudVisible = !engineState.hudVisible;
         if (engineState.hudVisible) {
+            try { engineState.domCount = document.getElementsByTagName('*').length; } catch(_) {}
             hudElement.style.display = 'block';
             hudElement.style.opacity = '0';
             hudElement.style.transform = 'scale(0.92) translateY(-4px)';
