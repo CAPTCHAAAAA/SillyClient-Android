@@ -1682,8 +1682,8 @@ class MainActivity : BridgeActivity() {
                                 try {
                                     if (el.animate) {
                                         el.animate([
-                                            { opacity: 0.15 },
-                                            { opacity: 1 }
+                                            { opacity: 0.15, transform: 'translateY(-4px)' },
+                                            { opacity: 1, transform: 'translateY(0)' }
                                         ], {
                                             duration: 90,
                                             easing: 'cubic-bezier(0.12, 0.98, 0.24, 1)',
@@ -1696,11 +1696,11 @@ class MainActivity : BridgeActivity() {
                                 try {
                                     if (el.animate) {
                                         const anim = el.animate([
-                                            { opacity: 1 },
-                                            { opacity: 0 }
+                                            { opacity: 1, transform: 'translateY(0)' },
+                                            { opacity: 0, transform: 'translateY(-3px)' }
                                         ], {
-                                            duration: 60,
-                                            easing: 'ease-in',
+                                            duration: 70,
+                                            easing: 'cubic-bezier(0.4, 0, 1, 1)',
                                             fill: 'forwards'
                                         });
                                         anim.onfinish = () => {

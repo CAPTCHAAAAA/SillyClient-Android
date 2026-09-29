@@ -42,7 +42,7 @@ object CompanionPresetInstaller {
     const val BUNDLE_ID = "sc-bordeaux"
     const val REVISION = 2
 
-    private const val THEME_HASH = "1BD8C418015249E6A6A3EA82030BBCBC91552E3B357711A4A16F939B4D98FB47"
+    private const val THEME_HASH = "C878FB2C51F06243319DEF7EA0CD82351988E3647B999D15F2E482D5A3CB9191"
     private const val WALLPAPER_HASH = "FA17565F1A3CB8AC6FB4F55E3D8FFE2A8200CC1AC60B9C38DEF2D225938E187E"
     private const val THEME_SOURCE = "themes/SC Bordeaux.json"
     private const val WALLPAPER_SOURCE = "wallpaper/sillyclient-bg-8k.jpg"

@@ -7,7 +7,7 @@
   "theme": {
     "source": "themes/SC Bordeaux.json",
     "target": "data/default-user/themes/SC Bordeaux.json",
-    "sha256": "1BD8C418015249E6A6A3EA82030BBCBC91552E3B357711A4A16F939B4D98FB47"
+    "sha256": "C878FB2C51F06243319DEF7EA0CD82351988E3647B999D15F2E482D5A3CB9191"
   },
   "wallpaper": {
     "source": "wallpaper/sillyclient-bg-8k.jpg",
