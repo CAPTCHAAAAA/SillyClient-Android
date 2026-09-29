@@ -187,23 +187,38 @@
     window.__scStreamingBatcher = streamingBatcher;
 
     // ========================================================
-    // 4. DOM MUTATION BATCHER (突变监控与聚合)
+    // 4. DOM MUTATION BATCHER (突变监控与聚合，HUD 按需挂载)
     // ========================================================
     let mutationCounter = 0;
     let mutationsPerSec = 0;
-    try {
-        const observer = new MutationObserver((mutations) => {
-            mutationCounter += mutations.length;
-        });
-        observer.observe(document.documentElement, {
-            childList: true,
-            subtree: true,
-            attributes: false,
-            characterData: true
-        });
-    } catch(e) {}
+    let domMutationObserver = null;
+
+    function startMutationObserver() {
+        if (domMutationObserver || !window.MutationObserver) return;
+        try {
+            domMutationObserver = new MutationObserver((mutations) => {
+                mutationCounter += mutations.length;
+            });
+            domMutationObserver.observe(document.documentElement, {
+                childList: true,
+                subtree: true,
+                attributes: false,
+                characterData: true
+            });
+        } catch(e) {}
+    }
+
+    function stopMutationObserver() {
+        if (domMutationObserver) {
+            domMutationObserver.disconnect();
+            domMutationObserver = null;
+        }
+        mutationCounter = 0;
+        engineState.mutationsPerSec = 0;
+    }
 
     setInterval(() => {
+        if (!engineState.hudVisible) return;
         mutationsPerSec = mutationCounter;
         mutationCounter = 0;
         engineState.mutationsPerSec = mutationsPerSec;
@@ -215,67 +230,64 @@
     }, 1000);
 
     // ========================================================
-    // 5. P1: 原生 DOM 虚拟化与代码/KaTeX局部沙箱
+    // 5. P1: 零跳动物理沙箱与代码/KaTeX局部隔离 (Zero-Shift Compositing Sandbox)
     // ========================================================
     function setupVirtualizationAndContainment() {
-        if (window.CSS && CSS.supports && CSS.supports('content-visibility', 'auto')) {
-            const style = document.createElement('style');
-            style.id = 'sc-p1-containment';
-            style.textContent = `
-                /* 1. 消除外层 html/body 双重滚动分层争抢，让单一物理滚动图层收敛在 #chat */
-                html, body {
-                    overflow: hidden !important;
-                    height: 100% !important;
-                    overscroll-behavior: none !important;
-                }
-                #chat {
-                    overscroll-behavior-y: contain !important;
-                    -webkit-overflow-scrolling: touch !important;
-                    transform: translateZ(0); /* 提升为主合成层，隔离顶栏重绘 */
-                    touch-action: pan-y pinch-zoom; /* 纵向滑动直通合成器，绕过主线程 JS 计算 */
-                }
-                /* 2. 现代输入框原生尺寸通道：消除 JS 频繁读取 scrollHeight 造成的强制回流 */
-                #send_textarea {
-                    field-sizing: content !important;
-                    max-height: 160px !important;
-                    contain: layout style !important;
-                }
-                /* 视口外长消息跳过渲染树与绘制，保留全部 DOM 节点与事件绑定 */
-                #chat .mes {
-                    content-visibility: auto;
-                    contain-intrinsic-size: auto 120px;
-                    contain: layout style;
-                }
-                /* 最后一项正在生成的活动消息始终处于可见状态，保证流式推流与吸底平滑 */
-                #chat .mes:last-child {
-                    content-visibility: visible !important;
-                }
-                /* 头像与静态资源局部绘制隔离：杜绝 GIF 头像扩散重绘 */
-                .mes_avatar {
-                    contain: paint layout !important;
-                    transform: translateZ(0);
-                }
-                /* 代码块、复杂表格与公式横向滚动沙箱：防止撑破气泡与垂直滑动偏航 */
-                #chat .mes_text pre,
-                #chat .mes_text table,
-                #chat .katex-display {
-                    max-width: 100% !important;
-                    overflow-x: auto !important;
-                    -webkit-overflow-scrolling: touch !important;
-                    contain: layout paint;
-                }
-                /* 消除移动端 300ms 点击延迟与双击探测 */
-                button, .menu_button, .drawer-toggle, #send_but {
-                    touch-action: manipulation;
-                }
-                /* 离屏冻结类：挂起不可见视口元素的 CSS 动画 */
-                .__sc-anim-frozen, .__sc-anim-frozen * {
-                    animation-play-state: paused !important;
-                }
-            `;
-            document.head.appendChild(style);
-            engineState.virtualizationActive = true;
-        }
+        const style = document.createElement('style');
+        style.id = 'sc-p1-containment';
+        style.textContent = `
+            /* 1. 消除外层 html/body 双重滚动分层争抢，让单一物理滚动图层收敛在 #chat */
+            html, body {
+                overflow: hidden !important;
+                height: 100% !important;
+                overscroll-behavior: none !important;
+            }
+            #chat {
+                overscroll-behavior-y: contain !important;
+                -webkit-overflow-scrolling: touch !important;
+                transform: translateZ(0); /* 提升为主合成层，隔离顶栏重绘 */
+                touch-action: pan-y pinch-zoom; /* 纵向滑动直通合成器，绕过主线程 JS 计算 */
+                scroll-behavior: auto !important; /* 禁用软滚动引起的物理衰减撕裂 */
+            }
+            /* 2. 现代输入框原生尺寸通道：消除 JS 频繁读取 scrollHeight 造成的强制回流 */
+            #send_textarea {
+                field-sizing: content !important;
+                max-height: 160px !important;
+                contain: layout style !important;
+            }
+            /* 3. 消除动态 Layout Shift：废除粗暴的 content-visibility，改用零重排物理沙箱与独立硬件层 */
+            #chat .mes {
+                contain: layout style paint !important; /* 严格局部布局与重绘沙箱，内部变动 0 扩散 */
+                transform: translateZ(0); /* 提升为独立硬件合成图层，滑屏位移走纯 GPU Compositor 线程 */
+            }
+            /* 头像与静态资源局部绘制隔离：杜绝 GIF 头像扩散重绘 */
+            .mes_avatar {
+                contain: paint layout !important;
+                transform: translateZ(0);
+            }
+            /* 代码块、复杂表格与公式横向滚动沙箱：防止撑破气泡与垂直滑动偏航 */
+            #chat .mes_text pre,
+            #chat .mes_text table,
+            #chat .katex-display {
+                max-width: 100% !important;
+                overflow-x: auto !important;
+                -webkit-overflow-scrolling: touch !important;
+                contain: layout paint;
+            }
+            /* 消除移动端 300ms 点击延迟与双击探测 */
+            button, .menu_button, .drawer-toggle, #send_but {
+                touch-action: manipulation;
+            }
+            /* 离屏冻结类：挂起不可见视口元素的 CSS 动画 */
+            .__sc-anim-frozen, .__sc-anim-frozen * {
+                animation-play-state: paused !important;
+            }
+            * {
+                -webkit-tap-highlight-color: transparent !important;
+            }
+        `;
+        document.head.appendChild(style);
+        engineState.virtualizationActive = true;
     }
     if (document.head) {
         setupVirtualizationAndContainment();
@@ -381,8 +393,14 @@
 
     const frameTimes = [];
     let lastTimestamp = performance.now();
+    let frameLoopId = null;
+    let frameLoopCounter = 0;
 
     function frameLoop(now) {
+        if (!engineState.hudVisible) {
+            frameLoopId = null;
+            return;
+        }
         const delta = now - lastTimestamp;
         lastTimestamp = now;
 
@@ -390,20 +408,38 @@
             frameTimes.push(delta);
             if (frameTimes.length > 60) frameTimes.shift();
 
-            const avg = frameTimes.reduce((a, b) => a + b, 0) / frameTimes.length;
-            engineState.fps = Math.min(120, +(1000 / avg).toFixed(1));
-            engineState.frameTime = +avg.toFixed(1);
+            frameLoopCounter++;
+            // 仅每 20 帧（约 220ms）才进行一次排序汇总，单帧内 0 对象分配、0 GC 压力
+            if (frameLoopCounter >= 20) {
+                frameLoopCounter = 0;
+                const avg = frameTimes.reduce((a, b) => a + b, 0) / frameTimes.length;
+                engineState.fps = Math.min(120, +(1000 / avg).toFixed(1));
+                engineState.frameTime = +avg.toFixed(1);
 
-            const sorted = [...frameTimes].sort((a, b) => a - b);
-            const idx95 = Math.floor(sorted.length * 0.95);
-            const idx99 = Math.floor(sorted.length * 0.99);
-            engineState.p95 = +(sorted[idx95] || avg).toFixed(1);
-            engineState.p99 = +(sorted[idx99] || avg).toFixed(1);
+                const sorted = [...frameTimes].sort((a, b) => a - b);
+                const idx95 = Math.floor(sorted.length * 0.95);
+                const idx99 = Math.floor(sorted.length * 0.99);
+                engineState.p95 = +(sorted[idx95] || avg).toFixed(1);
+                engineState.p99 = +(sorted[idx99] || avg).toFixed(1);
+            }
         }
 
-        requestAnimationFrame(frameLoop);
+        frameLoopId = requestAnimationFrame(frameLoop);
     }
-    requestAnimationFrame(frameLoop);
+
+    function startFrameLoop() {
+        if (frameLoopId) return;
+        lastTimestamp = performance.now();
+        frameLoopCounter = 0;
+        frameLoopId = requestAnimationFrame(frameLoop);
+    }
+
+    function stopFrameLoop() {
+        if (frameLoopId) {
+            cancelAnimationFrame(frameLoopId);
+            frameLoopId = null;
+        }
+    }
 
     // DOM 数量仅在 HUD 可见时，或低频空闲采样，日常运行零开销
     setInterval(() => {
@@ -601,6 +637,8 @@
         if (!hudElement) createHud();
         engineState.hudVisible = !engineState.hudVisible;
         if (engineState.hudVisible) {
+            startFrameLoop();
+            startMutationObserver();
             try { engineState.domCount = document.getElementsByTagName('*').length; } catch(_) {}
             hudElement.style.display = 'block';
             hudElement.style.opacity = '0';
@@ -610,6 +648,8 @@
                 hudElement.style.transform = 'scale(1) translateY(0)';
             });
         } else {
+            stopFrameLoop();
+            stopMutationObserver();
             hudElement.style.opacity = '0';
             hudElement.style.transform = 'scale(0.92) translateY(-4px)';
             setTimeout(() => {

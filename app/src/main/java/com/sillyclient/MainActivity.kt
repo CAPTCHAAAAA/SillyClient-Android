@@ -85,16 +85,9 @@ class MainActivity : BridgeActivity() {
     private var lastAppliedTopColor: Int? = null
     private var samplingTopColor = false
     private val topColorPoll: Runnable = Runnable {
-        if (isWebViewVisible) {
-            if (isTouchScrolling) {
-                handler.removeCallbacks(topColorPoll)
-                handler.postDelayed(topColorPoll, 1500)
-                return@Runnable
-            }
+        if (isWebViewVisible && !isTouchScrolling) {
             sampleTopColor { c ->
                 if (c != null) applyTopColor(c)
-                handler.removeCallbacks(topColorPoll)
-                handler.postDelayed(topColorPoll, 1500)
             }
         }
     }
@@ -435,7 +428,7 @@ class MainActivity : BridgeActivity() {
             settings.setNeedInitialFocus(false)
             settings.layoutAlgorithm = android.webkit.WebSettings.LayoutAlgorithm.NORMAL
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                settings.offscreenPreRaster = true
+                settings.offscreenPreRaster = false
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 @Suppress("DEPRECATION")
@@ -1588,15 +1581,10 @@ class MainActivity : BridgeActivity() {
                     }
                     pullReadyToReload = false
                     isTouchScrolling = false
-                    // 滑动或点击结束后，延迟 1500ms 等界面完全静止再恢复周期性取色轮询
-                    handler.removeCallbacks(topColorPoll)
-                    handler.postDelayed(topColorPoll, 1500)
                 }
                 MotionEvent.ACTION_CANCEL -> {
                     pullReadyToReload = false
                     isTouchScrolling = false
-                    handler.removeCallbacks(topColorPoll)
-                    handler.postDelayed(topColorPoll, 1500)
                 }
             }
             false
