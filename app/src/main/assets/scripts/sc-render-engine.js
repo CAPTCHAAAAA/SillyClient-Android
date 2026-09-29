@@ -1,5 +1,5 @@
 /**
- * SillyClient Performance Engine (P0 + P1 深度性能架构)
+ * SillyClient Performance Engine (P0 + P1 深度性能架构 + 触感 & 智能回底 & 内存隔离)
  *
  * P0 核心架构:
  * 1. Performance Monitor HUD (变色龙右上角连续点击 7 次呼出/收起，或双击面板关闭)
@@ -9,8 +9,12 @@
  *
  * P1 深度优化:
  * 5. Native DOM Virtualization & Layout Containment (视口外消息原生级跳过渲染，局部布局沙箱)
- * 6. Invisible Animation Governor (视口外动画/GIF 自动挂起冻结，不占 GPU)
- * 7. Interaction Priority Governor (滑动/手势期间帧预算全量倾斜，暂停背景重采样)
+ * 6. Markdown/KaTeX/Code 沙箱隔离 (超长代码块与复杂表格独立横向滚动，手势不偏航)
+ * 7. Invisible Animation Governor (视口外动画/GIF 自动挂起冻结，不占 GPU)
+ * 8. Interaction Priority Governor (滑动/手势期间帧预算全量倾斜，暂停背景重采样)
+ * 9. Native Haptic Bridge (原生线性马达微米级精密触感反馈)
+ * 10. Minimalist Scroll-to-Bottom Button (极简半透明向下符号回底按钮)
+ * 11. Image & Avatar Memory Guard (历史大图与头像 lazy/async 内存熔断保护)
  */
 (function() {
     if (window.__scRenderEngineInstalled) return;
@@ -20,10 +24,10 @@
     // 0. 全局引擎状态
     // ========================================================
     const engineState = {
-        fps: 60.0,
-        frameTime: 16.6,
-        p95: 16.6,
-        p99: 16.6,
+        fps: 90.0,
+        frameTime: 11.1,
+        p95: 11.1,
+        p99: 11.1,
         longTaskCount: 0,
         domCount: 0,
         mutationsPerSec: 0,
@@ -33,6 +37,17 @@
         frozenAnimCount: 0,
         isInteracting: false,
         hudVisible: false
+    };
+
+    // ========================================================
+    // 1. NATIVE HAPTIC BRIDGE (原生线性马达精密触感)
+    // ========================================================
+    window.__scHaptic = function(type) {
+        try {
+            if (window.SillyClientHaptic && window.SillyClientHaptic.trigger) {
+                window.SillyClientHaptic.trigger(type || 'tick');
+            }
+        } catch(_) {}
     };
 
     // ========================================================
@@ -158,7 +173,7 @@
     }, 1000);
 
     // ========================================================
-    // 5. P1: 原生 DOM 虚拟化与局部布局沙箱 (CSS Containment)
+    // 5. P1: 原生 DOM 虚拟化与代码/KaTeX局部沙箱
     // ========================================================
     function setupVirtualizationAndContainment() {
         if (window.CSS && CSS.supports && CSS.supports('content-visibility', 'auto')) {
@@ -174,6 +189,15 @@
                 /* 最后一项正在生成的活动消息始终处于可见状态，保证流式推流与吸底平滑 */
                 #chat .mes:last-child {
                     content-visibility: visible !important;
+                }
+                /* 代码块、复杂表格与公式横向滚动沙箱：防止撑破气泡与垂直滑动偏航 */
+                #chat .mes_text pre,
+                #chat .mes_text table,
+                #chat .katex-display {
+                    max-width: 100% !important;
+                    overflow-x: auto !important;
+                    -webkit-overflow-scrolling: touch !important;
+                    contain: layout paint;
                 }
                 /* 离屏冻结类：挂起不可见视口元素的 CSS 动画 */
                 .__sc-anim-frozen, .__sc-anim-frozen * {
@@ -216,8 +240,22 @@
         } catch(e) {}
     }
 
-    // 定期或按需为可能包含动画的重型元素注册观察器
+    // 历史超长图文与超大头像内存熔断保护
+    function protectImagesMemory() {
+        const imgs = document.querySelectorAll('#chat img, .mes_avatar');
+        for (let i = 0; i < imgs.length; i++) {
+            const img = imgs[i];
+            if (!img.getAttribute('loading')) {
+                img.setAttribute('loading', 'lazy');
+            }
+            if (!img.getAttribute('decoding')) {
+                img.setAttribute('decoding', 'async');
+            }
+        }
+    }
+
     function scanAndObserveAnimations() {
+        protectImagesMemory();
         if (!animObserver) return;
         const candidates = document.querySelectorAll('.mes_avatar, .mes_text img, .spinner, .rotating, .typing_indicator');
         for (let i = 0; i < candidates.length; i++) {
@@ -246,7 +284,83 @@
     window.addEventListener('scroll', notifyInteraction, { passive: true, capture: true });
 
     // ========================================================
-    // 1. PERFORMANCE MONITOR (FPS, P95/P99, LongTask, DOM)
+    // 8. 极简半透明向下符号回底按钮 (Minimalist Scroll-to-Bottom Button)
+    // ========================================================
+    let scrollDownBtn = null;
+    function createScrollDownButton() {
+        if (scrollDownBtn || !document.body) return;
+        scrollDownBtn = document.createElement('div');
+        scrollDownBtn.id = 'sc-scroll-down-btn';
+        scrollDownBtn.setAttribute('title', '回到底部');
+        scrollDownBtn.style.cssText = `
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: fixed;
+            bottom: calc(var(--sc-nav-bottom, 18px) + 72px);
+            right: 16px;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: rgba(22, 18, 22, 0.65);
+            backdrop-filter: blur(12px) saturate(1.2);
+            -webkit-backdrop-filter: blur(12px) saturate(1.2);
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            box-shadow: 0 4px 18px rgba(0, 0, 0, 0.38);
+            color: rgba(255, 255, 255, 0.85);
+            cursor: pointer;
+            opacity: 0;
+            transform: scale(0.85) translateY(6px);
+            pointer-events: none;
+            z-index: 99998;
+            transition: opacity 180ms cubic-bezier(0.12, 0.98, 0.24, 1), transform 180ms cubic-bezier(0.12, 0.98, 0.24, 1);
+            user-select: none;
+        `;
+        scrollDownBtn.innerHTML = `
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+        `;
+
+        scrollDownBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            window.__scHaptic('tick');
+            const chat = document.getElementById('chat');
+            if (chat && chat.scrollHeight > chat.clientHeight) {
+                chat.scrollTo({ top: chat.scrollHeight, behavior: 'smooth' });
+            } else {
+                window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+            }
+        });
+
+        document.body.appendChild(scrollDownBtn);
+    }
+
+    function checkScrollDownState() {
+        if (!scrollDownBtn) createScrollDownButton();
+        if (!scrollDownBtn) return;
+        const chat = document.getElementById('chat');
+        const scroller = (chat && chat.scrollHeight > chat.clientHeight) ? chat : document.documentElement;
+        const distFromBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+        if (distFromBottom > 420) {
+            scrollDownBtn.style.opacity = '1';
+            scrollDownBtn.style.transform = 'scale(1) translateY(0)';
+            scrollDownBtn.style.pointerEvents = 'auto';
+        } else {
+            scrollDownBtn.style.opacity = '0';
+            scrollDownBtn.style.transform = 'scale(0.85) translateY(6px)';
+            scrollDownBtn.style.pointerEvents = 'none';
+        }
+    }
+    window.addEventListener('scroll', checkScrollDownState, { passive: true, capture: true });
+    if (document.body) {
+        createScrollDownButton();
+    } else {
+        document.addEventListener('DOMContentLoaded', createScrollDownButton);
+    }
+
+    // ========================================================
+    // 9. PERFORMANCE MONITOR (FPS, P95/P99, LongTask, DOM)
     // ========================================================
     // LongTask 监测 (Chromium PerformanceObserver)
     if (window.PerformanceObserver) {
@@ -327,6 +441,7 @@
 
         hudElement.addEventListener('dblclick', (e) => {
             e.stopPropagation();
+            window.__scHaptic('tick');
             window.__scTogglePerfHud();
         });
 
@@ -410,7 +525,11 @@
             }
 
             if (elHealth) {
-                if (engineState.fps >= 55 && engineState.p95 < 24) {
+                if (engineState.fps >= 75 && engineState.p95 < 18) {
+                    elHealth.textContent = 'Ultra 90Hz';
+                    elHealth.style.background = '#10B981';
+                    elHealth.style.color = '#064E3B';
+                } else if (engineState.fps >= 55) {
                     elHealth.textContent = 'Healthy';
                     elHealth.style.background = '#10B981';
                     elHealth.style.color = '#064E3B';

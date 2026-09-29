@@ -1,6 +1,7 @@
 package com.sillyclient
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -10,6 +11,9 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
@@ -319,6 +323,9 @@ class MainActivity : BridgeActivity() {
                     }
                     lastPerfTapTime = now
                     perfEasterEggCount++
+                    if (perfEasterEggCount in 1..6) {
+                        triggerHaptic("tick")
+                    }
                     if (perfEasterEggCount in 4..6) {
                         val remaining = 7 - perfEasterEggCount
                         android.widget.Toast.makeText(
@@ -328,6 +335,7 @@ class MainActivity : BridgeActivity() {
                         ).show()
                     } else if (perfEasterEggCount >= 7) {
                         perfEasterEggCount = 0
+                        triggerHaptic("click")
                         if (isWebViewVisible) {
                             togglePerformanceMonitor()
                         } else {
@@ -435,6 +443,7 @@ class MainActivity : BridgeActivity() {
             }
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
             addJavascriptInterface(tavernDownloadBridge, "SillyClientAndroidDownloads")
+            addJavascriptInterface(ScNativeHapticBridge(), "SillyClientHaptic")
             setDownloadListener { url, _, contentDisposition, mimeType, contentLength ->
                 requestTavernUrlDownload(url, contentDisposition, mimeType, contentLength)
             }
@@ -627,6 +636,8 @@ class MainActivity : BridgeActivity() {
         super.onResume()
         // 启动器与酒馆统一全屏沉浸式 —— 始终隐藏系统栏
         enterImmersive()
+        // 系统前台切回心跳自愈探针
+        resumeHeartbeatHeal()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -1801,6 +1812,64 @@ class MainActivity : BridgeActivity() {
             val msg = if (active) "⚡ SC Performance Engine 监控已开启" else "性能监控已关闭"
             android.widget.Toast.makeText(this@MainActivity, msg, android.widget.Toast.LENGTH_SHORT).show()
         }
+    }
+
+    /** 触感引擎：驱动设备线性马达输出微米级触觉反馈 (Tick / Click / Heavy) */
+    fun triggerHaptic(type: String = "tick") {
+        try {
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                vm?.defaultVibrator ?: getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            }
+            if (vibrator == null || !vibrator.hasVibrator()) return
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val effect = when (type.lowercase()) {
+                    "tick" -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK)
+                    "click" -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK)
+                    "heavy" -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_HEAVY_CLICK)
+                    else -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK)
+                }
+                vibrator.vibrate(effect)
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(15L)
+            }
+        } catch (_: Exception) {}
+    }
+
+    /** 暴露给前端 JS 的原生触感 Bridge */
+    inner class ScNativeHapticBridge {
+        @android.webkit.JavascriptInterface
+        fun trigger(type: String?) {
+            runOnUiThread {
+                triggerHaptic(type ?: "tick")
+            }
+        }
+    }
+
+    /** 系统前台切回心跳自愈探针：防系统省电杀死 socket 导致白屏断连 */
+    private fun resumeHeartbeatHeal() {
+        if (!isWebViewVisible || !serverReady || tavernUrl.isBlank()) return
+        Thread {
+            try {
+                val conn = URL(tavernUrl).openConnection() as HttpURLConnection
+                conn.connectTimeout = 1200
+                conn.readTimeout = 1200
+                conn.requestMethod = "HEAD"
+                conn.responseCode
+                conn.disconnect()
+            } catch (_: Exception) {
+                runOnUiThread {
+                    if (isWebViewVisible && !isDestroyed && !isFinishing && ::webView.isInitialized) {
+                        webView.evaluateJavascript("window.location.reload();", null)
+                    }
+                }
+            }
+        }.start()
     }
 
     private fun dispatchImeOffset(imeHeightPx: Int, navHeightPx: Int) {
