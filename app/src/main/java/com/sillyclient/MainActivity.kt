@@ -445,6 +445,9 @@ class MainActivity : BridgeActivity() {
                 @Suppress("DEPRECATION")
                 settings.forceDark = android.webkit.WebSettings.FORCE_DARK_OFF
             }
+            setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            isNestedScrollingEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
             addJavascriptInterface(tavernDownloadBridge, "SillyClientAndroidDownloads")
             addJavascriptInterface(ScNativeHapticBridge(), "SillyClientHaptic")
@@ -1163,8 +1166,13 @@ class MainActivity : BridgeActivity() {
         switchToWebView(true)
         // 版本更新后同一实例也会重新提示，是否展示由原生版本标记决定。
         if (!instanceId.isNullOrBlank()) tavernStatusHint.show(instanceId)
-        // 顶条带自动取色：进入首帧先触发一次极速取色，随后由前端事件驱动感知
-        lastAppliedTopColor = null
+        // 顶条带自动取色：第 0 毫秒先以缓存色瞬时对齐，随后首帧探针校准与事件驱动
+        val cachedColor = getSavedTopColor(instanceId)
+        if (cachedColor != null) {
+            applyTopColor(cachedColor, instant = true)
+        } else {
+            lastAppliedTopColor = null
+        }
         handler.removeCallbacks(topColorPoll)
         triggerTopColorSample()
         handler.postDelayed({ triggerTopColorSample() }, 150)
@@ -1207,7 +1215,12 @@ class MainActivity : BridgeActivity() {
         enterImmersive()
         switchToWebView(true)
         currentTavernInstanceId?.let { tavernStatusHint.show(it) }
-        lastAppliedTopColor = null
+        val cachedColor = getSavedTopColor(currentTavernInstanceId)
+        if (cachedColor != null) {
+            applyTopColor(cachedColor, instant = true)
+        } else {
+            lastAppliedTopColor = null
+        }
         handler.removeCallbacks(topColorPoll)
         triggerTopColorSample()
         handler.postDelayed({ triggerTopColorSample() }, 150)
@@ -1544,14 +1557,32 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    /** 取色 → 顶框 scrim 条色波 + 光泽呼吸。 */
-    private fun applyTopColor(color: Int) {
+    private fun getSavedTopColor(instanceId: String?): Int? {
+        val id = instanceId?.takeIf { it.isNotBlank() } ?: currentTavernInstanceId ?: "default"
+        val sp = getSharedPreferences("sc_instance_colors", Context.MODE_PRIVATE)
+        val color = sp.getInt("top_color_$id", 0)
+        return if (color != 0) color else null
+    }
+
+    private fun saveTopColor(instanceId: String?, color: Int) {
+        val id = instanceId?.takeIf { it.isNotBlank() } ?: currentTavernInstanceId ?: "default"
+        val sp = getSharedPreferences("sc_instance_colors", Context.MODE_PRIVATE)
+        sp.edit().putInt("top_color_$id", color).apply()
+    }
+
+    /** 取色 → 顶框 scrim 条色波 + 光泽呼吸；instant=true 时 0 毫秒瞬时设定，消除进入色差。 */
+    private fun applyTopColor(color: Int, instant: Boolean = false) {
+        saveTopColor(currentTavernInstanceId, color)
         if (lastAppliedTopColor == color) {
             tavernStatusHint.onColorChanged(color)
             return
         }
         lastAppliedTopColor = color
-        topScrimBar.setColor(color)
+        if (instant) {
+            topScrimBar.setColorInstant(color)
+        } else {
+            topScrimBar.setColor(color)
+        }
         tavernStatusHint.onColorChanged(color)
     }
 

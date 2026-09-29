@@ -60,6 +60,16 @@ class TopScrimBar(private val activity: Activity) {
         root.addView(gloss)
     }
 
+    /** 瞬时应用颜色（首帧或恢复缓存时调用，无 2.4s 慢速色波，第 0 毫秒立即完美对齐）。 */
+    fun setColorInstant(color: Int) {
+        activity.runOnUiThread {
+            if (!::scrim.isInitialized) return@runOnUiThread
+            waveAnimator?.cancel()
+            currentStops = TopColor.scrimStops(color)
+            scrimDrawable.setColors(currentStops)
+        }
+    }
+
     /** 应用新取色：scrim 自下而上色波（仅色波；gloss 白色光波由点击触发，见 sweepGloss）。 */
     fun setColor(color: Int) {
         activity.runOnUiThread {

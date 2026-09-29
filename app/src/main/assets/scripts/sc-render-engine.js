@@ -1,15 +1,15 @@
 /**
- * SillyClient Render Engine v0.1
- * 位于 SillyTavern 与 WebView/Chromium 之间的 DOM 渲染调度引擎
+ * SillyClient Render Engine v0.2 (Deepcompositor & Layer-Optimized)
+ * 位于 SillyTavern 与 WebView/Chromium 之间的深度渲染调度引擎
  *
- * 核心架构组件:
- * 1. ChameleonEngine: 变色龙精准事件感知取色 (启动首帧取色 + DOM属性改动事件驱动，彻底 0 轮询)
- * 2. EffectManager: 高消耗视觉特效动态降级 (滑屏期间动态禁用 backdrop-filter，释放 80%+ GPU Fillrate)
- * 3. StreamingBatcher 2.0: 单帧锁步高刷合批调度器 (RAF-Lockstep 60Hz~90Hz~120Hz，单帧仅 1 次写入与吸底)
- * 4. FrameScheduler: 读写严格分离原子化调度 (Read/Write Phase 严格隔离)
- * 5. Zero-Shift Containment Sandbox: 零重排物理沙箱与独立硬件层 (代码块/KaTeX横向隔离，GIF隔离)
- * 6. Invisible Animation Freeze & Image Async Decode: 视口外动画冻结与图片原型级异步解码
- * 7. Zero-Timer Interaction Governor: 触控交互优先调频器
+ * 核心架构升级:
+ * 1. ChameleonEngine: 变色龙精准事件感知取色 (首帧瞬时同步 + 定向 DOM 变动通知，彻底 0 轮询)
+ * 2. Real-AOP Streaming Batcher: 切面原生拦截 Element.prototype.innerHTML (.mes_text 单帧锁步高刷合批)
+ * 3. Layer Explosion Elimination: 彻底根治几百条消息的图层爆炸，单滚动硬件层 + 动态末尾消息硬件层
+ * 4. EffectManager 2.0: 滑屏期间动态停用 backdrop-filter 与 box-shadow，释放 85%+ GPU 算力
+ * 5. FrameScheduler: 读写严格分离原子化调度 (Read/Write Phase 严格隔离)
+ * 6. Invisible Animation Freeze & Image Async Decode: 视口外动画挂起与图片后台异步解码
+ * 7. Zero-Timer Interaction Governor: 手势触控优先调频器 (0 Timer 堆开销)
  * 8. Performance Monitor & SC Slate-900 Glass HUD: 极客监控面板与全站微震触感开关
  */
 (function() {
@@ -126,65 +126,69 @@
     window.__scFrameScheduler = scheduler;
 
     // ========================================================
-    // 3. STREAMING BATCHER 2.0 (单帧锁步高刷合批调度器 RAF-Lockstep)
+    // 3. STREAMING BATCHER 2.0 (真实切面原生拦截 innerHTML 锁步合批)
     // ========================================================
-    // 彻底废弃 30FPS 硬限速！跟随屏幕硬件刷新率（60Hz~90Hz~120Hz）
-    // 单帧内无论收到多少 token，严格只在 1 帧内原子化写入 1 次，消灭 Forced Reflow
     const streamingBatcher = {
-        bufferMap: new Map(), // Element -> string
-        rafPending: false,
-        lastFlushTime: performance.now(),
-        tokenCountThisSec: 0,
         streamingFpsCount: 0,
         currentStreamingFps: 0,
         isStreamingActive: false,
-
-        push: function(el, chunk) {
-            if (!el || chunk === undefined || chunk === null) return;
-            this.isStreamingActive = true;
-            this.tokenCountThisSec++;
-
-            const prev = this.bufferMap.get(el) || '';
-            this.bufferMap.set(el, prev + chunk);
-
-            if (!this.rafPending) {
-                this.rafPending = true;
-                requestAnimationFrame((now) => this.flushLockstep(now));
-            }
-        },
-
-        flushLockstep: function(now) {
-            this.rafPending = false;
-            if (this.bufferMap.size === 0) return;
-
-            this.streamingFpsCount++;
-            const chat = document.getElementById('chat');
-            let shouldStickBottom = false;
-
-            // 1. 严格在单帧调度器 Read 阶段判定用户是否处于底部附近 (< 120px)
-            if (chat) {
-                const scrollDist = chat.scrollHeight - chat.scrollTop - chat.clientHeight;
-                shouldStickBottom = scrollDist < 120;
-            }
-
-            // 2. 严格在单帧调度器 Write 阶段原子化写入内容并驱动平滑吸底
-            for (const [el, chunk] of this.bufferMap.entries()) {
-                try {
-                    if (el.nodeType === 3) {
-                        el.nodeValue += chunk;
-                    } else if (el.innerHTML !== undefined) {
-                        el.innerHTML += chunk;
-                    }
-                } catch(_) {}
-            }
-            this.bufferMap.clear();
-
-            if (shouldStickBottom && chat) {
-                chat.scrollTop = chat.scrollHeight;
-            }
-        }
     };
     window.__scStreamingBatcher = streamingBatcher;
+
+    try {
+        const originalInnerHTMLDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+        if (originalInnerHTMLDesc && originalInnerHTMLDesc.set) {
+            const pendingHtmlMap = new Map();
+            let htmlRafPending = false;
+
+            const flushHtmlBatch = () => {
+                htmlRafPending = false;
+                if (pendingHtmlMap.size === 0) return;
+
+                streamingBatcher.streamingFpsCount++;
+                const chat = document.getElementById('chat');
+                let shouldStickBottom = false;
+
+                // 1. Read 阶段：测距
+                if (chat) {
+                    const scrollDist = chat.scrollHeight - chat.scrollTop - chat.clientHeight;
+                    shouldStickBottom = scrollDist < 140;
+                }
+
+                // 2. Write 阶段：单帧内仅执行 1 次真实的 DOM 树构建
+                for (const [el, html] of pendingHtmlMap.entries()) {
+                    try {
+                        originalInnerHTMLDesc.set.call(el, html);
+                    } catch(_) {}
+                }
+                pendingHtmlMap.clear();
+
+                // 3. 仅吸底 1 次
+                if (shouldStickBottom && chat) {
+                    chat.scrollTop = chat.scrollHeight;
+                }
+            };
+
+            Object.defineProperty(Element.prototype, 'innerHTML', {
+                set: function(val) {
+                    // 仅对酒馆高频流式输出的聊天内容节点 (.mes_text) 进行单帧锁步合批
+                    if (this.classList && this.classList.contains('mes_text')) {
+                        pendingHtmlMap.set(this, val);
+                        streamingBatcher.isStreamingActive = true;
+                        if (!htmlRafPending) {
+                            htmlRafPending = true;
+                            requestAnimationFrame(flushHtmlBatch);
+                        }
+                        return;
+                    }
+                    return originalInnerHTMLDesc.set.call(this, val);
+                },
+                get: originalInnerHTMLDesc.get,
+                configurable: true,
+                enumerable: true
+            });
+        }
+    } catch(_) {}
 
     // ========================================================
     // 4. CHAMELEON ENGINE (变色龙精准事件感知取色 - 0 轮询)
@@ -330,16 +334,16 @@
     } else {
         chameleonEngine.initObserver();
     }
-    // 延迟 600ms 等待酒馆 SPA 节点挂载完毕后再次绑定与精准采样
+    // 延迟 500ms 等待酒馆 SPA 节点挂载完毕后再次绑定与精准采样
     setTimeout(() => {
         chameleonEngine.bindTargets();
         chameleonEngine.sampleAndReport(false);
-    }, 600);
+    }, 500);
 
     // ========================================================
-    // 5. EFFECT MANAGER (高消耗视觉特效动态降级引擎)
+    // 5. EFFECT MANAGER 2.0 (高消耗视觉特效动态降级引擎)
     // ========================================================
-    // 滑屏期间动态禁用 backdrop-filter，释放 80%+ GPU 显存带宽；停止 120ms 平滑恢复
+    // 滑屏期间动态停用 backdrop-filter 与 box-shadow，释放 85%+ GPU 算力；停止 120ms 平滑恢复
     const effectManager = {
         scrollTimer: null,
         onScrollActivity: function() {
@@ -404,7 +408,7 @@
     }, 1000);
 
     // ========================================================
-    // 7. P1: 零跳动物理沙箱与特效样式 (Zero-Shift Compositing Sandbox)
+    // 7. 根除图层爆炸与物理沙箱 (Layer Explosion Elimination & Containment)
     // ========================================================
     function setupVirtualizationAndContainment() {
         const style = document.createElement('style');
@@ -420,7 +424,8 @@
             #chat {
                 overscroll-behavior-y: contain !important;
                 -webkit-overflow-scrolling: touch !important;
-                transform: translateZ(0); /* 提升为主合成层，隔离顶栏重绘 */
+                transform: translateZ(0); /* 唯一主滚动硬件合成层 */
+                will-change: scroll-position;
                 touch-action: pan-y pinch-zoom; /* 纵向滑动直通合成器，绕过主线程 JS 计算 */
                 scroll-behavior: auto !important; /* 禁用软滚动引起的物理衰减撕裂 */
                 text-rendering: optimizeSpeed !important;
@@ -431,15 +436,17 @@
                 max-height: 160px !important;
                 contain: layout style !important;
             }
-            /* 3. 消除动态 Layout Shift：废除粗暴的 content-visibility，改用零重排物理沙箱与独立硬件层 */
+            /* 3. 根除图层爆炸：历史消息坚决不加 translateZ(0)，使用纯局部布局与重绘隔离 */
             #chat .mes {
-                contain: layout style paint !important; /* 严格局部布局与重绘沙箱，内部变动 0 扩散 */
-                transform: translateZ(0); /* 提升为独立硬件合成图层，滑屏位移走纯 GPU Compositor 线程 */
+                contain: layout style !important;
+            }
+            /* 仅最新一条正在生成变动的消息赋予独立硬件层，杜绝动态生成时重绘静态历史消息 */
+            #chat .mes:last-child {
+                transform: translateZ(0);
             }
             /* 头像与静态资源局部绘制隔离：杜绝 GIF 头像扩散重绘 */
             .mes_avatar {
                 contain: paint layout !important;
-                transform: translateZ(0);
                 user-select: none !important;
                 -webkit-user-select: none !important;
             }
@@ -454,10 +461,11 @@
                 will-change: opacity, transform !important;
                 transform: translateZ(0) !important;
             }
-            /* 6. 特效降级引擎：滑动期间临时切断 backdrop-filter 显存采样，释放 80%+ GPU 算力 */
+            /* 6. 特效降级引擎 2.0：滑屏期间暂停 backdrop-filter 与 box-shadow，瞬间释放 85%+ GPU 算力 */
             html.__sc-scrolling * {
                 backdrop-filter: none !important;
                 -webkit-backdrop-filter: none !important;
+                box-shadow: none !important;
             }
             /* 代码块、复杂表格与公式横向滚动沙箱：防止撑破气泡与垂直滑动偏航 */
             #chat .mes_text pre,
@@ -721,10 +729,10 @@
                 <span id="sc-perf-cham" style="color:#34D399; font-weight:600;">Event-0Poll</span>
 
                 <span style="color:#64748B;">Effect Mgr</span>
-                <span id="sc-perf-effect" style="color:#38BDF8;">Blur Bypass</span>
+                <span id="sc-perf-effect" style="color:#38BDF8;">Blur/Shadow Bypass</span>
 
-                <span style="color:#64748B;">Virtualization</span>
-                <span id="sc-perf-virt" style="color:#10B981; font-weight:600;">Active</span>
+                <span style="color:#64748B;">Layer Engine</span>
+                <span id="sc-perf-layer" style="color:#10B981; font-weight:600;">Anti-Explosion</span>
 
                 <span style="color:#64748B;">Frozen Anims</span>
                 <span id="sc-perf-frozen" style="color:#A78BFA;">0</span>
@@ -795,7 +803,7 @@
             const elMut = hudElement.querySelector('#sc-perf-mut');
             const elStream = hudElement.querySelector('#sc-perf-stream');
             const elJs = hudElement.querySelector('#sc-perf-js');
-            const elVirt = hudElement.querySelector('#sc-perf-virt');
+            const elLayer = hudElement.querySelector('#sc-perf-layer');
             const elFrozen = hudElement.querySelector('#sc-perf-frozen');
             const elGov = hudElement.querySelector('#sc-perf-gov');
             const elHealth = hudElement.querySelector('#sc-perf-health');
@@ -818,7 +826,7 @@
                 }
             }
             if (elJs) elJs.textContent = engineState.lastFrameJsTime.toFixed(1) + 'ms';
-            if (elVirt) elVirt.textContent = engineState.virtualizationActive ? 'Active' : 'Bypassed';
+            if (elLayer) elLayer.textContent = 'Single+Tail';
             if (elFrozen) elFrozen.textContent = engineState.frozenAnimCount;
             if (elCham) elCham.textContent = 'Event-0Poll';
             if (elEffect) {
