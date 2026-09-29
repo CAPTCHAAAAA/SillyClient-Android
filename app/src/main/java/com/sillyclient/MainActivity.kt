@@ -254,6 +254,12 @@ class MainActivity : BridgeActivity() {
 
         statusBarFixedPx = readStatusBarFixedPx()
 
+        // iOS 同款 Full Bleed 架构：开启沉浸式透明导航栏，消除死黑条，让毛玻璃背景 100% 满版贴底
+        window.navigationBarColor = Color.TRANSPARENT
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+        }
+
         val wasServerReady = savedInstanceState?.getBoolean(STATE_SERVER_READY, false) ?: false
         val wasWebViewVisible = savedInstanceState?.getBoolean(STATE_WEBVIEW_VISIBLE, false) ?: false
         savedInstanceState?.getString(STATE_TAVERN_URL)?.takeIf { it.isNotBlank() }?.let {
