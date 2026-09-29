@@ -38,7 +38,159 @@
     };
 
     // ========================================================
-    // 1. NATIVE HAPTIC BRIDGE (原生线性马达精密触感引擎)
+    // 1. RUNTIME PATCHES (原生底座加固与事件纠偏)
+    // ========================================================
+    function installRuntimePatches() {
+        try {
+            // 1.1 彻底清理历史遗留旧样式表与标记
+            const oldStyle = document.getElementById('sc-drawer-perf');
+            if (oldStyle) oldStyle.remove();
+
+            if (window.__scJQueryFxWatcher) {
+                clearInterval(window.__scJQueryFxWatcher);
+                window.__scJQueryFxWatcher = null;
+            }
+            if (window.jQuery && window.jQuery.fx) {
+                window.jQuery.fx.off = false;
+            }
+
+            // 1.2 声明 CSS field-sizing 支持，绕过 textarea 同步重排死循环
+            if (window.CSS && !CSS.supports('field-sizing', 'content')) {
+                const originalSupports = CSS.supports.bind(CSS);
+                CSS.supports = function(property, value) {
+                    if (property === 'field-sizing') return true;
+                    return originalSupports(property, value);
+                };
+            }
+
+            // 1.3 取消进角色对话页面自动展开输入法 (用户主动轻触才弹起)
+            if (!window.__scAutoFocusBlockerInstalled) {
+                window.__scAutoFocusBlockerInstalled = true;
+                let userTappedTextarea = false;
+
+                const markUserTap = (e) => {
+                    userTappedTextarea = !!(e.target && (e.target.id === 'send_textarea' || (e.target.closest && e.target.closest('#send_textarea'))));
+                };
+                document.addEventListener('touchstart', markUserTap, { capture: true, passive: true });
+                document.addEventListener('mousedown', markUserTap, { capture: true, passive: true });
+
+                const origTextareaFocus = HTMLTextAreaElement.prototype.focus;
+                HTMLTextAreaElement.prototype.focus = function(options) {
+                    if (this.id === 'send_textarea' && !userTappedTextarea) return;
+                    return origTextareaFocus.call(this, options);
+                };
+
+                if (window.jQuery) {
+                    const origTrigger = window.jQuery.fn.trigger;
+                    window.jQuery.fn.trigger = function(type, data) {
+                        if (this.is('#send_textarea') && !userTappedTextarea && (type === 'focus' || type === 'click' || type === 'focusin')) {
+                            return this;
+                        }
+                        return origTrigger.apply(this, arguments);
+                    };
+                }
+            }
+
+            // 1.4 清理 form_sheld 遗留 lift/spacer 结构，恢复纯净 DOM
+            const formSheld = document.getElementById('form_sheld');
+            if (formSheld) {
+                const lift = formSheld.querySelector('[data-sc-ime-lift]');
+                const spacer = formSheld.querySelector('[data-sc-ime-spacer]');
+                if (lift) {
+                    while (lift.firstChild) formSheld.insertBefore(lift.firstChild, lift);
+                    lift.remove();
+                }
+                if (spacer) spacer.remove();
+            }
+
+            // 1.5 二级抽屉 (.inline-drawer-content) 90ms 纯透明度微显影（0 JS 逐帧循环开销）
+            if (window.jQuery && !window.__scSlideTogglePatched) {
+                window.__scSlideTogglePatched = true;
+                const jq = window.jQuery;
+                const SELECTOR = '.inline-drawer-content';
+                const origToggle = jq.fn.slideToggle;
+                const origDown   = jq.fn.slideDown;
+                const origUp     = jq.fn.slideUp;
+
+                const isHidden = (el) =>
+                    el.style.display === 'none' ||
+                    window.getComputedStyle(el).display === 'none';
+
+                const fastAnimate = (el, toOpen, cb) => {
+                    if (toOpen) {
+                        el.style.display = 'block';
+                        try {
+                            if (el.animate) {
+                                el.animate([
+                                    { opacity: 0.15, transform: 'translateY(-4px)' },
+                                    { opacity: 1, transform: 'translateY(0)' }
+                                ], {
+                                    duration: 90,
+                                    easing: 'cubic-bezier(0.12, 0.98, 0.24, 1)',
+                                    fill: 'forwards'
+                                });
+                            }
+                        } catch(_) {}
+                        if (typeof cb === 'function') cb.call(el);
+                    } else {
+                        try {
+                            if (el.animate) {
+                                const anim = el.animate([
+                                    { opacity: 1, transform: 'translateY(0)' },
+                                    { opacity: 0, transform: 'translateY(-3px)' }
+                                ], {
+                                    duration: 70,
+                                    easing: 'cubic-bezier(0.4, 0, 1, 1)',
+                                    fill: 'forwards'
+                                });
+                                anim.onfinish = () => {
+                                    el.style.display = 'none';
+                                    if (typeof cb === 'function') cb.call(el);
+                                };
+                            } else {
+                                el.style.display = 'none';
+                                if (typeof cb === 'function') cb.call(el);
+                            }
+                        } catch(_) {
+                            el.style.display = 'none';
+                            if (typeof cb === 'function') cb.call(el);
+                        }
+                    }
+                };
+
+                jq.fn.slideToggle = function(duration, easing, complete) {
+                    const cb = typeof easing === 'function' ? easing : complete;
+                    const inline = this.filter(SELECTOR);
+                    const rest   = this.not(SELECTOR);
+                    inline.each(function() { fastAnimate(this, isHidden(this), cb); });
+                    if (rest.length) origToggle.apply(rest, arguments);
+                    return this;
+                };
+
+                jq.fn.slideDown = function(duration, easing, complete) {
+                    const cb = typeof easing === 'function' ? easing : complete;
+                    const inline = this.filter(SELECTOR);
+                    const rest   = this.not(SELECTOR);
+                    inline.each(function() { fastAnimate(this, true, cb); });
+                    if (rest.length) origDown.apply(rest, arguments);
+                    return this;
+                };
+
+                jq.fn.slideUp = function(duration, easing, complete) {
+                    const cb = typeof easing === 'function' ? easing : complete;
+                    const inline = this.filter(SELECTOR);
+                    const rest   = this.not(SELECTOR);
+                    inline.each(function() { fastAnimate(this, false, cb); });
+                    if (rest.length) origUp.apply(rest, arguments);
+                    return this;
+                };
+            }
+        } catch(_) {}
+    }
+    installRuntimePatches();
+
+    // ========================================================
+    // 2. NATIVE HAPTIC BRIDGE (原生线性马达精密触感引擎)
     // ========================================================
     window.__scHaptic = function(type) {
         if (!engineState.hapticEnabled) return;
@@ -851,4 +1003,18 @@
         }
         return engineState.hudVisible;
     };
+
+    // ========================================================
+    // 10. UNIFIED ENGINE NAMESPACE
+    // ========================================================
+    window.SillyClientEngine = {
+        version: '0.2.2',
+        state: engineState,
+        scheduler: scheduler,
+        batcher: streamingBatcher,
+        chameleon: chameleonEngine,
+        haptic: window.__scHaptic,
+        toggleHud: window.__scTogglePerfHud
+    };
 })();
+

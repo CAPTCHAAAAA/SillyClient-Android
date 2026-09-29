@@ -11,15 +11,13 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.VibrationEffect
-import android.os.Vibrator
-import android.os.VibratorManager
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
-import android.view.PixelCopy
 import android.view.View
-import android.view.ViewConfiguration
+import com.sillyclient.render.ChameleonController
+import com.sillyclient.render.HapticController
+import com.sillyclient.render.RenderEngineManager
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
@@ -83,14 +81,18 @@ class MainActivity : BridgeActivity() {
 
     private val handler = Handler(Looper.getMainLooper())
     private var lastAppliedTopColor: Int? = null
-    private var samplingTopColor = false
     private val topColorPoll: Runnable = Runnable {
-        if (isWebViewVisible && !isTouchScrolling) {
+        if (isWebViewVisible) {
             sampleTopColor { c ->
                 if (c != null) applyTopColor(c)
             }
         }
     }
+
+    // ---- Render & UX Controllers ----
+    private lateinit var hapticController: HapticController
+    private lateinit var chameleonController: ChameleonController
+    private lateinit var renderEngineManager: RenderEngineManager
 
     // ---- Views ----
     private lateinit var root: FrameLayout
@@ -138,6 +140,12 @@ class MainActivity : BridgeActivity() {
     private var tavernUrl = "http://127.0.0.1:8000/"
     private var tavernPort = 8000
     private var currentTavernInstanceId: String? = null
+        set(value) {
+            field = value
+            if (::chameleonController.isInitialized) {
+                chameleonController.setInstanceId(value)
+            }
+        }
     private var tavernAuthHost: String? = null
     private var tavernAuthUsername: String? = null
     private var tavernAuthPassword: String? = null
@@ -145,13 +153,6 @@ class MainActivity : BridgeActivity() {
     private var serverProcess: Process? = null
     /** 酒馆 WebView 下拉刷新开关。 */
     private var pullToRefreshEnabled = false
-    /** 下拉刷新手势状态。 */
-    private var pullStartY = 0f
-    private var pullReadyToReload = false
-    private var touchDownX = 0f
-    private var touchDownY = 0f
-    private var touchDownTime = 0L
-    private var isTouchScrolling = false
     /** 开发者彩蛋：右上角连续点击 7 次切换 SC Performance HUD */
     private var perfEasterEggCount = 0
     private var lastPerfTapTime = 0L
@@ -303,6 +304,29 @@ class MainActivity : BridgeActivity() {
         topScrimBar = TopScrimBar(this)
         topScrimBar.attach(root, statusBarFixedPx)
 
+        hapticController = HapticController(this)
+        chameleonController = ChameleonController(
+            context = this,
+            window = window,
+            handler = handler,
+            topScrimBar = topScrimBar,
+            getFixedStatusBarPx = { statusBarFixedPx },
+            isWebViewVisible = { isWebViewVisible },
+            isPullToRefreshEnabled = { pullToRefreshEnabled }
+        )
+        chameleonController.setInstanceId(currentTavernInstanceId)
+        renderEngineManager = RenderEngineManager(
+            context = this,
+            hapticController = hapticController,
+            onColorChangedListener = { color ->
+                runOnUiThread {
+                    if (isWebViewVisible) {
+                        applyTopColor(color)
+                    }
+                }
+            }
+        )
+
         // 顶部状态栏手势区：透明 View 覆盖 statusBarFixedPx 条带
         // 始终可见（不放在 root 里），支持双向操作：
         //   酒馆模式：滑动 → exitTavern()（回启动器，不停服务）
@@ -450,8 +474,7 @@ class MainActivity : BridgeActivity() {
             overScrollMode = View.OVER_SCROLL_NEVER
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
             addJavascriptInterface(tavernDownloadBridge, "SillyClientAndroidDownloads")
-            addJavascriptInterface(ScNativeHapticBridge(), "SillyClientHaptic")
-            addJavascriptInterface(ScNativeRenderBridge(), "SillyClientRenderBridge")
+            renderEngineManager.attachBridges(this)
             setDownloadListener { url, _, contentDisposition, mimeType, contentLength ->
                 requestTavernUrlDownload(url, contentDisposition, mimeType, contentLength)
             }
@@ -497,7 +520,7 @@ class MainActivity : BridgeActivity() {
                     android.util.Log.i(TAG, "Page loaded: $url")
                     installTavernDownloadSupport(url)
                     installChameleonProbes()
-                    injectDrawerPerformanceOptimizations()
+                    injectRenderEngine()
                 }
             }
 
@@ -554,6 +577,7 @@ class MainActivity : BridgeActivity() {
                 statusHintMetrics.cameraHeightPx
             )
         }
+        chameleonController.setStatusHint(tavernStatusHint)
 
         // IME 零重排零延迟适配（TT 同款架构）：
         // 废除 webViewScreen.setPadding(...)，绝不改变 WebView 物理高宽，彻底消灭 Viewport Resize 全局重排！
@@ -1177,7 +1201,7 @@ class MainActivity : BridgeActivity() {
         triggerTopColorSample()
         handler.postDelayed({ triggerTopColorSample() }, 150)
         handler.postDelayed({ triggerTopColorSample() }, 400)
-        injectDrawerPerformanceOptimizations()
+        injectRenderEngine()
         return true
     }
 
@@ -1225,7 +1249,7 @@ class MainActivity : BridgeActivity() {
         triggerTopColorSample()
         handler.postDelayed({ triggerTopColorSample() }, 150)
         handler.postDelayed({ triggerTopColorSample() }, 400)
-        injectDrawerPerformanceOptimizations()
+        injectRenderEngine()
     }
 
     /**
@@ -1401,88 +1425,14 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    // ╔══════════════════════════════════════════════════════════════════╗
-    // ║  顶框自适应取色（DOM ComputedStyle 探针优先 + 零抖动 PixelCopy 兜底）║
-    // ║  1. 引擎 A (DOM ComputedStyle 探针)：直取酒馆 #top-bar、            ║
-    // ║     --SmartThemeBlurTintColor 及 body 真实计算背景色，100% 零 GPU    ║
-    // ║     渲染管线中断，彻底杜绝 120Hz/90Hz 高刷滑动微卡顿；               ║
-    // ║  2. 引擎 B (PixelCopy 兜底)：仅在跨域/空白页且非频繁场景执行一次。  ║
-    // ╚══════════════════════════════════════════════════════════════════╝
-    private val domProbeScript = """
-        (() => {
-            function parseCssColor(str) {
-                if (!str || str === 'transparent' || str === 'inherit' || str === 'initial') return null;
-                const m = str.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
-                if (m) {
-                    const a = m[4] !== undefined ? parseFloat(m[4]) : 1.0;
-                    if (a > 0.05) return { r: parseInt(m[1], 10), g: parseInt(m[2], 10), b: parseInt(m[3], 10), a: a };
-                }
-                if (str.startsWith('#')) {
-                    let hex = str.substring(1);
-                    if (hex.length === 3) hex = hex[0]+hex[0] + hex[1]+hex[1] + hex[2]+hex[2];
-                    if (hex.length === 6) {
-                        return {
-                            r: parseInt(hex.substring(0, 2), 16),
-                            g: parseInt(hex.substring(2, 4), 16),
-                            b: parseInt(hex.substring(4, 6), 16),
-                            a: 1.0
-                        };
-                    }
-                }
-                return null;
-            }
-            function blend(fg, bg) {
-                if (!fg) return bg;
-                if (fg.a >= 0.999) return fg;
-                const bgR = bg ? bg.r : 36;
-                const bgG = bg ? bg.g : 36;
-                const bgB = bg ? bg.b : 37;
-                const a = fg.a;
-                return {
-                    r: Math.round(fg.r * a + bgR * (1 - a)),
-                    g: Math.round(fg.g * a + bgG * (1 - a)),
-                    b: Math.round(fg.b * a + bgB * (1 - a)),
-                    a: 1.0
-                };
-            }
-            let bodyBg = null;
-            if (document.body) {
-                bodyBg = parseCssColor(window.getComputedStyle(document.body).backgroundColor);
-            }
-            const topBar = document.getElementById('top-bar');
-            if (topBar) {
-                const cs = window.getComputedStyle(topBar);
-                const c = parseCssColor(cs.backgroundColor);
-                if (c) {
-                    const res = (c.a >= 0.90) ? c : blend(c, bodyBg);
-                    return res ? (0xFF000000 | (res.r << 16) | (res.g << 8) | res.b) : null;
-                }
-            }
-            try {
-                const rootStyle = window.getComputedStyle(document.documentElement);
-                const tint = rootStyle.getPropertyValue('--SmartThemeBlurTintColor');
-                if (tint) {
-                    const tc = parseCssColor(tint.trim());
-                    if (tc) {
-                        const res = (tc.a >= 0.90) ? tc : blend(tc, bodyBg);
-                        return res ? (0xFF000000 | (res.r << 16) | (res.g << 8) | res.b) : null;
-                    }
-                }
-            } catch (_) {}
-            const meta = document.querySelector('meta[name="theme-color"]');
-            if (meta) {
-                const mc = parseCssColor(meta.getAttribute('content'));
-                if (mc) return (0xFF000000 | (mc.r << 16) | (mc.g << 8) | mc.b);
-            }
-            if (bodyBg) return (0xFF000000 | (bodyBg.r << 16) | (bodyBg.g << 8) | bodyBg.b);
-            return null;
-        })()
-    """.trimIndent()
+    // ============================================
+    // RENDER ENGINE & CHAMELEON DELEGATION
+    // ============================================
 
     /** 触发单次极速取色（进入瞬间或关键节点主动调用） */
     private fun triggerTopColorSample() {
         if (!isWebViewVisible || !::webView.isInitialized) return
-        sampleTopColor { c ->
+        chameleonController.sampleTopColor(webView) { c ->
             if (c != null) applyTopColor(c)
         }
     }
@@ -1492,412 +1442,42 @@ class MainActivity : BridgeActivity() {
             onResult(null)
             return
         }
-        // 引擎 A：DOM 探针优先（0 开销、0 GPU 卡顿，且不受转场过渡 alpha 影响）
-        try {
-            webView.evaluateJavascript(domProbeScript) { res ->
-                val color = res?.trim('"', ' ', '\'')?.toIntOrNull()
-                if (color != null && color != 0) {
-                    onResult(color)
-                } else if (webView.isShown && webView.width > 0) {
-                    // 引擎 B：PixelCopy 兜底
-                    sampleTopColorPixelCopy(onResult)
-                } else {
-                    onResult(null)
-                }
-            }
-        } catch (_: Exception) {
-            onResult(null)
-        }
+        chameleonController.sampleTopColor(webView, onResult)
     }
 
-    private fun sampleTopColorPixelCopy(onResult: (Int?) -> Unit) {
-        if (samplingTopColor) {
-            onResult(null)
-            return
-        }
-        val w = webView.width
-        if (w <= 0 || !webView.isShown) {
-            onResult(null)
-            return
-        }
-        samplingTopColor = true
-        val loc = IntArray(2)
-        webView.getLocationInWindow(loc)
-        val top = loc[1] + 1                       // WebView 顶边下 1px
-        val stripH = 3
-        val srcRect = Rect(loc[0], top, loc[0] + w, top + stripH)
-        val bmp = Bitmap.createBitmap(w, stripH, Bitmap.Config.ARGB_8888)
-        val pixels = IntArray(w * stripH)
-        try {
-            PixelCopy.request(window, srcRect, bmp, { result ->
-                samplingTopColor = false
-                if (result == PixelCopy.SUCCESS) {
-                    var rs = 0; var gs = 0; var bs = 0; var n = 0
-                    bmp.getPixels(pixels, 0, w, 0, 0, w, stripH)
-                    for (p in pixels) {
-                        if (Color.alpha(p) > 200) {
-                            rs += Color.red(p); gs += Color.green(p); bs += Color.blue(p); n++
-                        }
-                    }
-                    bmp.recycle()
-                    if (n > 0) {
-                        val avg = (0xFF shl 24) or ((rs / n and 0xFF) shl 16) or
-                            ((gs / n and 0xFF) shl 8) or (bs / n and 0xFF)
-                        onResult(avg)
-                    } else onResult(null)
-                } else {
-                    bmp.recycle()
-                    onResult(null)
-                }
-            }, handler)
-        } catch (_: Exception) {
-            samplingTopColor = false
-            bmp.recycle()
-            onResult(null)
-        }
-    }
-
-    private fun getSavedTopColor(instanceId: String?): Int? {
-        val id = instanceId?.takeIf { it.isNotBlank() } ?: currentTavernInstanceId ?: "default"
-        val sp = getSharedPreferences("sc_instance_colors", Context.MODE_PRIVATE)
-        val color = sp.getInt("top_color_$id", 0)
-        return if (color != 0) color else null
-    }
-
-    private fun saveTopColor(instanceId: String?, color: Int) {
-        val id = instanceId?.takeIf { it.isNotBlank() } ?: currentTavernInstanceId ?: "default"
-        val sp = getSharedPreferences("sc_instance_colors", Context.MODE_PRIVATE)
-        sp.edit().putInt("top_color_$id", color).apply()
-    }
+    private fun getSavedTopColor(instanceId: String?): Int? =
+        chameleonController.getSavedColor(instanceId)
 
     /** 取色 → 顶框 scrim 条色波 + 光泽呼吸；instant=true 时 0 毫秒瞬时设定，消除进入色差。 */
     private fun applyTopColor(color: Int, instant: Boolean = false) {
-        saveTopColor(currentTavernInstanceId, color)
-        if (lastAppliedTopColor == color) {
-            tavernStatusHint.onColorChanged(color)
-            return
-        }
-        lastAppliedTopColor = color
-        if (instant) {
-            topScrimBar.setColorInstant(color)
-        } else {
-            topScrimBar.setColor(color)
-        }
-        tavernStatusHint.onColorChanged(color)
+        chameleonController.applyColor(color, instant)
     }
 
     /** 探针：页面加载后驱动取色；触控原汁原味响应轻触点击光波与下拉刷新，滑动过程零打扰。 */
     private fun installChameleonProbes() {
         handler.removeCallbacks(topColorPoll)
         handler.postDelayed(topColorPoll, 300)
-        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
-        webView.setOnTouchListener { _, event ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    touchDownX = event.rawX
-                    touchDownY = event.rawY
-                    pullStartY = event.rawY
-                    pullReadyToReload = pullToRefreshEnabled && webView.scrollY == 0
-                    isTouchScrolling = false
-                    // 触控按下时立即停止后台取色轮询，确保滑动期间 0 外部干扰
-                    handler.removeCallbacks(topColorPoll)
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = kotlin.math.abs(event.rawX - touchDownX)
-                    val dy = kotlin.math.abs(event.rawY - touchDownY)
-                    if (dx > touchSlop || dy > touchSlop) {
-                        isTouchScrolling = true
-                        if (dx > dy * 0.8f || event.rawY < pullStartY) {
-                            pullReadyToReload = false
-                        }
-                    }
-                }
-                MotionEvent.ACTION_UP -> {
-                    // 1. 下拉刷新:仅在显式开启且触控起始于顶栏边缘区、下滑距离超过 240px 时触发，严防滑动误触
-                    val isTopEdge = pullStartY <= (statusBarFixedPx + 180)
-                    if (pullReadyToReload && isTopEdge && (event.rawY - pullStartY) > 240) {
-                        webView.reload()
-                        topScrimBar.sweepGloss() // 下拉刷新时触发顶栏光泽扫过
-                        pushLog("↓ 下拉刷新酒馆界面")
-                    } else if (!isTouchScrolling) {
-                        // 2. 原版原汁原味：用户轻触静态点击界面，100% 触发顶部白色光波！
-                        topScrimBar.sweepGloss()
-                        handler.postDelayed({
-                            if (isWebViewVisible && !isTouchScrolling) {
-                                sampleTopColor { c -> if (c != null) applyTopColor(c) }
-                            }
-                        }, 500)
-                    }
-                    pullReadyToReload = false
-                    isTouchScrolling = false
-                }
-                MotionEvent.ACTION_CANCEL -> {
-                    pullReadyToReload = false
-                    isTouchScrolling = false
-                }
-            }
-            false
+        chameleonController.setupTouchListener(webView) {
+            webView.reload()
+            topScrimBar.sweepGloss()
+            pushLog("↓ 下拉刷新酒馆界面")
         }
     }
 
-    /** 宿主增强（方案一：纯净原生底座）：
-     * 1. 彻底拔除一切外部抽屉样式表与 JS 劫持，完全释放被占用的 GPU 显存，恢复酒馆原生纯净开闭；
-     * 2. 仅保留进角色对话防自动弹输入法（用户主动轻触才弹起）；
-     * 3. 仅保留 textarea 原生 field-sizing 自适应支持。
-     */
-    private fun injectDrawerPerformanceOptimizations() {
-        if (!::webView.isInitialized) return
-        val perfScript = """
-            (function() {
-                try {
-                    // 1. 彻底拔除一切外部注入的抽屉样式表，彻底释放 GPU 显存与渲染树负载
-                    const oldStyle = document.getElementById('sc-drawer-perf');
-                    if (oldStyle) {
-                        oldStyle.remove();
-                    }
-
-                    // 2. 清理 jQuery 劫持与定时器，还原酒馆自身原生逻辑
-                    if (window.__scJQueryFxWatcher) {
-                        clearInterval(window.__scJQueryFxWatcher);
-                        window.__scJQueryFxWatcher = null;
-                    }
-                    if (window.jQuery && window.jQuery.fx) {
-                        window.jQuery.fx.off = false;
-                    }
-
-                    // 3. 声明 CSS field-sizing 支持，绕过 textarea 同步重排死循环
-                    if (window.CSS && !CSS.supports('field-sizing', 'content')) {
-                        const originalSupports = CSS.supports.bind(CSS);
-                        CSS.supports = function(property, value) {
-                            if (property === 'field-sizing') return true;
-                            return originalSupports(property, value);
-                        };
-                    }
-
-                    // 4. 彻底取消一进角色对话页面就自动展开输入法的设计（用户刚需，坚决保留）
-                    if (!window.__scAutoFocusBlockerInstalled) {
-                        window.__scAutoFocusBlockerInstalled = true;
-                        let userTappedTextarea = false;
-
-                        // 仅当用户手指真实点在输入框上时才允许聚焦弹键盘
-                        document.addEventListener('touchstart', (e) => {
-                            if (e.target && (e.target.id === 'send_textarea' || (e.target.closest && e.target.closest('#send_textarea')))) {
-                                userTappedTextarea = true;
-                            } else {
-                                userTappedTextarea = false;
-                            }
-                        }, { capture: true, passive: true });
-
-                        document.addEventListener('mousedown', (e) => {
-                            if (e.target && (e.target.id === 'send_textarea' || (e.target.closest && e.target.closest('#send_textarea')))) {
-                                userTappedTextarea = true;
-                            } else {
-                                userTappedTextarea = false;
-                            }
-                        }, { capture: true, passive: true });
-
-                        const origTextareaFocus = HTMLTextAreaElement.prototype.focus;
-                        HTMLTextAreaElement.prototype.focus = function(options) {
-                            if (this.id === 'send_textarea' && !userTappedTextarea) {
-                                // 进页面时的自动 focus，静默跳过，绝不弹出软键盘
-                                return;
-                            }
-                            return origTextareaFocus.call(this, options);
-                        };
-
-                        if (window.jQuery) {
-                            const origTrigger = window.jQuery.fn.trigger;
-                            window.jQuery.fn.trigger = function(type, data) {
-                                if (this.is('#send_textarea') && !userTappedTextarea && (type === 'focus' || type === 'click' || type === 'focusin')) {
-                                    return this;
-                                }
-                                return origTrigger.apply(this, arguments);
-                            };
-                        }
-                    }
-                    // 5. 彻底拔除破坏性 DOM 劫持，恢复 form_sheld 纯净结构（彻底消除输入法弹出的跳动与二次位移）
-                    const formSheld = document.getElementById('form_sheld');
-                    if (formSheld) {
-                        const lift = formSheld.querySelector('[data-sc-ime-lift]');
-                        const spacer = formSheld.querySelector('[data-sc-ime-spacer]');
-                        if (lift) {
-                            while (lift.firstChild) {
-                                formSheld.insertBefore(lift.firstChild, lift);
-                            }
-                            lift.remove();
-                        }
-                        if (spacer) {
-                            spacer.remove();
-                        }
-                    }
-
-                    // 6. 接管二级抽屉（.inline-drawer-content）的展开收回
-                    // 根因：jQuery slideToggle 默认 400ms，每 13ms 用 JS 改写 style.height
-                    //   引发父级一级抽屉（带 blur）每秒 60 次全量重排与高斯模糊着色器重算。
-                    // 解法：瞬时排版到位（1 次微弱 layout）+ 90ms 原生合成器纯透明度微显影（0 JS 开销），
-                    //   彻底消灭文字形变与高度抖动，实现 Telegram 级触控丝滑反馈！
-                    if (window.jQuery && !window.__scSlideTogglePatched) {
-                        window.__scSlideTogglePatched = true;
-                        const jq = window.jQuery;
-                        const SELECTOR = '.inline-drawer-content';
-
-                        const origToggle = jq.fn.slideToggle;
-                        const origDown   = jq.fn.slideDown;
-                        const origUp     = jq.fn.slideUp;
-
-                        const isHidden = (el) =>
-                            el.style.display === 'none' ||
-                            window.getComputedStyle(el).display === 'none';
-
-                        const fastAnimate = (el, toOpen, cb) => {
-                            if (toOpen) {
-                                el.style.display = 'block';
-                                try {
-                                    if (el.animate) {
-                                        el.animate([
-                                            { opacity: 0.15, transform: 'translateY(-4px)' },
-                                            { opacity: 1, transform: 'translateY(0)' }
-                                        ], {
-                                            duration: 90,
-                                            easing: 'cubic-bezier(0.12, 0.98, 0.24, 1)',
-                                            fill: 'forwards'
-                                        });
-                                    }
-                                } catch(_) {}
-                                if (typeof cb === 'function') cb.call(el);
-                            } else {
-                                try {
-                                    if (el.animate) {
-                                        const anim = el.animate([
-                                            { opacity: 1, transform: 'translateY(0)' },
-                                            { opacity: 0, transform: 'translateY(-3px)' }
-                                        ], {
-                                            duration: 70,
-                                            easing: 'cubic-bezier(0.4, 0, 1, 1)',
-                                            fill: 'forwards'
-                                        });
-                                        anim.onfinish = () => {
-                                            el.style.display = 'none';
-                                            if (typeof cb === 'function') cb.call(el);
-                                        };
-                                    } else {
-                                        el.style.display = 'none';
-                                        if (typeof cb === 'function') cb.call(el);
-                                    }
-                                } catch(_) {
-                                    el.style.display = 'none';
-                                    if (typeof cb === 'function') cb.call(el);
-                                }
-                            }
-                        };
-
-                        jq.fn.slideToggle = function(duration, easing, complete) {
-                            const cb = typeof easing === 'function' ? easing : complete;
-                            const inline = this.filter(SELECTOR);
-                            const rest   = this.not(SELECTOR);
-                            inline.each(function() {
-                                fastAnimate(this, isHidden(this), cb);
-                            });
-                            if (rest.length) origToggle.apply(rest, arguments);
-                            return this;
-                        };
-
-                        jq.fn.slideDown = function(duration, easing, complete) {
-                            const cb = typeof easing === 'function' ? easing : complete;
-                            const inline = this.filter(SELECTOR);
-                            const rest   = this.not(SELECTOR);
-                            inline.each(function() {
-                                fastAnimate(this, true, cb);
-                            });
-                            if (rest.length) origDown.apply(rest, arguments);
-                            return this;
-                        };
-
-                        jq.fn.slideUp = function(duration, easing, complete) {
-                            const cb = typeof easing === 'function' ? easing : complete;
-                            const inline = this.filter(SELECTOR);
-                            const rest   = this.not(SELECTOR);
-                            inline.each(function() {
-                                fastAnimate(this, false, cb);
-                            });
-                            if (rest.length) origUp.apply(rest, arguments);
-                            return this;
-                        };
-                    }
-                } catch (_) {}
-            })();
-        """.trimIndent()
-        webView.evaluateJavascript(perfScript, null)
-        injectRenderEngine()
-    }
-
+    /** 注入 SC 渲染调度引擎（含运行时底座补丁、变色龙感知、锁步合批与图层爆炸治理） */
     private fun injectRenderEngine() {
         if (!::webView.isInitialized) return
-        try {
-            val js = assets.open("scripts/sc-render-engine.js").bufferedReader().use { it.readText() }
-            webView.evaluateJavascript(js, null)
-        } catch (e: Exception) {
-            android.util.Log.w(TAG, "Failed to inject sc-render-engine.js", e)
-        }
+        renderEngineManager.injectEngine(webView)
     }
 
     private fun togglePerformanceMonitor() {
         if (!::webView.isInitialized) return
-        injectRenderEngine()
-        webView.evaluateJavascript("window.__scTogglePerfHud ? window.__scTogglePerfHud() : false;") { res ->
-            val active = res == "true"
-            val msg = if (active) "⚡ SC Performance Engine 监控已开启" else "性能监控已关闭"
-            android.widget.Toast.makeText(this@MainActivity, msg, android.widget.Toast.LENGTH_SHORT).show()
-        }
+        renderEngineManager.togglePerformanceMonitor(webView)
     }
 
     /** 触感引擎：驱动设备线性马达输出微米级触觉反馈 (Tick / Click / Heavy) */
     fun triggerHaptic(type: String = "tick") {
-        try {
-            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
-                vm?.defaultVibrator ?: getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
-            } else {
-                @Suppress("DEPRECATION")
-                getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
-            }
-            if (vibrator == null || !vibrator.hasVibrator()) return
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val effect = when (type.lowercase()) {
-                    "tick" -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK)
-                    "click" -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK)
-                    "heavy" -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_HEAVY_CLICK)
-                    else -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK)
-                }
-                vibrator.vibrate(effect)
-            } else {
-                @Suppress("DEPRECATION")
-                vibrator.vibrate(15L)
-            }
-        } catch (_: Exception) {}
-    }
-
-    /** 暴露给前端 JS 的原生触感 Bridge */
-    inner class ScNativeHapticBridge {
-        @android.webkit.JavascriptInterface
-        fun trigger(type: String?) {
-            runOnUiThread {
-                triggerHaptic(type ?: "tick")
-            }
-        }
-    }
-
-    /** 暴露给前端 JS 的原生渲染调度与变色龙事件感知 Bridge */
-    inner class ScNativeRenderBridge {
-        @android.webkit.JavascriptInterface
-        fun onColorChanged(color: Int) {
-            runOnUiThread {
-                if (isWebViewVisible) {
-                    applyTopColor(color)
-                }
-            }
-        }
+        hapticController.trigger(type)
     }
 
     /** 系统前台切回心跳自愈探针：防系统省电杀死 socket 导致白屏断连 */
@@ -2653,8 +2233,9 @@ class MainActivity : BridgeActivity() {
         serverProcess = null
         if (::webView.isInitialized) {
             webView.removeJavascriptInterface("SillyClientAndroidDownloads")
-            webView.removeJavascriptInterface("SillyClientHaptic")
-            webView.removeJavascriptInterface("SillyClientRenderBridge")
+            if (::renderEngineManager.isInitialized) {
+                renderEngineManager.detachBridges(webView)
+            }
         }
         webView.destroy()
         super.onDestroy()
