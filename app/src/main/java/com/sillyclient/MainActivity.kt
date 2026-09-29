@@ -1749,45 +1749,78 @@ class MainActivity : BridgeActivity() {
                             el.style.display === 'none' ||
                             window.getComputedStyle(el).display === 'none';
 
-                        const fastAnimate = (el, toOpen, cb) => {
+                        const fluidAnimate = (el, toOpen, cb) => {
+                            if (!el || !(el instanceof HTMLElement)) {
+                                if (typeof cb === 'function') cb.call(el);
+                                return;
+                            }
+                            if (el.__scAnim) {
+                                try { el.__scAnim.cancel(); } catch(_) {}
+                                el.__scAnim = null;
+                            }
+
                             if (toOpen) {
                                 el.style.display = 'block';
+                                el.style.height = '';
+                                el.style.overflow = 'hidden';
+                                const targetHeight = el.getBoundingClientRect().height || el.offsetHeight || el.scrollHeight || 0;
                                 try {
-                                    if (el.animate) {
-                                        el.animate([
-                                            { opacity: 0.15, transform: 'translateY(-4px)' },
-                                            { opacity: 1, transform: 'translateY(0)' }
-                                        ], {
-                                            duration: 90,
-                                            easing: 'cubic-bezier(0.12, 0.98, 0.24, 1)',
-                                            fill: 'forwards'
-                                        });
-                                    }
-                                } catch(_) {}
-                                if (typeof cb === 'function') cb.call(el);
-                            } else {
-                                try {
-                                    if (el.animate) {
+                                    if (el.animate && targetHeight > 0) {
+                                        el.style.transformOrigin = 'top center';
                                         const anim = el.animate([
-                                            { opacity: 1, transform: 'translateY(0)' },
-                                            { opacity: 0, transform: 'translateY(-3px)' }
+                                            { height: '0px', opacity: 0, transform: 'translateY(-10px)' },
+                                            { height: targetHeight + 'px', opacity: 1, transform: 'translateY(0)' }
                                         ], {
-                                            duration: 70,
-                                            easing: 'cubic-bezier(0.4, 0, 1, 1)',
+                                            duration: 260,
+                                            easing: 'cubic-bezier(0.16, 1, 0.3, 1)',
                                             fill: 'forwards'
                                         });
+                                        el.__scAnim = anim;
                                         anim.onfinish = () => {
-                                            el.style.display = 'none';
+                                            el.__scAnim = null;
+                                            try { anim.cancel(); } catch(_) {}
+                                            el.style.height = '';
+                                            el.style.overflow = '';
+                                            el.style.transformOrigin = '';
                                             if (typeof cb === 'function') cb.call(el);
                                         };
-                                    } else {
-                                        el.style.display = 'none';
-                                        if (typeof cb === 'function') cb.call(el);
+                                        return;
                                     }
-                                } catch(_) {
-                                    el.style.display = 'none';
-                                    if (typeof cb === 'function') cb.call(el);
-                                }
+                                } catch(_) {}
+                                el.style.height = '';
+                                el.style.overflow = '';
+                                if (typeof cb === 'function') cb.call(el);
+                            } else {
+                                const currentHeight = el.getBoundingClientRect().height || el.offsetHeight || el.scrollHeight || 0;
+                                el.style.overflow = 'hidden';
+                                try {
+                                    if (el.animate && currentHeight > 0) {
+                                        el.style.transformOrigin = 'top center';
+                                        const anim = el.animate([
+                                            { height: currentHeight + 'px', opacity: 1, transform: 'translateY(0)' },
+                                            { height: '0px', opacity: 0, transform: 'translateY(-8px)' }
+                                        ], {
+                                            duration: 210,
+                                            easing: 'cubic-bezier(0.32, 0, 0.2, 1)',
+                                            fill: 'forwards'
+                                        });
+                                        el.__scAnim = anim;
+                                        anim.onfinish = () => {
+                                            el.__scAnim = null;
+                                            try { anim.cancel(); } catch(_) {}
+                                            el.style.display = 'none';
+                                            el.style.height = '';
+                                            el.style.overflow = '';
+                                            el.style.transformOrigin = '';
+                                            if (typeof cb === 'function') cb.call(el);
+                                        };
+                                        return;
+                                    }
+                                } catch(_) {}
+                                el.style.display = 'none';
+                                el.style.height = '';
+                                el.style.overflow = '';
+                                if (typeof cb === 'function') cb.call(el);
                             }
                         };
 
@@ -1796,7 +1829,7 @@ class MainActivity : BridgeActivity() {
                             const inline = this.filter(SELECTOR);
                             const rest   = this.not(SELECTOR);
                             inline.each(function() {
-                                fastAnimate(this, isHidden(this), cb);
+                                fluidAnimate(this, isHidden(this), cb);
                             });
                             if (rest.length) origToggle.apply(rest, arguments);
                             return this;
@@ -1807,7 +1840,7 @@ class MainActivity : BridgeActivity() {
                             const inline = this.filter(SELECTOR);
                             const rest   = this.not(SELECTOR);
                             inline.each(function() {
-                                fastAnimate(this, true, cb);
+                                fluidAnimate(this, true, cb);
                             });
                             if (rest.length) origDown.apply(rest, arguments);
                             return this;
@@ -1818,7 +1851,7 @@ class MainActivity : BridgeActivity() {
                             const inline = this.filter(SELECTOR);
                             const rest   = this.not(SELECTOR);
                             inline.each(function() {
-                                fastAnimate(this, false, cb);
+                                fluidAnimate(this, false, cb);
                             });
                             if (rest.length) origUp.apply(rest, arguments);
                             return this;
