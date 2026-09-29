@@ -155,6 +155,9 @@ class MainActivity : BridgeActivity() {
     private var touchDownY = 0f
     private var touchDownTime = 0L
     private var isTouchScrolling = false
+    /** 开发者彩蛋：右上角连续点击 7 次切换 SC Performance HUD */
+    private var perfEasterEggCount = 0
+    private var lastPerfTapTime = 0L
 
     private var fullscreenView: View? = null
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
@@ -305,6 +308,36 @@ class MainActivity : BridgeActivity() {
                 topScrimBar.sweepGloss()
                 if (isWebViewVisible) {
                     sampleTopColor { c -> if (c != null) applyTopColor(c) }
+                }
+
+                // 开发者模式彩蛋：右上角变色龙区域连续点击 7 次切换 SC Performance HUD
+                val screenWidth = resources.displayMetrics.widthPixels
+                if (e.x > screenWidth * 0.60f) {
+                    val now = android.os.SystemClock.uptimeMillis()
+                    if (now - lastPerfTapTime > 1800) {
+                        perfEasterEggCount = 0
+                    }
+                    lastPerfTapTime = now
+                    perfEasterEggCount++
+                    if (perfEasterEggCount in 4..6) {
+                        val remaining = 7 - perfEasterEggCount
+                        android.widget.Toast.makeText(
+                            this@MainActivity,
+                            "再点击 ${remaining} 次开启性能监控",
+                            android.widget.Toast.LENGTH_SHORT
+                        ).show()
+                    } else if (perfEasterEggCount >= 7) {
+                        perfEasterEggCount = 0
+                        if (isWebViewVisible) {
+                            togglePerformanceMonitor()
+                        } else {
+                            android.widget.Toast.makeText(
+                                this@MainActivity,
+                                "⚡ 性能监控引擎已激活，进入酒馆时将自动常驻",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
                 }
                 return true
             }
@@ -1747,6 +1780,27 @@ class MainActivity : BridgeActivity() {
             })();
         """.trimIndent()
         webView.evaluateJavascript(perfScript, null)
+        injectRenderEngine()
+    }
+
+    private fun injectRenderEngine() {
+        if (!::webView.isInitialized) return
+        try {
+            val js = assets.open("scripts/sc-render-engine.js").bufferedReader().use { it.readText() }
+            webView.evaluateJavascript(js, null)
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "Failed to inject sc-render-engine.js", e)
+        }
+    }
+
+    private fun togglePerformanceMonitor() {
+        if (!::webView.isInitialized) return
+        injectRenderEngine()
+        webView.evaluateJavascript("window.__scTogglePerfHud ? window.__scTogglePerfHud() : false;") { res ->
+            val active = res == "true"
+            val msg = if (active) "⚡ SC Performance Engine 监控已开启" else "性能监控已关闭"
+            android.widget.Toast.makeText(this@MainActivity, msg, android.widget.Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun dispatchImeOffset(imeHeightPx: Int, navHeightPx: Int) {
