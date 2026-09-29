@@ -1,16 +1,15 @@
 /**
- * SillyClient Performance Engine (P0 + P1 深度性能架构 + 全站微震 + 极简回底)
+ * SillyClient Performance Engine (P0 + P1 深度性能架构 + 全站微震)
  *
  * 核心功能:
  * 1. Performance Monitor HUD (美化符合 SC 整体前端规范，支持双击/7连击收起，内置触感开关)
  * 2. 全站交互线性马达微震 (发送、抽屉、Swipe、角色卡、按钮全覆盖，支持开关记忆)
- * 3. 极简半透明向下符号回底按钮 (脱离底部 >160px 平滑显隐，多容器自适应吸附回底)
- * 4. Frame Scheduler (统一合并调度器，Read/Write 严格分离)
- * 5. Streaming Batcher (30FPS 流式推流缓冲池)
- * 6. Native DOM Virtualization & Layout Containment (视口外原生虚拟化，代码块/KaTeX横向沙箱)
- * 7. Invisible Animation Freeze (视口外动画/GIF 自动挂起冻结)
- * 8. Interaction Priority Governor (滑动/手势期间帧预算全量倾斜)
- * 9. Image & Avatar Memory Guard (历史大图与头像 lazy/async 内存熔断保护)
+ * 3. Frame Scheduler (统一合并调度器，Read/Write 严格分离)
+ * 4. Streaming Batcher (30FPS 流式推流缓冲池)
+ * 5. Native DOM Virtualization & Layout Containment (视口外原生虚拟化，代码块/KaTeX横向沙箱)
+ * 6. Invisible Animation Freeze (视口外动画/GIF 自动挂起冻结)
+ * 7. Interaction Priority Governor (滑动/手势期间帧预算全量倾斜)
+ * 8. Image & Avatar Memory Guard (历史大图与头像 lazy/async 内存熔断保护)
  */
 (function() {
     if (window.__scRenderEngineInstalled) return;
@@ -310,117 +309,12 @@
     window.addEventListener('touchmove', notifyInteraction, { passive: true });
     window.addEventListener('scroll', notifyInteraction, { passive: true, capture: true });
 
-    // ========================================================
-    // 8. 极简半透明向下符号回底按钮 (Minimalist Scroll-to-Bottom Button)
-    // ========================================================
-    let scrollDownBtn = null;
-
-    function getScrollContainerInfo() {
-        const candidates = [
-            document.getElementById('chat'),
-            document.querySelector('#chat'),
-            document.documentElement,
-            document.body,
-            document.getElementById('sheld')
-        ].filter(Boolean);
-
-        let maxDist = 0;
-        let activeScroller = null;
-
-        for (let i = 0; i < candidates.length; i++) {
-            const el = candidates[i];
-            const scrollH = el.scrollHeight;
-            const clientH = el.clientHeight;
-            if (scrollH > clientH + 10) {
-                const dist = scrollH - el.scrollTop - clientH;
-                if (dist > maxDist) {
-                    maxDist = dist;
-                    activeScroller = el;
-                }
-            }
-        }
-        return { dist: maxDist, scroller: activeScroller };
-    }
-
-    function createScrollDownButton() {
-        if (scrollDownBtn || !document.body) return;
-        scrollDownBtn = document.createElement('div');
-        scrollDownBtn.id = 'sc-scroll-down-btn';
-        scrollDownBtn.setAttribute('title', '回到底部');
-        scrollDownBtn.style.cssText = `
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            position: fixed;
-            bottom: calc(var(--sc-nav-bottom, 16px) + 72px);
-            right: 18px;
-            width: 38px;
-            height: 38px;
-            border-radius: 50%;
-            background: rgba(18, 20, 26, 0.72);
-            backdrop-filter: blur(16px) saturate(1.3);
-            -webkit-backdrop-filter: blur(16px) saturate(1.3);
-            border: 1px solid rgba(255, 255, 255, 0.14);
-            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.42), 0 0 0 1px rgba(255, 255, 255, 0.05);
-            color: rgba(255, 255, 255, 0.88);
-            cursor: pointer;
-            opacity: 0;
-            transform: scale(0.85) translateY(6px);
-            pointer-events: none;
-            z-index: 999999;
-            transition: opacity 180ms cubic-bezier(0.12, 0.98, 0.24, 1), transform 180ms cubic-bezier(0.12, 0.98, 0.24, 1), background 140ms ease;
-            user-select: none;
-            -webkit-tap-highlight-color: transparent;
-        `;
-        scrollDownBtn.innerHTML = `
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-                <polyline points="6 9 12 15 18 9"></polyline>
-            </svg>
-        `;
-
-        scrollDownBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            window.__scHaptic('tick');
-            const { scroller } = getScrollContainerInfo();
-            if (scroller) {
-                scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' });
-            }
-            window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-            document.documentElement.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'smooth' });
-        });
-
-        document.body.appendChild(scrollDownBtn);
-    }
-
-    function checkScrollDownState() {
-        if (!scrollDownBtn) createScrollDownButton();
-        if (!scrollDownBtn) return;
-        const { dist } = getScrollContainerInfo();
-        // 只要离开底部超过 160px，平滑浮现小钮
-        if (dist > 160) {
-            scrollDownBtn.style.opacity = '1';
-            scrollDownBtn.style.transform = 'scale(1) translateY(0)';
-            scrollDownBtn.style.pointerEvents = 'auto';
-        } else {
-            scrollDownBtn.style.opacity = '0';
-            scrollDownBtn.style.transform = 'scale(0.85) translateY(6px)';
-            scrollDownBtn.style.pointerEvents = 'none';
-        }
-    }
-
-    window.addEventListener('scroll', checkScrollDownState, { passive: true, capture: true });
-    document.addEventListener('scroll', checkScrollDownState, { passive: true, capture: true });
-    document.addEventListener('touchmove', checkScrollDownState, { passive: true, capture: true });
-    setInterval(checkScrollDownState, 400);
-
-    if (document.body) {
-        createScrollDownButton();
-    } else {
-        document.addEventListener('DOMContentLoaded', createScrollDownButton);
-    }
+    // 清理可能遗留的旧回底按钮残留
+    const staleScrollBtn = document.getElementById('sc-scroll-down-btn');
+    if (staleScrollBtn) staleScrollBtn.remove();
 
     // ========================================================
-    // 9. PERFORMANCE MONITOR & HUD (美化对齐 SC 整体前端规范)
+    // 8. PERFORMANCE MONITOR & HUD (美化对齐 SC 整体前端规范)
     // ========================================================
     if (window.PerformanceObserver) {
         try {
