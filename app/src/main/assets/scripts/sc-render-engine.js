@@ -241,6 +241,7 @@
                 overflow: hidden !important;
                 height: 100% !important;
                 overscroll-behavior: none !important;
+                text-rendering: optimizeSpeed !important; /* 文字排版提速：跳过昂贵的字偶间距计算 */
             }
             #chat {
                 overscroll-behavior-y: contain !important;
@@ -248,6 +249,7 @@
                 transform: translateZ(0); /* 提升为主合成层，隔离顶栏重绘 */
                 touch-action: pan-y pinch-zoom; /* 纵向滑动直通合成器，绕过主线程 JS 计算 */
                 scroll-behavior: auto !important; /* 禁用软滚动引起的物理衰减撕裂 */
+                text-rendering: optimizeSpeed !important;
             }
             /* 2. 现代输入框原生尺寸通道：消除 JS 频繁读取 scrollHeight 造成的强制回流 */
             #send_textarea {
@@ -264,6 +266,19 @@
             .mes_avatar {
                 contain: paint layout !important;
                 transform: translateZ(0);
+                user-select: none !important;
+                -webkit-user-select: none !important;
+            }
+            /* 4. 图片 GPU 显存自动释放通道：离屏自动释放解码纹理，视口自动后台异步光栅化 */
+            #chat img {
+                content-visibility: auto;
+                contain-intrinsic-size: auto 120px;
+                decoding: async !important;
+            }
+            /* 5. 打字光标与旋转动效独立硬件层隔离：闪烁时绝对不重绘消息文字 */
+            .typing_indicator, .cursor, .typing, .spinner, .rotating {
+                will-change: opacity, transform !important;
+                transform: translateZ(0) !important;
             }
             /* 代码块、复杂表格与公式横向滚动沙箱：防止撑破气泡与垂直滑动偏航 */
             #chat .mes_text pre,
@@ -321,23 +336,29 @@
         } catch(e) {}
     }
 
-    function protectImagesMemory() {
-        const imgs = document.querySelectorAll('#chat img, .mes_avatar');
-        for (let i = 0; i < imgs.length; i++) {
-            const img = imgs[i];
-            if (!img.getAttribute('loading')) {
-                img.setAttribute('loading', 'lazy');
-            }
-            if (!img.getAttribute('decoding')) {
-                img.setAttribute('decoding', 'async');
+    // 原生原型级底层接管：所有图片创建即走后台异步解码与懒加载，杜绝主线程解码阻塞
+    try {
+        if ('HTMLImageElement' in window) {
+            const proto = HTMLImageElement.prototype;
+            const originalSrcDesc = Object.getOwnPropertyDescriptor(proto, 'src');
+            if (originalSrcDesc && originalSrcDesc.set) {
+                Object.defineProperty(proto, 'src', {
+                    set: function(val) {
+                        this.decoding = 'async';
+                        this.loading = 'lazy';
+                        return originalSrcDesc.set.call(this, val);
+                    },
+                    get: originalSrcDesc.get,
+                    configurable: true,
+                    enumerable: true
+                });
             }
         }
-    }
+    } catch(_) {}
 
     function scanAndObserveAnimations() {
-        protectImagesMemory();
         if (!animObserver) return;
-        const candidates = document.querySelectorAll('.mes_avatar, .mes_text img, .spinner, .rotating, .typing_indicator');
+        const candidates = document.querySelectorAll('.spinner, .rotating, .typing_indicator');
         for (let i = 0; i < candidates.length; i++) {
             animObserver.observe(candidates[i]);
         }
@@ -346,7 +367,7 @@
     // 利用 requestIdleCallback 在浏览器主线程空闲阶段（>3ms）执行后台扫描，杜绝关键帧竞争
     function scheduleIdleScan() {
         const run = (deadline) => {
-            if (!engineState.isInteracting && (!deadline || deadline.timeRemaining() > 3)) {
+            if (!isCurrentlyInteracting() && (!deadline || deadline.timeRemaining() > 3)) {
                 scanAndObserveAnimations();
             }
             setTimeout(scheduleIdleScan, 4000);
@@ -360,15 +381,20 @@
     setTimeout(scheduleIdleScan, 2000);
 
     // ========================================================
-    // 7. P1: 交互优先调频器 (Interaction Priority Governor)
+    // 7. P1: 交互优先调频器 (Zero-Timer Interaction Governor)
     // ========================================================
-    let interactionResetTimer = null;
+    let lastInteractionTimestamp = 0;
     function notifyInteraction() {
+        lastInteractionTimestamp = performance.now();
         engineState.isInteracting = true;
-        if (interactionResetTimer) clearTimeout(interactionResetTimer);
-        interactionResetTimer = setTimeout(() => {
+    }
+    function isCurrentlyInteracting() {
+        if (!engineState.isInteracting) return false;
+        if (performance.now() - lastInteractionTimestamp > 180) {
             engineState.isInteracting = false;
-        }, 180);
+            return false;
+        }
+        return true;
     }
     window.addEventListener('touchstart', notifyInteraction, { passive: true, capture: true });
     window.addEventListener('touchmove', notifyInteraction, { passive: true });
@@ -443,7 +469,7 @@
 
     // DOM 数量仅在 HUD 可见时，或低频空闲采样，日常运行零开销
     setInterval(() => {
-        if (!engineState.isInteracting && engineState.hudVisible) {
+        if (!isCurrentlyInteracting() && engineState.hudVisible) {
             engineState.domCount = document.getElementsByTagName('*').length;
         }
     }, 2000);
@@ -607,8 +633,9 @@
             if (elVirt) elVirt.textContent = engineState.virtualizationActive ? 'Active' : 'Bypassed';
             if (elFrozen) elFrozen.textContent = engineState.frozenAnimCount;
             if (elGov) {
-                elGov.textContent = engineState.isInteracting ? 'Touch Priority' : 'Smooth';
-                elGov.style.color = engineState.isInteracting ? '#F59E0B' : '#38BDF8';
+                const interacting = isCurrentlyInteracting();
+                elGov.textContent = interacting ? 'Touch Priority' : 'Smooth';
+                elGov.style.color = interacting ? '#F59E0B' : '#38BDF8';
             }
 
             if (elHealth) {

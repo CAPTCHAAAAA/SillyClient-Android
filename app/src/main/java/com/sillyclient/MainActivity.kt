@@ -245,6 +245,16 @@ class MainActivity : BridgeActivity() {
                     val lp = window.attributes
                     lp.preferredDisplayModeId = maxRefreshMode.modeId
                     window.attributes = lp
+                    if (Build.VERSION.SDK_INT >= 31) {
+                        try {
+                            val method = View::class.java.getMethod(
+                                "setFrameRate",
+                                Float::class.javaPrimitiveType,
+                                Int::class.javaPrimitiveType
+                            )
+                            method.invoke(window.decorView, maxRefreshMode.refreshRate, 0)
+                        } catch (_: Throwable) {}
+                    }
                     android.util.Log.i(TAG, "Configured high refresh rate mode: ${maxRefreshMode.refreshRate}Hz")
                 }
             } catch (e: Exception) {
@@ -427,6 +437,7 @@ class MainActivity : BridgeActivity() {
             settings.mediaPlaybackRequiresUserGesture = false
             settings.setNeedInitialFocus(false)
             settings.layoutAlgorithm = android.webkit.WebSettings.LayoutAlgorithm.NORMAL
+            settings.textZoom = 100
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 settings.offscreenPreRaster = false
             }
