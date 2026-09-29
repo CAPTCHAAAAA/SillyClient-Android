@@ -448,6 +448,7 @@ class MainActivity : BridgeActivity() {
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
             addJavascriptInterface(tavernDownloadBridge, "SillyClientAndroidDownloads")
             addJavascriptInterface(ScNativeHapticBridge(), "SillyClientHaptic")
+            addJavascriptInterface(ScNativeRenderBridge(), "SillyClientRenderBridge")
             setDownloadListener { url, _, contentDisposition, mimeType, contentLength ->
                 requestTavernUrlDownload(url, contentDisposition, mimeType, contentLength)
             }
@@ -1162,13 +1163,12 @@ class MainActivity : BridgeActivity() {
         switchToWebView(true)
         // 版本更新后同一实例也会重新提示，是否展示由原生版本标记决定。
         if (!instanceId.isNullOrBlank()) tavernStatusHint.show(instanceId)
-        // 顶条带自动取色由 installChameleonProbes 驱动（控制台转向 Capacitor 接入）
+        // 顶条带自动取色：进入首帧先触发一次极速取色，随后由前端事件驱动感知
         lastAppliedTopColor = null
         handler.removeCallbacks(topColorPoll)
-        handler.post(topColorPoll)
-        handler.postDelayed(topColorPoll, 150)
-        handler.postDelayed(topColorPoll, 400)
-        handler.postDelayed(topColorPoll, 800)
+        triggerTopColorSample()
+        handler.postDelayed({ triggerTopColorSample() }, 150)
+        handler.postDelayed({ triggerTopColorSample() }, 400)
         injectDrawerPerformanceOptimizations()
         return true
     }
@@ -1209,10 +1209,9 @@ class MainActivity : BridgeActivity() {
         currentTavernInstanceId?.let { tavernStatusHint.show(it) }
         lastAppliedTopColor = null
         handler.removeCallbacks(topColorPoll)
-        handler.post(topColorPoll)
-        handler.postDelayed(topColorPoll, 150)
-        handler.postDelayed(topColorPoll, 400)
-        handler.postDelayed(topColorPoll, 800)
+        triggerTopColorSample()
+        handler.postDelayed({ triggerTopColorSample() }, 150)
+        handler.postDelayed({ triggerTopColorSample() }, 400)
         injectDrawerPerformanceOptimizations()
     }
 
@@ -1466,6 +1465,14 @@ class MainActivity : BridgeActivity() {
             return null;
         })()
     """.trimIndent()
+
+    /** 触发单次极速取色（进入瞬间或关键节点主动调用） */
+    private fun triggerTopColorSample() {
+        if (!isWebViewVisible || !::webView.isInitialized) return
+        sampleTopColor { c ->
+            if (c != null) applyTopColor(c)
+        }
+    }
 
     private fun sampleTopColor(onResult: (Int?) -> Unit) {
         if (!isWebViewVisible || !::webView.isInitialized) {
@@ -1846,6 +1853,18 @@ class MainActivity : BridgeActivity() {
         fun trigger(type: String?) {
             runOnUiThread {
                 triggerHaptic(type ?: "tick")
+            }
+        }
+    }
+
+    /** 暴露给前端 JS 的原生渲染调度与变色龙事件感知 Bridge */
+    inner class ScNativeRenderBridge {
+        @android.webkit.JavascriptInterface
+        fun onColorChanged(color: Int) {
+            runOnUiThread {
+                if (isWebViewVisible) {
+                    applyTopColor(color)
+                }
             }
         }
     }
@@ -2601,7 +2620,11 @@ class MainActivity : BridgeActivity() {
         incompleteExport?.tempFile?.let(::cleanupExportTempFile)
         serverProcess?.destroy()
         serverProcess = null
-        if (::webView.isInitialized) webView.removeJavascriptInterface("SillyClientAndroidDownloads")
+        if (::webView.isInitialized) {
+            webView.removeJavascriptInterface("SillyClientAndroidDownloads")
+            webView.removeJavascriptInterface("SillyClientHaptic")
+            webView.removeJavascriptInterface("SillyClientRenderBridge")
+        }
         webView.destroy()
         super.onDestroy()
     }
