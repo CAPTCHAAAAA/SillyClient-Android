@@ -512,10 +512,11 @@ class MainActivity : BridgeActivity() {
                     bounds: WindowInsetsAnimationCompat.BoundsCompat
                 ): WindowInsetsAnimationCompat.BoundsCompat {
                     if ((animation.typeMask and WindowInsetsCompat.Type.ime()) != 0) {
+                        val rootInsets = ViewCompat.getRootWindowInsets(webViewScreen)
+                        val navHeight = rootInsets?.getInsets(WindowInsetsCompat.Type.navigationBars())?.bottom ?: 0
                         val targetHeight = bounds.upperBound.bottom
-                        val imeVisible = ViewCompat.getRootWindowInsets(webViewScreen)
-                            ?.isVisible(WindowInsetsCompat.Type.ime()) ?: (targetHeight > 0)
-                        dispatchImeOffset(if (imeVisible) targetHeight else 0)
+                        val imeVisible = rootInsets?.isVisible(WindowInsetsCompat.Type.ime()) ?: (targetHeight > 0)
+                        dispatchImeOffset(if (imeVisible) targetHeight else 0, navHeight)
                     }
                     return super.onStart(animation, bounds)
                 }
@@ -525,27 +526,30 @@ class MainActivity : BridgeActivity() {
                     runningAnimations: MutableList<WindowInsetsAnimationCompat>
                 ): WindowInsetsCompat {
                     val imeType = WindowInsetsCompat.Type.ime()
+                    val navHeight = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
                     val imeHeight = insets.getInsets(imeType).bottom
                     val isImeVisible = insets.isVisible(imeType)
-                    dispatchImeOffset(if (isImeVisible) imeHeight else 0)
+                    dispatchImeOffset(if (isImeVisible) imeHeight else 0, navHeight)
                     return insets
                 }
 
                 override fun onEnd(animation: WindowInsetsAnimationCompat) {
                     if ((animation.typeMask and WindowInsetsCompat.Type.ime()) != 0) {
                         val rootInsets = ViewCompat.getRootWindowInsets(webViewScreen)
+                        val navHeight = rootInsets?.getInsets(WindowInsetsCompat.Type.navigationBars())?.bottom ?: 0
                         val imeVisible = rootInsets?.isVisible(WindowInsetsCompat.Type.ime()) ?: false
                         val imeHeight = rootInsets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
-                        dispatchImeOffset(if (imeVisible) imeHeight else 0)
+                        dispatchImeOffset(if (imeVisible) imeHeight else 0, navHeight)
                     }
                 }
             }
         )
 
         ViewCompat.setOnApplyWindowInsetsListener(webViewScreen) { _, insets ->
+            val navHeight = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
             val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
             val imeHeight = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-            dispatchImeOffset(if (imeVisible) imeHeight else 0)
+            dispatchImeOffset(if (imeVisible) imeHeight else 0, navHeight)
             insets
         }
 
@@ -1305,15 +1309,14 @@ class MainActivity : BridgeActivity() {
             window.insetsController?.let { controller ->
                 controller.systemBarsBehavior =
                     WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                controller.hide(WindowInsets.Type.systemBars())
+                // 仅隐藏顶栏状态栏，保留底部手势导航栏（小黑条），让输入底栏自然避让曲面屏圆角
+                controller.hide(WindowInsets.Type.statusBars())
             }
         } else {
             window.decorView.systemUiVisibility = (
                 View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                 or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
                 or View.SYSTEM_UI_FLAG_FULLSCREEN
-                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                 or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
             )
         }
@@ -1625,36 +1628,19 @@ class MainActivity : BridgeActivity() {
                             };
                         }
                     }
-                    // 5. 安装 TT 同款零重排 IME 避让容器（将输入底栏封装进 GPU 硬件加速的 lift/spacer 结构）
-                    if (!window.__scImeHostInstalled) {
-                        const formSheld = document.getElementById('form_sheld');
-                        if (formSheld) {
-                            window.__scImeHostInstalled = true;
-                            const lift = document.createElement('div');
-                            lift.setAttribute('data-sc-ime-lift', '');
-                            lift.style.cssText = 'width: 100%; will-change: transform; transition: none;';
-
-                            const spacer = document.createElement('div');
-                            spacer.setAttribute('data-sc-ime-spacer', '');
-                            spacer.setAttribute('aria-hidden', 'true');
-                            spacer.style.cssText = 'display: block; width: 100%; height: 0px; pointer-events: none; transition: none;';
-
-                            while (formSheld.firstChild) {
-                                lift.appendChild(formSheld.firstChild);
+                    // 5. 彻底拔除破坏性 DOM 劫持，恢复 form_sheld 纯净结构（彻底消除输入法弹出的跳动与二次位移）
+                    const formSheld = document.getElementById('form_sheld');
+                    if (formSheld) {
+                        const lift = formSheld.querySelector('[data-sc-ime-lift]');
+                        const spacer = formSheld.querySelector('[data-sc-ime-spacer]');
+                        if (lift) {
+                            while (lift.firstChild) {
+                                formSheld.insertBefore(lift.firstChild, lift);
                             }
-                            formSheld.appendChild(spacer);
-                            formSheld.appendChild(lift);
-
-                            const observer = new MutationObserver((mutations) => {
-                                for (const m of mutations) {
-                                    for (const node of m.addedNodes) {
-                                        if (node !== lift && node !== spacer) {
-                                            lift.appendChild(node);
-                                        }
-                                    }
-                                }
-                            });
-                            observer.observe(formSheld, { childList: true });
+                            lift.remove();
+                        }
+                        if (spacer) {
+                            spacer.remove();
                         }
                     }
 
@@ -1757,24 +1743,17 @@ class MainActivity : BridgeActivity() {
         webView.evaluateJavascript(perfScript, null)
     }
 
-    private fun dispatchImeOffset(heightPx: Int) {
+    private fun dispatchImeOffset(imeHeightPx: Int, navHeightPx: Int) {
         if (!::webView.isInitialized) return
         val density = resources.displayMetrics.density
-        val heightCssPx = if (density > 0) heightPx / density else heightPx.toFloat()
+        val navCssPx = if (density > 0) navHeightPx / density else navHeightPx.toFloat()
         val script = """
             (function() {
                 try {
-                    const h = ${heightCssPx};
-                    document.documentElement.style.setProperty('--sc-ime-bottom', h + 'px');
-                    const formSheld = document.getElementById('form_sheld');
-                    if (formSheld) {
-                        const lift = formSheld.querySelector('[data-sc-ime-lift]');
-                        const spacer = formSheld.querySelector('[data-sc-ime-spacer]');
-                        if (lift && spacer) {
-                            lift.style.transform = h > 0 ? 'translate3d(0, -' + h + 'px, 0)' : 'none';
-                            spacer.style.height = h + 'px';
-                        }
-                    }
+                    // 软键盘弹起时底栏无缝贴合键盘；收起时留出小黑条与曲面屏安全区（默认至少 18px）
+                    const isIme = ${imeHeightPx} > 0;
+                    const nav = isIme ? 0 : Math.max(${navCssPx}, 18);
+                    document.documentElement.style.setProperty('--sc-nav-bottom', nav + 'px');
                 } catch(_) {}
             })();
         """.trimIndent()
