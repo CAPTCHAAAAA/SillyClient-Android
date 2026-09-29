@@ -1,13 +1,39 @@
 /**
- * SillyClient Performance Engine (P0 核心架构)
- * 1. Performance Monitor HUD (变色龙右上角连续点击 7 次呼出/收起)
- * 2. Frame Scheduler (统一合并调度器，Read/Write 分离，杜绝 Layout Thrashing)
- * 3. Streaming Batcher (30FPS 流式推流缓冲池，解耦网络接收与 DOM 渲染)
- * 4. DOM Mutation Batching (突变速率统计与批量合并)
+ * SillyClient Performance Engine (P0 + P1 深度性能架构)
+ *
+ * P0 核心架构:
+ * 1. Performance Monitor HUD (变色龙右上角连续点击 7 次呼出/收起，或双击面板关闭)
+ * 2. Frame Scheduler (统一合并调度器，Read/Write 严格分离，杜绝 Layout Thrashing)
+ * 3. Streaming Batcher (30FPS 流式推流缓冲池，解耦网络突发与 DOM 渲染)
+ * 4. DOM Mutation Batching (突变速率统计与聚合监控)
+ *
+ * P1 深度优化:
+ * 5. Native DOM Virtualization & Layout Containment (视口外消息原生级跳过渲染，局部布局沙箱)
+ * 6. Invisible Animation Governor (视口外动画/GIF 自动挂起冻结，不占 GPU)
+ * 7. Interaction Priority Governor (滑动/手势期间帧预算全量倾斜，暂停背景重采样)
  */
 (function() {
     if (window.__scRenderEngineInstalled) return;
     window.__scRenderEngineInstalled = true;
+
+    // ========================================================
+    // 0. 全局引擎状态
+    // ========================================================
+    const engineState = {
+        fps: 60.0,
+        frameTime: 16.6,
+        p95: 16.6,
+        p99: 16.6,
+        longTaskCount: 0,
+        domCount: 0,
+        mutationsPerSec: 0,
+        streamingFps: 0,
+        lastFrameJsTime: 1.2,
+        virtualizationActive: false,
+        frozenAnimCount: 0,
+        isInteracting: false,
+        hudVisible: false
+    };
 
     // ========================================================
     // 2. FRAME SCHEDULER (统一单帧调度器)
@@ -132,21 +158,96 @@
     }, 1000);
 
     // ========================================================
+    // 5. P1: 原生 DOM 虚拟化与局部布局沙箱 (CSS Containment)
+    // ========================================================
+    function setupVirtualizationAndContainment() {
+        if (window.CSS && CSS.supports && CSS.supports('content-visibility', 'auto')) {
+            const style = document.createElement('style');
+            style.id = 'sc-p1-containment';
+            style.textContent = `
+                /* 视口外长消息跳过渲染树与绘制，保留全部 DOM 节点与事件绑定 */
+                #chat .mes {
+                    content-visibility: auto;
+                    contain-intrinsic-size: auto 120px;
+                    contain: layout style;
+                }
+                /* 最后一项正在生成的活动消息始终处于可见状态，保证流式推流与吸底平滑 */
+                #chat .mes:last-child {
+                    content-visibility: visible !important;
+                }
+                /* 离屏冻结类：挂起不可见视口元素的 CSS 动画 */
+                .__sc-anim-frozen, .__sc-anim-frozen * {
+                    animation-play-state: paused !important;
+                }
+            `;
+            document.head.appendChild(style);
+            engineState.virtualizationActive = true;
+        }
+    }
+    if (document.head) {
+        setupVirtualizationAndContainment();
+    } else {
+        document.addEventListener('DOMContentLoaded', setupVirtualizationAndContainment);
+    }
+
+    // ========================================================
+    // 6. P1: 视口外不可见动画挂起冻结 (Invisible Animation Freeze)
+    // ========================================================
+    const frozenElements = new Set();
+    let animObserver = null;
+    if (window.IntersectionObserver) {
+        try {
+            animObserver = new IntersectionObserver((entries) => {
+                for (let i = 0; i < entries.length; i++) {
+                    const entry = entries[i];
+                    const target = entry.target;
+                    if (entry.isIntersecting) {
+                        target.classList.remove('__sc-anim-frozen');
+                        frozenElements.delete(target);
+                    } else {
+                        target.classList.add('__sc-anim-frozen');
+                        frozenElements.add(target);
+                    }
+                }
+                engineState.frozenAnimCount = frozenElements.size;
+            }, {
+                rootMargin: '80px 0px 80px 0px' // 视口上下预留 80px 缓冲区，避免边缘顿挫
+            });
+        } catch(e) {}
+    }
+
+    // 定期或按需为可能包含动画的重型元素注册观察器
+    function scanAndObserveAnimations() {
+        if (!animObserver) return;
+        const candidates = document.querySelectorAll('.mes_avatar, .mes_text img, .spinner, .rotating, .typing_indicator');
+        for (let i = 0; i < candidates.length; i++) {
+            animObserver.observe(candidates[i]);
+        }
+    }
+    setInterval(() => {
+        if (!engineState.isInteracting) {
+            scanAndObserveAnimations();
+        }
+    }, 3000);
+
+    // ========================================================
+    // 7. P1: 交互优先调频器 (Interaction Priority Governor)
+    // ========================================================
+    let interactionResetTimer = null;
+    function notifyInteraction() {
+        engineState.isInteracting = true;
+        if (interactionResetTimer) clearTimeout(interactionResetTimer);
+        interactionResetTimer = setTimeout(() => {
+            engineState.isInteracting = false;
+        }, 180);
+    }
+    window.addEventListener('touchstart', notifyInteraction, { passive: true, capture: true });
+    window.addEventListener('touchmove', notifyInteraction, { passive: true });
+    window.addEventListener('scroll', notifyInteraction, { passive: true, capture: true });
+
+    // ========================================================
     // 1. PERFORMANCE MONITOR (FPS, P95/P99, LongTask, DOM)
     // ========================================================
-    const engineState = {
-        fps: 60.0,
-        frameTime: 16.6,
-        p95: 16.6,
-        p99: 16.6,
-        longTaskCount: 0,
-        domCount: 0,
-        mutationsPerSec: 0,
-        streamingFps: 0,
-        lastFrameJsTime: 1.2,
-        hudVisible: false
-    };
-
     // LongTask 监测 (Chromium PerformanceObserver)
     if (window.PerformanceObserver) {
         try {
@@ -185,10 +286,12 @@
     }
     requestAnimationFrame(frameLoop);
 
-    // 每秒采样一次 DOM 数量
+    // 每秒采样一次 DOM 数量 (滑动交互期间跳过，避免阻塞主线程)
     setInterval(() => {
-        engineState.domCount = document.getElementsByTagName('*').length;
-    }, 1000);
+        if (!engineState.isInteracting) {
+            engineState.domCount = document.getElementsByTagName('*').length;
+        }
+    }, 1200);
 
     // ========================================================
     // HUD UI 渲染组件 (极客暗金毛玻璃微浮窗)
@@ -204,10 +307,10 @@
             position: fixed;
             top: calc(var(--topBarBlockSize, 42px) + 8px);
             right: 12px;
-            width: 220px;
-            background: rgba(18, 14, 18, 0.84);
-            backdrop-filter: blur(16px) saturate(1.2);
-            -webkit-backdrop-filter: blur(16px) saturate(1.2);
+            width: 232px;
+            background: rgba(18, 14, 18, 0.86);
+            backdrop-filter: blur(16px) saturate(1.25);
+            -webkit-backdrop-filter: blur(16px) saturate(1.25);
             border: 1px solid rgba(255, 255, 255, 0.12);
             border-radius: 12px;
             padding: 10px 12px;
@@ -215,7 +318,7 @@
             font-size: 11px;
             color: #E2E8F0;
             z-index: 999999;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.50);
             pointer-events: auto;
             user-select: none;
             transition: opacity 160ms cubic-bezier(0.12, 0.98, 0.24, 1), transform 160ms cubic-bezier(0.12, 0.98, 0.24, 1);
@@ -232,7 +335,7 @@
                 <span style="font-weight:700; color:#F59E0B; letter-spacing:0.5px;">⚡ SC ENGINE</span>
                 <span id="sc-perf-health" style="font-size:10px; padding:1px 5px; border-radius:4px; background:#10B981; color:#064E3B; font-weight:700;">Healthy</span>
             </div>
-            <div style="display:grid; grid-template-columns: 1fr auto; row-gap:3px; font-size:10.5px;">
+            <div style="display:grid; grid-template-columns: 1fr auto; row-gap:3.5px; font-size:10.5px;">
                 <span style="color:#94A3B8;">FPS</span>
                 <span id="sc-perf-fps" style="font-weight:600; color:#38BDF8;">--</span>
 
@@ -256,6 +359,15 @@
 
                 <span style="color:#94A3B8;">JS Frame</span>
                 <span id="sc-perf-js">-- ms</span>
+
+                <span style="color:#94A3B8;">Virtualization</span>
+                <span id="sc-perf-virt" style="color:#10B981; font-weight:600;">Active</span>
+
+                <span style="color:#94A3B8;">Frozen Anims</span>
+                <span id="sc-perf-frozen" style="color:#A78BFA;">0</span>
+
+                <span style="color:#94A3B8;">Governor</span>
+                <span id="sc-perf-gov" style="color:#38BDF8;">Smooth</span>
             </div>
             <div style="margin-top:8px; text-align:center; font-size:9px; color:#64748B;">
                 连续点击右上角 7 次或双击面板关闭
@@ -274,6 +386,9 @@
             const elMut = hudElement.querySelector('#sc-perf-mut');
             const elStream = hudElement.querySelector('#sc-perf-stream');
             const elJs = hudElement.querySelector('#sc-perf-js');
+            const elVirt = hudElement.querySelector('#sc-perf-virt');
+            const elFrozen = hudElement.querySelector('#sc-perf-frozen');
+            const elGov = hudElement.querySelector('#sc-perf-gov');
             const elHealth = hudElement.querySelector('#sc-perf-health');
 
             if (elFps) elFps.textContent = engineState.fps;
@@ -287,6 +402,12 @@
                 elStream.style.color = engineState.streamingFps > 0 ? '#10B981' : '#94A3B8';
             }
             if (elJs) elJs.textContent = engineState.lastFrameJsTime.toFixed(1) + 'ms';
+            if (elVirt) elVirt.textContent = engineState.virtualizationActive ? 'Active' : 'Bypassed';
+            if (elFrozen) elFrozen.textContent = engineState.frozenAnimCount;
+            if (elGov) {
+                elGov.textContent = engineState.isInteracting ? 'Touch Priority' : 'Smooth';
+                elGov.style.color = engineState.isInteracting ? '#F59E0B' : '#38BDF8';
+            }
 
             if (elHealth) {
                 if (engineState.fps >= 55 && engineState.p95 < 24) {
