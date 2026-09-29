@@ -1,12 +1,12 @@
 /**
- * SillyClient Render Engine v0.2 (Deepcompositor & Layer-Optimized)
+ * SillyClient Render Engine v0.2.1
  * 位于 SillyTavern 与 WebView/Chromium 之间的深度渲染调度引擎
  *
- * 核心架构升级:
+ * 核心架构组件:
  * 1. ChameleonEngine: 变色龙精准事件感知取色 (首帧瞬时同步 + 定向 DOM 变动通知，彻底 0 轮询)
  * 2. Real-AOP Streaming Batcher: 切面原生拦截 Element.prototype.innerHTML (.mes_text 单帧锁步高刷合批)
  * 3. Layer Explosion Elimination: 彻底根治几百条消息的图层爆炸，单滚动硬件层 + 动态末尾消息硬件层
- * 4. EffectManager 2.0: 滑屏期间动态停用 backdrop-filter 与 box-shadow，释放 85%+ GPU 算力
+ * 4. Full-Fidelity Visuals: 永久保留全站原生毛玻璃 (backdrop-filter) 与立体阴影 (box-shadow)，滑屏零降级零破坏
  * 5. FrameScheduler: 读写严格分离原子化调度 (Read/Write Phase 严格隔离)
  * 6. Invisible Animation Freeze & Image Async Decode: 视口外动画挂起与图片后台异步解码
  * 7. Zero-Timer Interaction Governor: 手势触控优先调频器 (0 Timer 堆开销)
@@ -32,7 +32,6 @@
         virtualizationActive: false,
         frozenAnimCount: 0,
         isInteracting: false,
-        isScrolling: false,
         lastTopColor: null,
         hapticEnabled: localStorage.getItem('__sc_haptic_enabled') === '1',
         hudVisible: false
@@ -341,30 +340,7 @@
     }, 500);
 
     // ========================================================
-    // 5. EFFECT MANAGER 2.0 (高消耗视觉特效动态降级引擎)
-    // ========================================================
-    // 滑屏期间动态停用 backdrop-filter 与 box-shadow，释放 85%+ GPU 算力；停止 120ms 平滑恢复
-    const effectManager = {
-        scrollTimer: null,
-        onScrollActivity: function() {
-            if (!engineState.isScrolling) {
-                engineState.isScrolling = true;
-                document.documentElement.classList.add('__sc-scrolling');
-            }
-            if (this.scrollTimer) clearTimeout(this.scrollTimer);
-            this.scrollTimer = setTimeout(() => {
-                this.scrollTimer = null;
-                engineState.isScrolling = false;
-                document.documentElement.classList.remove('__sc-scrolling');
-            }, 120);
-        }
-    };
-    window.addEventListener('scroll', () => effectManager.onScrollActivity(), { passive: true, capture: true });
-    window.addEventListener('touchmove', () => effectManager.onScrollActivity(), { passive: true, capture: true });
-    window.addEventListener('wheel', () => effectManager.onScrollActivity(), { passive: true, capture: true });
-
-    // ========================================================
-    // 6. DOM MUTATION BATCHER (突变监控与聚合，HUD 按需挂载)
+    // 5. DOM MUTATION BATCHER (突变监控与聚合，HUD 按需挂载)
     // ========================================================
     let mutationCounter = 0;
     let mutationsPerSec = 0;
@@ -408,7 +384,8 @@
     }, 1000);
 
     // ========================================================
-    // 7. 根除图层爆炸与物理沙箱 (Layer Explosion Elimination & Containment)
+    // 6. 根除图层爆炸与物理沙箱 (Layer Explosion Elimination & Containment)
+    // 永久保留全站毛玻璃与投影，滑屏绝对零降级
     // ========================================================
     function setupVirtualizationAndContainment() {
         const style = document.createElement('style');
@@ -461,12 +438,6 @@
                 will-change: opacity, transform !important;
                 transform: translateZ(0) !important;
             }
-            /* 6. 特效降级引擎 2.0：滑屏期间暂停 backdrop-filter 与 box-shadow，瞬间释放 85%+ GPU 算力 */
-            html.__sc-scrolling * {
-                backdrop-filter: none !important;
-                -webkit-backdrop-filter: none !important;
-                box-shadow: none !important;
-            }
             /* 代码块、复杂表格与公式横向滚动沙箱：防止撑破气泡与垂直滑动偏航 */
             #chat .mes_text pre,
             #chat .mes_text table,
@@ -498,7 +469,7 @@
     }
 
     // ========================================================
-    // 8. 视口外动画挂起冻结 & 图片原型级异步解码
+    // 7. 视口外动画挂起冻结 & 图片原型级异步解码
     // ========================================================
     const frozenElements = new Set();
     let animObserver = null;
@@ -568,7 +539,7 @@
     setTimeout(scheduleIdleScan, 2000);
 
     // ========================================================
-    // 9. 交互优先调频器 (Zero-Timer Interaction Governor)
+    // 8. 交互优先调频器 (Zero-Timer Interaction Governor)
     // ========================================================
     let lastInteractionTimestamp = 0;
     function notifyInteraction() {
@@ -588,7 +559,7 @@
     window.addEventListener('scroll', notifyInteraction, { passive: true, capture: true });
 
     // ========================================================
-    // 10. PERFORMANCE MONITOR & HUD (美化对齐 SC 整体前端规范)
+    // 9. PERFORMANCE MONITOR & HUD (美化对齐 SC 整体前端规范)
     // ========================================================
     if (window.PerformanceObserver) {
         try {
@@ -728,9 +699,6 @@
                 <span style="color:#64748B;">Chameleon</span>
                 <span id="sc-perf-cham" style="color:#34D399; font-weight:600;">Event-0Poll</span>
 
-                <span style="color:#64748B;">Effect Mgr</span>
-                <span id="sc-perf-effect" style="color:#38BDF8;">Blur/Shadow Bypass</span>
-
                 <span style="color:#64748B;">Layer Engine</span>
                 <span id="sc-perf-layer" style="color:#10B981; font-weight:600;">Anti-Explosion</span>
 
@@ -808,7 +776,6 @@
             const elGov = hudElement.querySelector('#sc-perf-gov');
             const elHealth = hudElement.querySelector('#sc-perf-health');
             const elCham = hudElement.querySelector('#sc-perf-cham');
-            const elEffect = hudElement.querySelector('#sc-perf-effect');
 
             if (elFps) elFps.textContent = engineState.fps;
             if (elFrame) elFrame.textContent = engineState.frameTime + 'ms';
@@ -829,10 +796,6 @@
             if (elLayer) elLayer.textContent = 'Single+Tail';
             if (elFrozen) elFrozen.textContent = engineState.frozenAnimCount;
             if (elCham) elCham.textContent = 'Event-0Poll';
-            if (elEffect) {
-                elEffect.textContent = engineState.isScrolling ? 'Active (Degraded)' : 'Active (Restored)';
-                elEffect.style.color = engineState.isScrolling ? '#F59E0B' : '#38BDF8';
-            }
             if (elGov) {
                 const interacting = isCurrentlyInteracting();
                 elGov.textContent = interacting ? 'Touch Priority' : 'Smooth';
