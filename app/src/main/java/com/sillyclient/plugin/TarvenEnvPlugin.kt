@@ -273,6 +273,65 @@ class TarvenEnvPlugin : Plugin() {
         }.start()
     }
 
+    /**
+     * 系统文件选择器读取小型文本/JSON 导入（如实例备份 instances.json）。
+     * Android 通过 SAF (ACTION_OPEN_DOCUMENT) 选择文件并读取 UTF-8 内容返回。
+     */
+    @PluginMethod
+    fun readTextFile(call: PluginCall) {
+        val mimeType = call.getString("mimeType", "application/json") ?: "application/json"
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(
+                Intent.EXTRA_MIME_TYPES,
+                arrayOf(mimeType, "application/json", "text/plain", "*/*")
+            )
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivityForResult(call, intent, "readTextFileResult")
+    }
+
+    @ActivityCallback
+    private fun readTextFileResult(call: PluginCall?, result: androidx.activity.result.ActivityResult) {
+        if (call == null) {
+            android.util.Log.e(TAG, "readTextFile: call is null (process was killed)")
+            return
+        }
+        val uri = result.data?.data
+        if (result.resultCode != android.app.Activity.RESULT_OK || uri == null) {
+            call.reject("cancelled")
+            return
+        }
+        Thread {
+            try {
+                val input = getContext().contentResolver.openInputStream(uri)
+                    ?: throw IOException("Document provider returned no input stream")
+                val content = input.bufferedReader(Charsets.UTF_8).use { it.readText() }
+
+                var fileName = "imported.json"
+                try {
+                    getContext().contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                        if (cursor.moveToFirst()) {
+                            val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                            if (nameIndex >= 0) {
+                                fileName = cursor.getString(nameIndex) ?: fileName
+                            }
+                        }
+                    }
+                } catch (_: Exception) {}
+
+                val ret = JSObject()
+                ret.put("content", content)
+                ret.put("fileName", fileName)
+                call.resolve(ret)
+            } catch (e: Exception) {
+                android.util.Log.e(TAG, "readTextFile error", e)
+                call.reject("readTextFile: ${e.message}")
+            }
+        }.start()
+    }
+
     @ActivityCallback
     private fun pickDir(call: PluginCall?, @Suppress("UNUSED_PARAMETER") result: androidx.activity.result.ActivityResult) {
         if (call == null) return
@@ -337,9 +396,19 @@ class TarvenEnvPlugin : Plugin() {
     /** 系统文件选择器,选择 SillyTavern zip 文件,复制到 tmp 目录并返回路径。 */
     @PluginMethod
     fun pickZipFile(call: PluginCall) {
-        val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
-            type = "application/zip"
+            type = "*/*"
+            putExtra(
+                Intent.EXTRA_MIME_TYPES,
+                arrayOf(
+                    "application/zip",
+                    "application/x-zip-compressed",
+                    "application/x-zip",
+                    "application/octet-stream",
+                    "*/*"
+                )
+            )
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         startActivityForResult(call, intent, "pickZipFile")
@@ -358,23 +427,26 @@ class TarvenEnvPlugin : Plugin() {
         }
         val act = activity as? MainActivity
         if (act == null) { call.reject("Not MainActivity"); return }
-        try {
-            val uri = data.data ?: run { call.reject("No file data"); return }
-            val tmpDir = File(act.cacheDir, "sillyclient-tmp").apply { mkdirs() }
-            val destFile = File(tmpDir, "sillytavern-import-${System.currentTimeMillis()}.zip")
-            val input = act.contentResolver.openInputStream(uri)
-                ?: throw IOException("Document provider returned no input stream")
-            input.use {
-                FileOutputStream(destFile).use { out -> it.copyTo(out) }
+        val uri = data.data ?: run { call.reject("No file data"); return }
+
+        Thread {
+            try {
+                val tmpDir = File(act.cacheDir, "sillyclient-tmp").apply { mkdirs() }
+                val destFile = File(tmpDir, "sillytavern-import-${System.currentTimeMillis()}.zip")
+                val input = act.contentResolver.openInputStream(uri)
+                    ?: throw IOException("Document provider returned no input stream")
+                input.use { inStream ->
+                    FileOutputStream(destFile).use { outStream -> inStream.copyTo(outStream) }
+                }
+                val ret = JSObject()
+                ret.put("path", destFile.absolutePath)
+                ret.put("sizeBytes", destFile.length())
+                call.resolve(ret)
+            } catch (e: Exception) {
+                android.util.Log.e(TAG, "pickZipFile error", e)
+                call.reject("pickZipFile: ${e.message}")
             }
-            val ret = JSObject()
-            ret.put("path", destFile.absolutePath)
-            ret.put("sizeBytes", destFile.length())
-            call.resolve(ret)
-        } catch (e: Exception) {
-            android.util.Log.e(TAG, "pickZipFile error", e)
-            call.reject("pickZipFile: ${e.message}")
-        }
+        }.start()
     }
 
     @PluginMethod
@@ -650,10 +722,11 @@ class TarvenEnvPlugin : Plugin() {
         val instanceId = call.getString("instanceId") ?: "migrated-${System.currentTimeMillis()}"
         val mode = call.getString("mode", "copy") ?: "copy"
         val includeSecrets = call.getBoolean("includeSecrets", false) ?: false
+        val targetPath = call.getString("targetPath")
 
         Thread {
             try {
-                val ok = act.migrateInstance(sourcePath, instanceId, mode, includeSecrets)
+                val ok = act.migrateInstance(sourcePath, instanceId, mode, includeSecrets, targetPath)
                 if (ok) {
                     val ret = JSObject()
                     ret.put("success", true)

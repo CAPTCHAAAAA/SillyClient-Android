@@ -10,8 +10,8 @@ android {
         applicationId = "com.sillyclient"
         minSdk = 26
         targetSdk = 37
-        versionCode = 17
-        versionName = "1.9.2"
+        versionCode = 18
+        versionName = "2.0.0"
     }
 
     buildTypes {
@@ -47,6 +47,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity)
     implementation(libs.androidx.appcompat)
+    implementation(libs.androidx.documentfile)
     implementation(libs.capacitor.android)
 
     testImplementation(libs.junit)

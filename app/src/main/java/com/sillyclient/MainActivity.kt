@@ -42,6 +42,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsAnimationCompat
 import androidx.core.graphics.Insets
+import androidx.documentfile.provider.DocumentFile
 import com.getcapacitor.JSObject
 import com.sillyclient.runtime.CompanionPresetInstaller
 import com.sillyclient.runtime.CompanionPresetRequest
@@ -1779,26 +1780,53 @@ class MainActivity : BridgeActivity() {
         return false
     }
 
-    /** 解压本地 zip 文件到目标目录。自动检测 GitHub zipball 格式(有内层目录)并平铺。 */
+    /** 解压本地 zip 文件到目标目录。自动检测 GitHub zipball 格式(有内层单一包裹目录)并平铺。 */
     private fun extractLocalZip(zipFile: File, destDir: File): Boolean {
         destDir.mkdirs()
         return try {
             var entryCount = 0
-            var hasInnerDir = false
+            var singleRootPrefix: String? = null
+            var hasMultipleRoots = false
+
+            // 第一遍: 检测是否存在单一根目录包层 (如 GitHub zipball 的 SillyTavern-1.12.0/)
             java.util.zip.ZipInputStream(java.io.FileInputStream(zipFile)).use { zis ->
-                // 第一遍:检测是否有内层目录(GitHub zipball 格式)
-                var first = zis.nextEntry
-                if (first != null && first.name.contains('/')) {
-                    hasInnerDir = true
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    val name = entry.name.trimStart('/')
+                    if (name.isNotEmpty()) {
+                        val firstSlash = name.indexOf('/')
+                        if (firstSlash == -1) {
+                            hasMultipleRoots = true
+                            singleRootPrefix = null
+                            break
+                        } else {
+                            val root = name.substring(0, firstSlash + 1)
+                            if (singleRootPrefix == null) {
+                                singleRootPrefix = root
+                            } else if (singleRootPrefix != root) {
+                                hasMultipleRoots = true
+                                singleRootPrefix = null
+                                break
+                            }
+                        }
+                    }
+                    entry = zis.nextEntry
                 }
-                zis.closeEntry()
             }
-            // 第二遍:解压
+
+            val prefixToStrip = if (!hasMultipleRoots && singleRootPrefix != null) singleRootPrefix else null
+
+            // 第二遍: 解压
             java.util.zip.ZipInputStream(java.io.FileInputStream(zipFile)).use { zis ->
                 var entry = zis.nextEntry
                 while (entry != null) {
                     if (!entry.isDirectory) {
-                        val name = if (hasInnerDir) entry.name.substringAfter('/', entry.name) else entry.name
+                        val cleanName = entry.name.trimStart('/')
+                        val name = if (prefixToStrip != null && cleanName.startsWith(prefixToStrip)) {
+                            cleanName.substring(prefixToStrip.length)
+                        } else {
+                            cleanName
+                        }
                         if (name.isNotEmpty()) {
                             val out = safeZipOutputFile(destDir, name)
                             out.parentFile?.mkdirs()
@@ -1813,6 +1841,16 @@ class MainActivity : BridgeActivity() {
                 }
             }
             appendLog("> 解压 $entryCount 个文件")
+
+            val serverJs = File(destDir, "server.js")
+            if (!serverJs.exists()) {
+                val paths = RuntimePaths.from(this)
+                val baseInstance = File(paths.tarvenHome, "servers/default")
+                if (baseInstance.exists() && File(baseInstance, "server.js").exists()) {
+                    appendLog("> 未发现 server.js，正在匹配基础酒馆运行底座...")
+                    copyBaseRuntimeExcludingData(baseInstance, destDir)
+                }
+            }
             File(destDir, "server.js").exists()
         } catch (e: Exception) {
             android.util.Log.e(TAG, "extractLocalZip", e)
@@ -2025,7 +2063,7 @@ class MainActivity : BridgeActivity() {
         var freed = 0L
         // 删除安装目录
         val serverDir = paths.serverDirFor(instanceId, create = false)
-        if (serverDir.exists()) {
+        if (serverDir.exists() && serverDir.canonicalPath.startsWith(paths.serversDir.canonicalPath)) {
             freed += dirSize(serverDir)
             serverDir.deleteRecursively()
         }
@@ -2251,27 +2289,33 @@ class MainActivity : BridgeActivity() {
 
     /**
      * 数据迁移：将旧酒馆目录或 ZIP 压缩包迁入新实例目录。
-     * 支持排除 .git、旧 node_modules 垃圾缓存与脱敏 secrets.json。
+     * 支持 SAF 目录树 (content://.../tree/...)、SAF 压缩包、本地文件路径及解压排除。
      */
     fun migrateInstance(
         sourcePath: String,
         instanceId: String,
         mode: String,
-        includeSecrets: Boolean
+        includeSecrets: Boolean,
+        targetPath: String? = null
     ): Boolean {
         val paths = RuntimePaths.from(this)
         paths.ensureDirs()
-        val targetServerDir = paths.serverDirFor(instanceId)
+        val targetServerDir = if (!targetPath.isNullOrBlank()) File(targetPath) else paths.serverDirFor(instanceId)
 
-        val modeText = if (mode == "takeover") "原地接管" else "复制迁移"
+        val isContentUri = sourcePath.startsWith("content://")
+        val effectiveMode = if (isContentUri && mode == "takeover") {
+            appendLog("[WARN] Android 外部存储不支持原地执行 Node.js，自动切换为安全复制迁移")
+            "copy"
+        } else {
+            mode
+        }
+
+        val modeText = if (effectiveMode == "takeover") "原地接管" else "复制迁移"
         appendLog("【数据迁移】开始${modeText}: $sourcePath")
         updateProgress(10, "Validating migration source")
 
-        val sourceFile = File(sourcePath)
-        val isZip = sourcePath.endsWith(".zip", ignoreCase = true) ||
-                (sourceFile.exists() && sourceFile.isFile && sourceFile.length() > 0)
-
-        if (mode == "takeover") {
+        if (effectiveMode == "takeover") {
+            val sourceFile = File(sourcePath)
             if (!sourceFile.exists() || !sourceFile.isDirectory) {
                 appendLog("[ERR] 原地接管来源必须是存在的有效文件夹: $sourcePath")
                 return false
@@ -2284,80 +2328,172 @@ class MainActivity : BridgeActivity() {
         // 复制迁移模式
         targetServerDir.mkdirs()
 
-        if (isZip) {
-            appendLog("> 正在解压旧酒馆备份文件...")
-            updateProgress(30, "Extracting backup archive")
-            var entryCount = 0
-
-            java.util.zip.ZipInputStream(java.io.FileInputStream(sourceFile)).use { zis ->
-                var entry = zis.nextEntry
-                while (entry != null) {
-                    val name = entry.name
-                    val isGitOrNodeModules = name.contains(".git/") || name.contains("node_modules/") || name.contains(".cache/")
-                    val isSecret = !includeSecrets && (name.endsWith("secrets.json") || name.endsWith("secrets.json.enc"))
-
-                    if (!entry.isDirectory && !isGitOrNodeModules && !isSecret) {
-                        val out = safeZipOutputFile(targetServerDir, name)
-                        out.parentFile?.mkdirs()
-                        FileOutputStream(out).use { zis.copyTo(it) }
-                        entryCount++
-                        if (entryCount % 100 == 0) {
-                            updateProgress(30 + (entryCount / 30).coerceAtMost(45), "Extracting data ($entryCount files)")
-                        }
+        if (isContentUri) {
+            val uri = Uri.parse(sourcePath)
+            val isTree = sourcePath.contains("/tree/")
+            if (isTree) {
+                appendLog("> 正在从系统选择的文件夹提取数据...")
+                updateProgress(25, "Accessing document tree")
+                val treeDoc = DocumentFile.fromTreeUri(this, uri)
+                if (treeDoc == null || !treeDoc.isDirectory) {
+                    appendLog("[ERR] 无法访问选中的目录树，可能缺乏访问权限: $sourcePath")
+                    return false
+                }
+                val copiedCount = copyDocumentTreeFiltered(treeDoc, targetServerDir, includeSecrets) { count ->
+                    if (count % 50 == 0) {
+                        updateProgress(25 + (count / 25).coerceAtMost(60), "Copying data ($count files)")
                     }
-                    entry = zis.nextEntry
+                }
+                appendLog("[OK] 目录数据提取完成，共复制 $copiedCount 个文件")
+            } else {
+                appendLog("> 正在解压备份文件流...")
+                updateProgress(25, "Extracting backup stream")
+                var entryCount = 0
+                try {
+                    contentResolver.openInputStream(uri)?.use { inStream ->
+                        java.util.zip.ZipInputStream(inStream).use { zis ->
+                            var entry = zis.nextEntry
+                            while (entry != null) {
+                                val name = entry.name
+                                val isGitOrNodeModules = name.contains(".git/") || name.contains("node_modules/") || name.contains(".cache/")
+                                val isSecret = !includeSecrets && (name.endsWith("secrets.json") || name.endsWith("secrets.json.enc"))
+
+                                if (!entry.isDirectory && !isGitOrNodeModules && !isSecret) {
+                                    val out = safeZipOutputFile(targetServerDir, name)
+                                    out.parentFile?.mkdirs()
+                                    FileOutputStream(out).use { zis.copyTo(it) }
+                                    entryCount++
+                                    if (entryCount % 100 == 0) {
+                                        updateProgress(25 + (entryCount / 30).coerceAtMost(55), "Extracting data ($entryCount files)")
+                                    }
+                                }
+                                entry = zis.nextEntry
+                            }
+                        }
+                    } ?: throw IOException("无法打开所选文件的输入流")
+                    appendLog("[OK] 备份文件流解压完成，共迁移 $entryCount 个文件")
+                } catch (e: Exception) {
+                    appendLog("[ERR] 读取文件流失败: ${e.message}")
+                    return false
                 }
             }
-            appendLog("[OK] 备份解压完成，共迁移 $entryCount 个文件")
-
-            val serverJs = File(targetServerDir, "server.js")
-            if (!serverJs.exists()) {
-                appendLog("> 纯数据备份，正在匹配运行底座...")
-                updateProgress(80, "Configuring base runtime")
-                val baseInstance = File(paths.tarvenHome, "servers/default")
-                if (baseInstance.exists() && File(baseInstance, "server.js").exists()) {
-                    copyBaseRuntimeExcludingData(baseInstance, targetServerDir)
-                    appendLog("[OK] 基础底座配置完成")
-                }
-            }
-
-            updateProgress(90, "Verifying runtime")
-            runNpmInstall(paths, targetServerDir)
-            updateProgress(100, "Migration verified")
-            appendLog("【成功】数据迁移完成，实例 [$instanceId] 已就绪！")
-            return true
         } else {
-            if (!sourceFile.exists() || !sourceFile.isDirectory) {
-                appendLog("[ERR] 来源目录不存在: $sourcePath")
-                return false
-            }
+            val sourceFile = File(sourcePath)
+            val isZip = sourcePath.endsWith(".zip", ignoreCase = true) ||
+                    (sourceFile.exists() && sourceFile.isFile && sourceFile.length() > 0)
 
-            appendLog("> 正在复制目录数据...")
-            updateProgress(30, "Copying directory")
-            var copiedFiles = 0
-            copyDirectoryFiltered(sourceFile, targetServerDir, includeSecrets) { count ->
-                copiedFiles = count
-                if (copiedFiles % 50 == 0) {
-                    updateProgress(30 + (copiedFiles / 20).coerceAtMost(55), "Copying data ($copiedFiles files)")
+            if (isZip) {
+                if (!sourceFile.exists() || !sourceFile.isFile) {
+                    appendLog("[ERR] 来源 ZIP 文件不存在: $sourcePath")
+                    return false
                 }
-            }
-            appendLog("[OK] 目录复制完成，共迁移 $copiedFiles 个文件")
+                appendLog("> 正在解压旧酒馆备份文件...")
+                updateProgress(30, "Extracting backup archive")
+                var entryCount = 0
 
-            val serverJs = File(targetServerDir, "server.js")
-            if (!serverJs.exists()) {
-                appendLog("> 补充运行底座...")
-                val baseInstance = File(paths.tarvenHome, "servers/default")
-                if (baseInstance.exists() && File(baseInstance, "server.js").exists()) {
-                    copyBaseRuntimeExcludingData(baseInstance, targetServerDir)
+                java.util.zip.ZipInputStream(java.io.FileInputStream(sourceFile)).use { zis ->
+                    var entry = zis.nextEntry
+                    while (entry != null) {
+                        val name = entry.name
+                        val isGitOrNodeModules = name.contains(".git/") || name.contains("node_modules/") || name.contains(".cache/")
+                        val isSecret = !includeSecrets && (name.endsWith("secrets.json") || name.endsWith("secrets.json.enc"))
+
+                        if (!entry.isDirectory && !isGitOrNodeModules && !isSecret) {
+                            val out = safeZipOutputFile(targetServerDir, name)
+                            out.parentFile?.mkdirs()
+                            FileOutputStream(out).use { zis.copyTo(it) }
+                            entryCount++
+                            if (entryCount % 100 == 0) {
+                                updateProgress(30 + (entryCount / 30).coerceAtMost(45), "Extracting data ($entryCount files)")
+                            }
+                        }
+                        entry = zis.nextEntry
+                    }
                 }
-            }
+                appendLog("[OK] 备份解压完成，共迁移 $entryCount 个文件")
+            } else {
+                if (!sourceFile.exists() || !sourceFile.isDirectory) {
+                    appendLog("[ERR] 来源目录不存在: $sourcePath")
+                    return false
+                }
 
-            updateProgress(90, "Verifying runtime")
-            runNpmInstall(paths, targetServerDir)
-            updateProgress(100, "Migration verified")
-            appendLog("【成功】数据迁移完成，实例 [$instanceId] 已就绪！")
-            return true
+                appendLog("> 正在复制目录数据...")
+                updateProgress(30, "Copying directory")
+                var copiedFiles = 0
+                copyDirectoryFiltered(sourceFile, targetServerDir, includeSecrets) { count ->
+                    copiedFiles = count
+                    if (copiedFiles % 50 == 0) {
+                        updateProgress(30 + (copiedFiles / 20).coerceAtMost(55), "Copying data ($copiedFiles files)")
+                    }
+                }
+                appendLog("[OK] 目录复制完成，共迁移 $copiedFiles 个文件")
+            }
         }
+
+        // 统一检测与补全运行底座 (server.js 及 node_modules)
+        val serverJs = File(targetServerDir, "server.js")
+        if (!serverJs.exists()) {
+            appendLog("> 纯数据备份，正在匹配运行底座...")
+            updateProgress(85, "Configuring base runtime")
+            val baseInstance = File(paths.tarvenHome, "servers/default")
+            if (baseInstance.exists() && File(baseInstance, "server.js").exists()) {
+                copyBaseRuntimeExcludingData(baseInstance, targetServerDir)
+                appendLog("[OK] 基础底座配置完成")
+            }
+        }
+
+        // 确保 node_modules 存在
+        val baseInstance = File(paths.tarvenHome, "servers/default")
+        val baseNodeModules = File(baseInstance, "node_modules")
+        val targetNodeModules = File(targetServerDir, "node_modules")
+        if (baseNodeModules.exists() && !targetNodeModules.exists()) {
+            appendLog("> 挂载运行依赖库 (node_modules)...")
+            baseNodeModules.copyRecursively(targetNodeModules, overwrite = false)
+        }
+
+        updateProgress(95, "Verifying runtime")
+        runNpmInstall(paths, targetServerDir)
+        updateProgress(100, "Migration verified")
+        appendLog("【成功】数据迁移完成，实例 [$instanceId] 已就绪！")
+        return true
+    }
+
+    private fun copyDocumentTreeFiltered(
+        treeDoc: DocumentFile,
+        targetDir: File,
+        includeSecrets: Boolean,
+        onProgress: (Int) -> Unit
+    ): Int {
+        var count = 0
+        fun traverse(dirDoc: DocumentFile, currentDest: File) {
+            currentDest.mkdirs()
+            val files = dirDoc.listFiles()
+            for (file in files) {
+                val name = file.name ?: continue
+                if (name == ".git" || name == "node_modules" || name == ".cache") continue
+                if (!includeSecrets && (name == "secrets.json" || name == "secrets.json.enc")) continue
+
+                if (file.isDirectory) {
+                    val nextDest = File(currentDest, name)
+                    traverse(file, nextDest)
+                } else if (file.isFile) {
+                    val outFile = File(currentDest, name)
+                    try {
+                        contentResolver.openInputStream(file.uri)?.use { inStream ->
+                            FileOutputStream(outFile).use { outStream ->
+                                inStream.copyTo(outStream)
+                            }
+                        }
+                        count++
+                        onProgress(count)
+                    } catch (e: Exception) {
+                        android.util.Log.w(TAG, "Failed to copy SAF file: $name", e)
+                    }
+                }
+            }
+        }
+        traverse(treeDoc, targetDir)
+        return count
     }
 
     private fun copyBaseRuntimeExcludingData(srcDir: File, destDir: File) {
@@ -2371,6 +2507,11 @@ class MainActivity : BridgeActivity() {
             } else if (!target.exists()) {
                 entry.copyTo(target, overwrite = false)
             }
+        }
+        val baseNodeModules = File(srcDir, "node_modules")
+        val destNodeModules = File(destDir, "node_modules")
+        if (baseNodeModules.exists() && !destNodeModules.exists()) {
+            baseNodeModules.copyRecursively(destNodeModules, overwrite = false)
         }
     }
 
