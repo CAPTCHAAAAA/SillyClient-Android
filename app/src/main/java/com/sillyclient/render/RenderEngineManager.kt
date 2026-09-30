@@ -52,6 +52,14 @@ class RenderEngineManager(
         }
     }
 
+    /** 强制前端变色龙引擎重新采样并上报 (退出重进或切回前台时唤醒) */
+    fun forceChameleonSample(webView: WebView) {
+        webView.evaluateJavascript(
+            "(function(){ try { if (window.__scChameleonEngine) { window.__scChameleonEngine.lastReportedColor = null; window.__scChameleonEngine.sampleAndReport(true); } } catch(_) {} })();",
+            null
+        )
+    }
+
     inner class HapticBridge {
         @JavascriptInterface
         fun trigger(type: String?) {

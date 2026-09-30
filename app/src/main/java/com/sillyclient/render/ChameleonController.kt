@@ -49,6 +49,12 @@ class ChameleonController(
         currentInstanceId = instanceId
     }
 
+    fun reset() {
+        lastAppliedColor = null
+        isSamplingPixelCopy = false
+        isTouchScrolling = false
+    }
+
     fun getSavedColor(instanceId: String?): Int? {
         val id = instanceId?.takeIf { it.isNotBlank() } ?: currentInstanceId ?: "default"
         val sp = context.getSharedPreferences("sc_instance_colors", Context.MODE_PRIVATE)
@@ -63,8 +69,9 @@ class ChameleonController(
     }
 
     fun applyColor(color: Int, instant: Boolean = false) {
+        if (color == 0) return
         saveColor(currentInstanceId, color)
-        if (lastAppliedColor == color) {
+        if (!instant && lastAppliedColor == color) {
             statusHint?.onColorChanged(color)
             return
         }

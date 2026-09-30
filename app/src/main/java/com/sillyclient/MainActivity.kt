@@ -80,7 +80,6 @@ class MainActivity : BridgeActivity() {
     }
 
     private val handler = Handler(Looper.getMainLooper())
-    private var lastAppliedTopColor: Int? = null
     private val topColorPoll: Runnable = Runnable {
         if (isWebViewVisible) {
             sampleTopColor { c ->
@@ -670,6 +669,9 @@ class MainActivity : BridgeActivity() {
         enterImmersive()
         // 系统前台切回心跳自愈探针
         resumeHeartbeatHeal()
+        if (isWebViewVisible && ::webView.isInitialized) {
+            renderEngineManager.forceChameleonSample(webView)
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -1194,14 +1196,13 @@ class MainActivity : BridgeActivity() {
         val cachedColor = getSavedTopColor(instanceId)
         if (cachedColor != null) {
             applyTopColor(cachedColor, instant = true)
-        } else {
-            lastAppliedTopColor = null
         }
         handler.removeCallbacks(topColorPoll)
         triggerTopColorSample()
         handler.postDelayed({ triggerTopColorSample() }, 150)
         handler.postDelayed({ triggerTopColorSample() }, 400)
         injectRenderEngine()
+        renderEngineManager.forceChameleonSample(webView)
         return true
     }
 
@@ -1215,7 +1216,7 @@ class MainActivity : BridgeActivity() {
     fun exitTavern() {
         if (!isWebViewVisible) return
         isWebViewVisible = false
-        lastAppliedTopColor = null
+        chameleonController.reset()
         tavernStatusHint.dismiss()
         handler.removeCallbacks(topColorPoll)
         clearSystemGestureExclusions()
@@ -1242,14 +1243,13 @@ class MainActivity : BridgeActivity() {
         val cachedColor = getSavedTopColor(currentTavernInstanceId)
         if (cachedColor != null) {
             applyTopColor(cachedColor, instant = true)
-        } else {
-            lastAppliedTopColor = null
         }
         handler.removeCallbacks(topColorPoll)
         triggerTopColorSample()
         handler.postDelayed({ triggerTopColorSample() }, 150)
         handler.postDelayed({ triggerTopColorSample() }, 400)
         injectRenderEngine()
+        renderEngineManager.forceChameleonSample(webView)
     }
 
     /**
@@ -1257,7 +1257,7 @@ class MainActivity : BridgeActivity() {
      * 由前端"停止"按钮调用。
      */
     fun closeTavern() {
-        lastAppliedTopColor = null
+        chameleonController.reset()
         tavernStatusHint.dismiss()
         tavernDownloadBridge.invalidateSession()
         if (isWebViewVisible) {
@@ -1358,8 +1358,9 @@ class MainActivity : BridgeActivity() {
                 .setInterpolator(DecelerateInterpolator(1.6f))
                 .withEndAction {
                     if (isDestroyed || isFinishing) return@withEndAction
+                    if (isWebViewVisible) return@withEndAction
                     isWebViewVisible = false
-                    lastAppliedTopColor = null
+                    chameleonController.reset()
                     topScrimBar.reset()
                     val lp = webViewScreen.layoutParams as FrameLayout.LayoutParams
                     lp.topMargin = 0
@@ -1373,7 +1374,7 @@ class MainActivity : BridgeActivity() {
                 .start()
         } else {
             isWebViewVisible = false
-            lastAppliedTopColor = null
+            chameleonController.reset()
             topScrimBar.reset()
             val lp = webViewScreen.layoutParams as FrameLayout.LayoutParams
             lp.topMargin = 0
