@@ -232,6 +232,7 @@ class MainActivity : BridgeActivity() {
         try {
             WebView.setWebContentsDebuggingEnabled(false)
         } catch (_: Exception) {}
+        var maxDeviceRefreshRate = 60f
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             try {
                 val disp = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -242,6 +243,7 @@ class MainActivity : BridgeActivity() {
                 }
                 val maxRefreshMode = disp?.supportedModes?.maxByOrNull { it.refreshRate }
                 if (maxRefreshMode != null && maxRefreshMode.refreshRate > 60f) {
+                    maxDeviceRefreshRate = maxRefreshMode.refreshRate
                     val lp = window.attributes
                     lp.preferredDisplayModeId = maxRefreshMode.modeId
                     window.attributes = lp
@@ -260,6 +262,36 @@ class MainActivity : BridgeActivity() {
             } catch (e: Exception) {
                 android.util.Log.w(TAG, "Unable to request high refresh rate mode", e)
             }
+        }
+
+        // 启动器 WebView (Capacitor Bridge) 硬件加速与高刷锁定
+        try {
+            bridge?.webView?.let { lwv ->
+                lwv.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+                lwv.overScrollMode = View.OVER_SCROLL_NEVER
+                lwv.isVerticalScrollBarEnabled = false
+                lwv.isHorizontalScrollBarEnabled = false
+                if (Build.VERSION.SDK_INT >= 31 && maxDeviceRefreshRate > 60f) {
+                    try {
+                        val method = View::class.java.getMethod(
+                            "setFrameRate",
+                            Float::class.javaPrimitiveType,
+                            Int::class.javaPrimitiveType
+                        )
+                        method.invoke(lwv, maxDeviceRefreshRate, 0)
+                    } catch (_: Throwable) {}
+                }
+                lwv.settings.apply {
+                    domStorageEnabled = true
+                    databaseEnabled = true
+                    cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        offscreenPreRaster = false
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "Unable to configure launcher webView", e)
         }
 
         statusBarFixedPx = readStatusBarFixedPx()
