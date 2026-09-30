@@ -1198,9 +1198,7 @@ class MainActivity : BridgeActivity() {
             applyTopColor(cachedColor, instant = true)
         }
         handler.removeCallbacks(topColorPoll)
-        triggerTopColorSample()
-        handler.postDelayed({ triggerTopColorSample() }, 150)
-        handler.postDelayed({ triggerTopColorSample() }, 400)
+        handler.postDelayed({ triggerTopColorSample() }, 360)
         injectRenderEngine()
         renderEngineManager.forceChameleonSample(webView)
         return true
@@ -1245,9 +1243,7 @@ class MainActivity : BridgeActivity() {
             applyTopColor(cachedColor, instant = true)
         }
         handler.removeCallbacks(topColorPoll)
-        triggerTopColorSample()
-        handler.postDelayed({ triggerTopColorSample() }, 150)
-        handler.postDelayed({ triggerTopColorSample() }, 400)
+        handler.postDelayed({ triggerTopColorSample() }, 360)
         injectRenderEngine()
         renderEngineManager.forceChameleonSample(webView)
     }
@@ -1322,8 +1318,9 @@ class MainActivity : BridgeActivity() {
             root.alpha = 0f
             root.animate()
                 .alpha(1f)
-                .setDuration(340)
-                .setInterpolator(DecelerateInterpolator(1.6f))
+                .setDuration(220)
+                .setInterpolator(DecelerateInterpolator(1.5f))
+                .withLayer()
                 .withEndAction {
                     if (isDestroyed || isFinishing) return@withEndAction
                     if (isWebViewVisible) {
@@ -1345,6 +1342,7 @@ class MainActivity : BridgeActivity() {
     }
 
     private fun switchToHome(animate: Boolean, tavernRunning: Boolean = false) {
+        isWebViewVisible = false
         // 唤醒底座 Capacitor 控制台
         bridge?.webView?.apply {
             visibility = View.VISIBLE
@@ -1354,12 +1352,12 @@ class MainActivity : BridgeActivity() {
             root.animate().cancel()
             root.animate()
                 .alpha(0f)
-                .setDuration(340)
-                .setInterpolator(DecelerateInterpolator(1.6f))
+                .setDuration(220)
+                .setInterpolator(DecelerateInterpolator(1.5f))
+                .withLayer()
                 .withEndAction {
                     if (isDestroyed || isFinishing) return@withEndAction
                     if (isWebViewVisible) return@withEndAction
-                    isWebViewVisible = false
                     chameleonController.reset()
                     topScrimBar.reset()
                     val lp = webViewScreen.layoutParams as FrameLayout.LayoutParams
