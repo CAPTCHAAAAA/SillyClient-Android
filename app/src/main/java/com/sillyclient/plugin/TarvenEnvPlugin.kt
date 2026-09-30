@@ -638,4 +638,34 @@ class TarvenEnvPlugin : Plugin() {
             }
         }.start()
     }
+
+    /**
+     * 数据迁移：将旧酒馆目录或 ZIP 压缩包迁入受管实例。
+     * 支持复制迁移 (copy) 与 原地接管 (takeover)。
+     */
+    @PluginMethod
+    fun migrateInstance(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val sourcePath = call.getString("sourcePath") ?: run { call.reject("sourcePath required"); return }
+        val instanceId = call.getString("instanceId") ?: "migrated-${System.currentTimeMillis()}"
+        val mode = call.getString("mode", "copy") ?: "copy"
+        val includeSecrets = call.getBoolean("includeSecrets", false) ?: false
+
+        Thread {
+            try {
+                val ok = act.migrateInstance(sourcePath, instanceId, mode, includeSecrets)
+                if (ok) {
+                    val ret = JSObject()
+                    ret.put("success", true)
+                    ret.put("instanceId", instanceId)
+                    call.resolve(ret)
+                } else {
+                    call.reject("数据迁移失败，请检查来源文件是否完整")
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("SillyClient", "migrateInstance error", e)
+                call.reject("migrateInstance failed: ${e.message}")
+            }
+        }.start()
+    }
 }

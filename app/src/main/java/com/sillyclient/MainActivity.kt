@@ -2217,6 +2217,158 @@ class MainActivity : BridgeActivity() {
         return dp(24)
     }
 
+    /**
+     * 数据迁移：将旧酒馆目录或 ZIP 压缩包迁入新实例目录。
+     * 支持排除 .git、旧 node_modules 垃圾缓存与脱敏 secrets.json。
+     */
+    fun migrateInstance(
+        sourcePath: String,
+        instanceId: String,
+        mode: String,
+        includeSecrets: Boolean
+    ): Boolean {
+        val paths = RuntimePaths.from(this)
+        paths.ensureDirs()
+        val targetServerDir = paths.serverDirFor(instanceId)
+
+        val modeText = if (mode == "takeover") "原地接管" else "复制迁移"
+        appendLog("【数据迁移】开始${modeText}: $sourcePath")
+        updateProgress(10, "Validating migration source")
+
+        val sourceFile = File(sourcePath)
+        val isZip = sourcePath.endsWith(".zip", ignoreCase = true) ||
+                (sourceFile.exists() && sourceFile.isFile && sourceFile.length() > 0)
+
+        if (mode == "takeover") {
+            if (!sourceFile.exists() || !sourceFile.isDirectory) {
+                appendLog("[ERR] 原地接管来源必须是存在的有效文件夹: $sourcePath")
+                return false
+            }
+            appendLog("[OK] 原地接管目录验证成功: ${sourceFile.absolutePath}")
+            updateProgress(100, "Migration complete")
+            return true
+        }
+
+        // 复制迁移模式
+        targetServerDir.mkdirs()
+
+        if (isZip) {
+            appendLog("> 正在解压旧酒馆备份文件...")
+            updateProgress(30, "Extracting backup archive")
+            var entryCount = 0
+
+            java.util.zip.ZipInputStream(java.io.FileInputStream(sourceFile)).use { zis ->
+                var entry = zis.nextEntry
+                while (entry != null) {
+                    val name = entry.name
+                    val isGitOrNodeModules = name.contains(".git/") || name.contains("node_modules/") || name.contains(".cache/")
+                    val isSecret = !includeSecrets && (name.endsWith("secrets.json") || name.endsWith("secrets.json.enc"))
+
+                    if (!entry.isDirectory && !isGitOrNodeModules && !isSecret) {
+                        val out = safeZipOutputFile(targetServerDir, name)
+                        out.parentFile?.mkdirs()
+                        FileOutputStream(out).use { zis.copyTo(it) }
+                        entryCount++
+                        if (entryCount % 100 == 0) {
+                            updateProgress(30 + (entryCount / 30).coerceAtMost(45), "Extracting data ($entryCount files)")
+                        }
+                    }
+                    entry = zis.nextEntry
+                }
+            }
+            appendLog("[OK] 备份解压完成，共迁移 $entryCount 个文件")
+
+            val serverJs = File(targetServerDir, "server.js")
+            if (!serverJs.exists()) {
+                appendLog("> 纯数据备份，正在匹配运行底座...")
+                updateProgress(80, "Configuring base runtime")
+                val baseInstance = File(paths.tarvenHome, "servers/default")
+                if (baseInstance.exists() && File(baseInstance, "server.js").exists()) {
+                    copyBaseRuntimeExcludingData(baseInstance, targetServerDir)
+                    appendLog("[OK] 基础底座配置完成")
+                }
+            }
+
+            updateProgress(90, "Verifying runtime")
+            runNpmInstall(paths, targetServerDir)
+            updateProgress(100, "Migration verified")
+            appendLog("【成功】数据迁移完成，实例 [$instanceId] 已就绪！")
+            return true
+        } else {
+            if (!sourceFile.exists() || !sourceFile.isDirectory) {
+                appendLog("[ERR] 来源目录不存在: $sourcePath")
+                return false
+            }
+
+            appendLog("> 正在复制目录数据...")
+            updateProgress(30, "Copying directory")
+            var copiedFiles = 0
+            copyDirectoryFiltered(sourceFile, targetServerDir, includeSecrets) { count ->
+                copiedFiles = count
+                if (copiedFiles % 50 == 0) {
+                    updateProgress(30 + (copiedFiles / 20).coerceAtMost(55), "Copying data ($copiedFiles files)")
+                }
+            }
+            appendLog("[OK] 目录复制完成，共迁移 $copiedFiles 个文件")
+
+            val serverJs = File(targetServerDir, "server.js")
+            if (!serverJs.exists()) {
+                appendLog("> 补充运行底座...")
+                val baseInstance = File(paths.tarvenHome, "servers/default")
+                if (baseInstance.exists() && File(baseInstance, "server.js").exists()) {
+                    copyBaseRuntimeExcludingData(baseInstance, targetServerDir)
+                }
+            }
+
+            updateProgress(90, "Verifying runtime")
+            runNpmInstall(paths, targetServerDir)
+            updateProgress(100, "Migration verified")
+            appendLog("【成功】数据迁移完成，实例 [$instanceId] 已就绪！")
+            return true
+        }
+    }
+
+    private fun copyBaseRuntimeExcludingData(srcDir: File, destDir: File) {
+        val entries = srcDir.listFiles() ?: return
+        for (entry in entries) {
+            val name = entry.name
+            if (name == "data" || name == ".git" || name == "node_modules") continue
+            val target = File(destDir, name)
+            if (entry.isDirectory) {
+                entry.copyRecursively(target, overwrite = false)
+            } else if (!target.exists()) {
+                entry.copyTo(target, overwrite = false)
+            }
+        }
+    }
+
+    private fun copyDirectoryFiltered(
+        srcDir: File,
+        destDir: File,
+        includeSecrets: Boolean,
+        onProgress: (Int) -> Unit
+    ) {
+        var count = 0
+        srcDir.walkTopDown().forEach { file ->
+            val relPath = file.relativeTo(srcDir).path
+            if (relPath.startsWith(".git") || relPath.startsWith("node_modules") || relPath.startsWith(".cache")) {
+                return@forEach
+            }
+            if (!includeSecrets && (file.name == "secrets.json" || file.name == "secrets.json.enc")) {
+                return@forEach
+            }
+            val target = File(destDir, relPath)
+            if (file.isDirectory) {
+                target.mkdirs()
+            } else {
+                target.parentFile?.mkdirs()
+                file.copyTo(target, overwrite = true)
+                count++
+                onProgress(count)
+            }
+        }
+    }
+
     override fun onDestroy() {
         handler.removeCallbacks(topColorPoll)
         handler.removeCallbacks(exportTimeoutPoll)
