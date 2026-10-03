@@ -74,7 +74,9 @@ class TavernStaticGateway(
         // 动态业务 API、Socket.io 握手与长轮询严禁拦截，全量交由 Node.js 处理
         if (rawPath.startsWith("/api/") ||
             rawPath.startsWith("/socket.io/") ||
-            rawPath.startsWith("/csrf-token")
+            rawPath.startsWith("/csrf-token") ||
+            rawPath.startsWith("/proxy/") ||
+            rawPath.startsWith("/thumbnail")
         ) {
             return null
         }

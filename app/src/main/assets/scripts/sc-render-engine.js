@@ -646,25 +646,6 @@
         } catch(e) {}
     }
 
-    // 原生原型级底层接管：所有图片创建即走后台异步解码与懒加载，杜绝主线程解码阻塞
-    try {
-        if ('HTMLImageElement' in window) {
-            const proto = HTMLImageElement.prototype;
-            const originalSrcDesc = Object.getOwnPropertyDescriptor(proto, 'src');
-            if (originalSrcDesc && originalSrcDesc.set) {
-                Object.defineProperty(proto, 'src', {
-                    set: function(val) {
-                        this.decoding = 'async';
-                        this.loading = 'lazy';
-                        return originalSrcDesc.set.call(this, val);
-                    },
-                    get: originalSrcDesc.get,
-                    configurable: true,
-                    enumerable: true
-                });
-            }
-        }
-    } catch(_) {}
 
     function scanAndObserveAnimations() {
         if (!animObserver) return;
