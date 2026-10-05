@@ -1,10 +1,10 @@
 /**
- * SillyClient Render Engine v0.2.1
+ * SillyClient Render Engine v0.2.3
  * 位于 SillyTavern 与 WebView/Chromium 之间的深度渲染调度引擎
  *
  * 核心架构组件:
  * 1. ChameleonEngine: 变色龙精准事件感知取色 (首帧瞬时同步 + 定向 DOM 变动通知，彻底 0 轮询)
- * 2. Real-AOP Streaming Batcher: 切面原生拦截 Element.prototype.innerHTML (.mes_text 单帧锁步高刷合批)
+ * 2. Streaming Diagnostics: HUD-only native-frame metrics without intercepting DOM writes
  * 3. Layer Explosion Elimination: 彻底根治几百条消息的图层爆炸，单滚动硬件层 + 动态末尾消息硬件层
  * 4. Full-Fidelity Visuals: 永久保留全站原生毛玻璃 (backdrop-filter) 与立体阴影 (box-shadow)，滑屏零降级零破坏
  * 5. FrameScheduler: 读写严格分离原子化调度 (Read/Write Phase 严格隔离)
@@ -16,9 +16,30 @@
     if (window.__scRenderEngineInstalled) return;
     window.__scRenderEngineInstalled = true;
 
+    let disposed = false;
+    let pageSuspended = false;
+    const ownedListeners = [];
+    const patchRestorers = [];
+
+    function isPageActive() {
+        return !disposed && !pageSuspended && !document.hidden;
+    }
+
+    function listen(target, type, callback, options) {
+        target.addEventListener(type, callback, options);
+        ownedListeners.push(() => target.removeEventListener(type, callback, options));
+    }
+
     // ========================================================
     // 0. 全局引擎状态 & 触感持久化配置
     // ========================================================
+    // 存储可能被 WebView 策略拒绝（错误页/分区上下文）；引擎必须带降级地自持。
+    const safeStorageGet = (key) => {
+        try { return window.localStorage.getItem(key); } catch (_) { return null; }
+    };
+    const safeStorageSet = (key, value) => {
+        try { window.localStorage.setItem(key, value); } catch (_) { /* 持久化不可用时仅用内存态 */ }
+    };
     const engineState = {
         fps: 90.0,
         frameTime: 11.1,
@@ -33,7 +54,7 @@
         frozenAnimCount: 0,
         isInteracting: false,
         lastTopColor: null,
-        hapticEnabled: localStorage.getItem('__sc_haptic_enabled') === '1',
+        hapticEnabled: safeStorageGet('__sc_haptic_enabled') === '1',
         hudVisible: false
     };
 
@@ -57,10 +78,15 @@
             // 1.2 声明 CSS field-sizing 支持，绕过 textarea 同步重排死循环
             if (window.CSS && !CSS.supports('field-sizing', 'content')) {
                 const originalSupports = CSS.supports.bind(CSS);
-                CSS.supports = function(property, value) {
+                const patchedSupports = function(property, value) {
                     if (property === 'field-sizing') return true;
                     return originalSupports(property, value);
                 };
+                const previousSupports = CSS.supports;
+                CSS.supports = patchedSupports;
+                patchRestorers.push(() => {
+                    if (CSS.supports === patchedSupports) CSS.supports = previousSupports;
+                });
             }
 
             // 1.3 取消进角色对话页面自动展开输入法 (用户主动轻触才弹起)
@@ -71,23 +97,35 @@
                 const markUserTap = (e) => {
                     userTappedTextarea = !!(e.target && (e.target.id === 'send_textarea' || (e.target.closest && e.target.closest('#send_textarea'))));
                 };
-                document.addEventListener('touchstart', markUserTap, { capture: true, passive: true });
-                document.addEventListener('mousedown', markUserTap, { capture: true, passive: true });
+                listen(document, 'touchstart', markUserTap, { capture: true, passive: true });
+                listen(document, 'mousedown', markUserTap, { capture: true, passive: true });
 
                 const origTextareaFocus = HTMLTextAreaElement.prototype.focus;
-                HTMLTextAreaElement.prototype.focus = function(options) {
+                const patchedTextareaFocus = function(options) {
                     if (this.id === 'send_textarea' && !userTappedTextarea) return;
                     return origTextareaFocus.call(this, options);
                 };
+                HTMLTextAreaElement.prototype.focus = patchedTextareaFocus;
+                patchRestorers.push(() => {
+                    if (HTMLTextAreaElement.prototype.focus === patchedTextareaFocus) {
+                        HTMLTextAreaElement.prototype.focus = origTextareaFocus;
+                        window.__scAutoFocusBlockerInstalled = false;
+                    }
+                });
 
                 if (window.jQuery) {
-                    const origTrigger = window.jQuery.fn.trigger;
-                    window.jQuery.fn.trigger = function(type, data) {
+                    const jq = window.jQuery;
+                    const origTrigger = jq.fn.trigger;
+                    const patchedTrigger = function(type, data) {
                         if (this.is('#send_textarea') && !userTappedTextarea && (type === 'focus' || type === 'click' || type === 'focusin')) {
                             return this;
                         }
                         return origTrigger.apply(this, arguments);
                     };
+                    jq.fn.trigger = patchedTrigger;
+                    patchRestorers.push(() => {
+                        if (jq.fn.trigger === patchedTrigger) jq.fn.trigger = origTrigger;
+                    });
                 }
             }
 
@@ -158,7 +196,7 @@
                     }
                 };
 
-                jq.fn.slideToggle = function(duration, easing, complete) {
+                const patchedToggle = function(duration, easing, complete) {
                     const cb = typeof easing === 'function' ? easing : complete;
                     const inline = this.filter(SELECTOR);
                     const rest   = this.not(SELECTOR);
@@ -167,7 +205,7 @@
                     return this;
                 };
 
-                jq.fn.slideDown = function(duration, easing, complete) {
+                const patchedDown = function(duration, easing, complete) {
                     const cb = typeof easing === 'function' ? easing : complete;
                     const inline = this.filter(SELECTOR);
                     const rest   = this.not(SELECTOR);
@@ -176,7 +214,7 @@
                     return this;
                 };
 
-                jq.fn.slideUp = function(duration, easing, complete) {
+                const patchedUp = function(duration, easing, complete) {
                     const cb = typeof easing === 'function' ? easing : complete;
                     const inline = this.filter(SELECTOR);
                     const rest   = this.not(SELECTOR);
@@ -184,6 +222,15 @@
                     if (rest.length) origUp.apply(rest, arguments);
                     return this;
                 };
+                jq.fn.slideToggle = patchedToggle;
+                jq.fn.slideDown = patchedDown;
+                jq.fn.slideUp = patchedUp;
+                patchRestorers.push(() => {
+                    if (jq.fn.slideToggle === patchedToggle) jq.fn.slideToggle = origToggle;
+                    if (jq.fn.slideDown === patchedDown) jq.fn.slideDown = origDown;
+                    if (jq.fn.slideUp === patchedUp) jq.fn.slideUp = origUp;
+                    window.__scSlideTogglePatched = false;
+                });
             }
         } catch(_) {}
     }
@@ -193,7 +240,7 @@
     // 2. NATIVE HAPTIC BRIDGE (原生线性马达精密触感引擎)
     // ========================================================
     window.__scHaptic = function(type) {
-        if (!engineState.hapticEnabled) return;
+        if (!isPageActive() || !engineState.hapticEnabled) return;
         try {
             if (window.SillyClientHaptic && window.SillyClientHaptic.trigger) {
                 window.SillyClientHaptic.trigger(type || 'tick');
@@ -202,7 +249,7 @@
     };
 
     // 酒馆全站高频交互触觉委托捕获
-    document.addEventListener('pointerdown', (e) => {
+    listen(document, 'pointerdown', (e) => {
         if (!engineState.hapticEnabled) return;
         const target = e.target;
         if (!target || !(target instanceof Element)) return;
@@ -241,43 +288,69 @@
         readQueue: [],
         writeQueue: [],
         scheduled: false,
+        frameId: null,
+        flushing: false,
 
         read: function(fn) {
+            if (disposed) return;
             this.readQueue.push(fn);
             this.schedule();
         },
 
         write: function(fn) {
+            if (disposed) return;
             this.writeQueue.push(fn);
             this.schedule();
         },
 
         schedule: function() {
-            if (this.scheduled) return;
+            if (this.scheduled || !isPageActive()) return;
             this.scheduled = true;
-            requestAnimationFrame(() => this.flush());
+            this.frameId = requestAnimationFrame(() => {
+                this.frameId = null;
+                this.flush();
+            });
         },
 
         flush: function() {
+            if (this.flushing) return;
+            if (!isPageActive()) {
+                this.pause();
+                return;
+            }
+            if (this.frameId !== null) cancelAnimationFrame(this.frameId);
+            this.frameId = null;
+            this.scheduled = true;
+            this.flushing = true;
             const start = performance.now();
             const reads = this.readQueue.splice(0);
             for (let i = 0; i < reads.length; i++) {
+                if (disposed) break;
                 try { reads[i](); } catch(e) {}
             }
 
             const writes = this.writeQueue.splice(0);
             for (let i = 0; i < writes.length; i++) {
+                if (disposed) break;
                 try { writes[i](); } catch(e) {}
             }
 
             this.scheduled = false;
+            this.flushing = false;
             engineState.lastFrameJsTime = performance.now() - start;
+            if (this.readQueue.length || this.writeQueue.length) this.schedule();
+        },
+
+        pause: function() {
+            if (this.frameId !== null) cancelAnimationFrame(this.frameId);
+            this.frameId = null;
+            this.scheduled = this.flushing;
         }
     };
     window.__scFrameScheduler = scheduler;
 
     // ========================================================
-    // 3. STREAMING BATCHER 2.0 (真实切面原生拦截 innerHTML 锁步合批)
+    // 3. STREAMING DIAGNOSTICS (native HTML and scroll remain upstream-owned)
     // ========================================================
     const streamingBatcher = {
         streamingFpsCount: 0,
@@ -285,61 +358,6 @@
         isStreamingActive: false,
     };
     window.__scStreamingBatcher = streamingBatcher;
-
-    try {
-        const originalInnerHTMLDesc = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
-        if (originalInnerHTMLDesc && originalInnerHTMLDesc.set) {
-            const pendingHtmlMap = new Map();
-            let htmlRafPending = false;
-
-            const flushHtmlBatch = () => {
-                htmlRafPending = false;
-                if (pendingHtmlMap.size === 0) return;
-
-                streamingBatcher.streamingFpsCount++;
-                const chat = document.getElementById('chat');
-                let shouldStickBottom = false;
-
-                // 1. Read 阶段：测距
-                if (chat) {
-                    const scrollDist = chat.scrollHeight - chat.scrollTop - chat.clientHeight;
-                    shouldStickBottom = scrollDist < 140;
-                }
-
-                // 2. Write 阶段：单帧内仅执行 1 次真实的 DOM 树构建
-                for (const [el, html] of pendingHtmlMap.entries()) {
-                    try {
-                        originalInnerHTMLDesc.set.call(el, html);
-                    } catch(_) {}
-                }
-                pendingHtmlMap.clear();
-
-                // 3. 仅吸底 1 次
-                if (shouldStickBottom && chat) {
-                    chat.scrollTop = chat.scrollHeight;
-                }
-            };
-
-            Object.defineProperty(Element.prototype, 'innerHTML', {
-                set: function(val) {
-                    // 仅对酒馆高频流式输出的聊天内容节点 (.mes_text) 进行单帧锁步合批
-                    if (this.classList && this.classList.contains('mes_text')) {
-                        pendingHtmlMap.set(this, val);
-                        streamingBatcher.isStreamingActive = true;
-                        if (!htmlRafPending) {
-                            htmlRafPending = true;
-                            requestAnimationFrame(flushHtmlBatch);
-                        }
-                        return;
-                    }
-                    return originalInnerHTMLDesc.set.call(this, val);
-                },
-                get: originalInnerHTMLDesc.get,
-                configurable: true,
-                enumerable: true
-            });
-        }
-    } catch(_) {}
 
     // ========================================================
     // 4. CHAMELEON ENGINE (变色龙精准事件感知取色 - 0 轮询)
@@ -421,6 +439,7 @@
         },
 
         sampleAndReport: function(force) {
+            if (!isPageActive()) return;
             try {
                 const color = this.computeTopColor();
                 if (color !== null && (force || color !== this.lastReportedColor)) {
@@ -434,6 +453,7 @@
         },
 
         onTargetMutated: function() {
+            if (!isPageActive()) return;
             if (this.debounceTimer) clearTimeout(this.debounceTimer);
             this.debounceTimer = setTimeout(() => {
                 this.debounceTimer = null;
@@ -442,15 +462,16 @@
         },
 
         initObserver: function() {
-            if (this.observer || !window.MutationObserver) return;
+            if (!isPageActive() || !window.MutationObserver) return;
             try {
-                this.observer = new MutationObserver(() => this.onTargetMutated());
+                if (!this.observer) this.observer = new MutationObserver(() => this.onTargetMutated());
                 this.bindTargets();
             } catch(_) {}
         },
 
         bindTargets: function() {
-            if (!this.observer) return;
+            if (!this.observer || !isPageActive()) return;
+            this.observer.disconnect();
             const candidates = [
                 document.documentElement,
                 document.body,
@@ -471,38 +492,60 @@
                     } catch(_) {}
                 }
             });
+        },
+
+        pause: function() {
+            if (this.debounceTimer !== null) clearTimeout(this.debounceTimer);
+            this.debounceTimer = null;
+            if (this.observer) this.observer.disconnect();
         }
     };
     window.__scChameleonEngine = chameleonEngine;
 
-    // 启动首帧先取色一次，增强首屏体验感
-    chameleonEngine.sampleAndReport(true);
+    let chameleonStartupTimer = null;
+
+    function startChameleon() {
+        if (!isPageActive()) return;
+        chameleonEngine.sampleAndReport(true);
+        if (document.readyState !== 'loading') chameleonEngine.initObserver();
+        if (chameleonStartupTimer !== null) clearTimeout(chameleonStartupTimer);
+        // Rebind after the upstream SPA mounts its theme targets.
+        chameleonStartupTimer = setTimeout(() => {
+            chameleonStartupTimer = null;
+            chameleonEngine.bindTargets();
+            chameleonEngine.sampleAndReport(false);
+        }, 500);
+    }
+
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => {
+        listen(document, 'DOMContentLoaded', () => {
             chameleonEngine.sampleAndReport(true);
             chameleonEngine.initObserver();
-        });
-    } else {
-        chameleonEngine.initObserver();
+        }, { once: true });
     }
-    // 延迟 500ms 等待酒馆 SPA 节点挂载完毕后再次绑定与精准采样
-    setTimeout(() => {
-        chameleonEngine.bindTargets();
-        chameleonEngine.sampleAndReport(false);
-    }, 500);
+    startChameleon();
 
     // ========================================================
     // 5. DOM MUTATION BATCHER (突变监控与聚合，HUD 按需挂载)
     // ========================================================
     let mutationCounter = 0;
-    let mutationsPerSec = 0;
     let domMutationObserver = null;
+    let streamingFramePending = false;
 
     function startMutationObserver() {
-        if (domMutationObserver || !window.MutationObserver) return;
+        if (domMutationObserver || !isPageActive() || !engineState.hudVisible || !window.MutationObserver) return;
         try {
             domMutationObserver = new MutationObserver((mutations) => {
+                if (!isPageActive() || !engineState.hudVisible) return;
                 mutationCounter += mutations.length;
+                for (const mutation of mutations) {
+                    const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+                    if (target && target.closest('.mes_text')) {
+                        streamingFramePending = true;
+                        streamingBatcher.isStreamingActive = true;
+                        break;
+                    }
+                }
             });
             domMutationObserver.observe(document.documentElement, {
                 childList: true,
@@ -519,27 +562,32 @@
             domMutationObserver = null;
         }
         mutationCounter = 0;
+        streamingFramePending = false;
+        streamingBatcher.streamingFpsCount = 0;
+        streamingBatcher.currentStreamingFps = 0;
+        streamingBatcher.isStreamingActive = false;
         engineState.mutationsPerSec = 0;
+        engineState.streamingFps = 0;
     }
 
-    setInterval(() => {
-        if (!engineState.hudVisible) return;
-        mutationsPerSec = mutationCounter;
+    function updateMutationMetrics() {
+        if (!isPageActive() || !engineState.hudVisible) return;
+        engineState.mutationsPerSec = mutationCounter;
         mutationCounter = 0;
-        engineState.mutationsPerSec = mutationsPerSec;
         engineState.streamingFps = streamingBatcher.streamingFpsCount;
         streamingBatcher.currentStreamingFps = streamingBatcher.streamingFpsCount;
         streamingBatcher.streamingFpsCount = 0;
-        if (mutationsPerSec === 0 && streamingBatcher.streamingFps === 0) {
+        if (engineState.streamingFps === 0 && !streamingFramePending) {
             streamingBatcher.isStreamingActive = false;
         }
-    }, 1000);
+    }
 
     // ========================================================
     // 6. 根除图层爆炸与物理沙箱 (Layer Explosion Elimination & Containment)
     // 永久保留全站毛玻璃与投影，滑屏绝对零降级
     // ========================================================
     function setupVirtualizationAndContainment() {
+        if (disposed || document.getElementById('sc-p1-containment')) return;
         const style = document.createElement('style');
         style.id = 'sc-p1-containment';
         style.textContent = `
@@ -617,20 +665,25 @@
     if (document.head) {
         setupVirtualizationAndContainment();
     } else {
-        document.addEventListener('DOMContentLoaded', setupVirtualizationAndContainment);
+        listen(document, 'DOMContentLoaded', setupVirtualizationAndContainment, { once: true });
     }
 
     // ========================================================
     // 7. 视口外动画挂起冻结 & 图片原型级异步解码
     // ========================================================
     const frozenElements = new Set();
+    const observedAnimations = new Set();
     let animObserver = null;
+    let animationScanTimer = null;
+    let animationIdleId = null;
     if (window.IntersectionObserver) {
         try {
             animObserver = new IntersectionObserver((entries) => {
+                if (!isPageActive()) return;
                 for (let i = 0; i < entries.length; i++) {
                     const entry = entries[i];
                     const target = entry.target;
+                    if (!target.isConnected || !observedAnimations.has(target)) continue;
                     if (entry.isIntersecting) {
                         target.classList.remove('__sc-anim-frozen');
                         frozenElements.delete(target);
@@ -648,34 +701,68 @@
 
 
     function scanAndObserveAnimations() {
-        if (!animObserver) return;
+        if (!animObserver || !isPageActive()) return;
+        for (const element of observedAnimations) {
+            if (!element.isConnected || !element.matches('.spinner, .rotating, .typing_indicator')) {
+                animObserver.unobserve(element);
+                observedAnimations.delete(element);
+                frozenElements.delete(element);
+                element.classList.remove('__sc-anim-frozen');
+            }
+        }
         const candidates = document.querySelectorAll('.spinner, .rotating, .typing_indicator');
         for (let i = 0; i < candidates.length; i++) {
-            animObserver.observe(candidates[i]);
+            if (!observedAnimations.has(candidates[i])) {
+                animObserver.observe(candidates[i]);
+                observedAnimations.add(candidates[i]);
+            }
         }
+        engineState.frozenAnimCount = frozenElements.size;
     }
 
     // 利用 requestIdleCallback 在浏览器主线程空闲阶段（>3ms）执行后台扫描，杜绝关键帧竞争
     function scheduleIdleScan() {
+        animationScanTimer = null;
+        if (!isPageActive() || !animObserver) return;
         const run = (deadline) => {
+            animationIdleId = null;
+            animationScanTimer = null;
+            if (!isPageActive()) return;
             if (!isCurrentlyInteracting() && (!deadline || deadline.timeRemaining() > 3)) {
                 scanAndObserveAnimations();
             }
-            setTimeout(scheduleIdleScan, 4000);
+            animationScanTimer = setTimeout(scheduleIdleScan, 4000);
         };
         if (window.requestIdleCallback) {
-            window.requestIdleCallback(run, { timeout: 6000 });
+            animationIdleId = window.requestIdleCallback(run, { timeout: 6000 });
         } else {
-            setTimeout(run, 4000);
+            animationScanTimer = setTimeout(run, 4000);
         }
     }
-    setTimeout(scheduleIdleScan, 2000);
+    if (isPageActive() && animObserver) {
+        animationScanTimer = setTimeout(scheduleIdleScan, 2000);
+    }
+
+    function pauseAnimationScan() {
+        if (animationScanTimer !== null) clearTimeout(animationScanTimer);
+        animationScanTimer = null;
+        if (animationIdleId !== null && window.cancelIdleCallback) {
+            window.cancelIdleCallback(animationIdleId);
+        }
+        animationIdleId = null;
+        if (animObserver) animObserver.disconnect();
+        observedAnimations.clear();
+        for (const element of frozenElements) element.classList.remove('__sc-anim-frozen');
+        frozenElements.clear();
+        engineState.frozenAnimCount = 0;
+    }
 
     // ========================================================
     // 8. 交互优先调频器 (Zero-Timer Interaction Governor)
     // ========================================================
     let lastInteractionTimestamp = 0;
     function notifyInteraction() {
+        if (!isPageActive()) return;
         lastInteractionTimestamp = performance.now();
         engineState.isInteracting = true;
     }
@@ -687,22 +774,17 @@
         }
         return true;
     }
-    window.addEventListener('touchstart', notifyInteraction, { passive: true, capture: true });
-    window.addEventListener('touchmove', notifyInteraction, { passive: true });
-    window.addEventListener('scroll', notifyInteraction, { passive: true, capture: true });
+    listen(window, 'touchstart', notifyInteraction, { passive: true, capture: true });
+    listen(window, 'touchmove', notifyInteraction, { passive: true });
+    listen(window, 'scroll', notifyInteraction, { passive: true, capture: true });
 
     // ========================================================
     // 9. PERFORMANCE MONITOR & HUD (美化对齐 SC 整体前端规范)
     // ========================================================
-    if (window.PerformanceObserver) {
-        try {
-            const longTaskObserver = new PerformanceObserver((list) => {
-                const entries = list.getEntries();
-                engineState.longTaskCount += entries.length;
-            });
-            longTaskObserver.observe({ entryTypes: ['longtask'] });
-        } catch(e) {}
-    }
+    let longTaskObserver = null;
+    let mutationInterval = null;
+    let domCountInterval = null;
+    let hudInterval = null;
 
     const frameTimes = [];
     let lastTimestamp = performance.now();
@@ -710,12 +792,16 @@
     let frameLoopCounter = 0;
 
     function frameLoop(now) {
-        if (!engineState.hudVisible) {
+        if (!isPageActive() || !engineState.hudVisible) {
             frameLoopId = null;
             return;
         }
         const delta = now - lastTimestamp;
         lastTimestamp = now;
+        if (streamingFramePending) {
+            streamingFramePending = false;
+            streamingBatcher.streamingFpsCount++;
+        }
 
         if (delta > 0 && delta < 500) {
             frameTimes.push(delta);
@@ -741,30 +827,33 @@
     }
 
     function startFrameLoop() {
-        if (frameLoopId) return;
+        if (frameLoopId !== null || !isPageActive() || !engineState.hudVisible) return;
         lastTimestamp = performance.now();
         frameLoopCounter = 0;
+        frameTimes.length = 0;
         frameLoopId = requestAnimationFrame(frameLoop);
     }
 
     function stopFrameLoop() {
-        if (frameLoopId) {
+        if (frameLoopId !== null) {
             cancelAnimationFrame(frameLoopId);
             frameLoopId = null;
         }
     }
 
-    // DOM 数量仅在 HUD 可见时，或低频空闲采样，日常运行零开销
-    setInterval(() => {
-        if (!isCurrentlyInteracting() && engineState.hudVisible) {
+    function updateDomCount() {
+        if (!isPageActive() || !engineState.hudVisible) return;
+        if (!isCurrentlyInteracting()) {
             engineState.domCount = document.getElementsByTagName('*').length;
         }
-    }, 2000);
+    }
 
     let hudElement = null;
+    let hudRevealFrame = null;
+    let hudHideTimer = null;
 
     function createHud() {
-        if (hudElement) return;
+        if (disposed || hudElement || !document.body) return;
         hudElement = document.createElement('div');
         hudElement.id = 'sc-perf-hud';
         hudElement.style.cssText = `
@@ -790,7 +879,7 @@
             transform-origin: top right;
         `;
 
-        hudElement.addEventListener('dblclick', (e) => {
+        listen(hudElement, 'dblclick', (e) => {
             e.stopPropagation();
             window.__scHaptic('tick');
             window.__scTogglePerfHud();
@@ -880,10 +969,10 @@
         const toggleBtn = hudElement.querySelector('#sc-haptic-toggle-btn');
         const knob = hudElement.querySelector('#sc-haptic-knob');
         if (toggleBtn && knob) {
-            toggleBtn.addEventListener('click', (e) => {
+            listen(toggleBtn, 'click', (e) => {
                 e.stopPropagation();
                 engineState.hapticEnabled = !engineState.hapticEnabled;
-                localStorage.setItem('__sc_haptic_enabled', engineState.hapticEnabled ? '1' : '0');
+                safeStorageSet('__sc_haptic_enabled', engineState.hapticEnabled ? '1' : '0');
                 toggleBtn.style.background = engineState.hapticEnabled ? '#10B981' : '#334155';
                 knob.style.left = engineState.hapticEnabled ? '18px' : '2px';
                 if (engineState.hapticEnabled) {
@@ -893,109 +982,221 @@
         }
 
         document.body.appendChild(hudElement);
+    }
 
-        setInterval(() => {
-            if (!engineState.hudVisible || !hudElement) return;
-            const elFps = hudElement.querySelector('#sc-perf-fps');
-            const elFrame = hudElement.querySelector('#sc-perf-frame');
-            const elP95 = hudElement.querySelector('#sc-perf-p95');
-            const elLong = hudElement.querySelector('#sc-perf-longtasks');
-            const elDom = hudElement.querySelector('#sc-perf-dom');
-            const elMut = hudElement.querySelector('#sc-perf-mut');
-            const elStream = hudElement.querySelector('#sc-perf-stream');
-            const elJs = hudElement.querySelector('#sc-perf-js');
-            const elLayer = hudElement.querySelector('#sc-perf-layer');
-            const elFrozen = hudElement.querySelector('#sc-perf-frozen');
-            const elGov = hudElement.querySelector('#sc-perf-gov');
-            const elHealth = hudElement.querySelector('#sc-perf-health');
-            const elCham = hudElement.querySelector('#sc-perf-cham');
+    function updateHud() {
+        if (!isPageActive() || !engineState.hudVisible || !hudElement) return;
+        const elFps = hudElement.querySelector('#sc-perf-fps');
+        const elFrame = hudElement.querySelector('#sc-perf-frame');
+        const elP95 = hudElement.querySelector('#sc-perf-p95');
+        const elLong = hudElement.querySelector('#sc-perf-longtasks');
+        const elDom = hudElement.querySelector('#sc-perf-dom');
+        const elMut = hudElement.querySelector('#sc-perf-mut');
+        const elStream = hudElement.querySelector('#sc-perf-stream');
+        const elJs = hudElement.querySelector('#sc-perf-js');
+        const elLayer = hudElement.querySelector('#sc-perf-layer');
+        const elFrozen = hudElement.querySelector('#sc-perf-frozen');
+        const elGov = hudElement.querySelector('#sc-perf-gov');
+        const elHealth = hudElement.querySelector('#sc-perf-health');
+        const elCham = hudElement.querySelector('#sc-perf-cham');
 
-            if (elFps) elFps.textContent = engineState.fps;
-            if (elFrame) elFrame.textContent = engineState.frameTime + 'ms';
-            if (elP95) elP95.textContent = engineState.p95 + ' / ' + engineState.p99;
-            if (elLong) elLong.textContent = engineState.longTaskCount;
-            if (elDom) elDom.textContent = Number(engineState.domCount).toLocaleString();
-            if (elMut) elMut.textContent = engineState.mutationsPerSec + '/s';
-            if (elStream) {
-                if (engineState.streamingFps > 0) {
-                    elStream.textContent = 'Lockstep (' + engineState.streamingFps + ' FPS)';
-                    elStream.style.color = '#10B981';
-                } else {
-                    elStream.textContent = 'Idle';
-                    elStream.style.color = '#64748B';
-                }
+        if (elFps) elFps.textContent = engineState.fps;
+        if (elFrame) elFrame.textContent = engineState.frameTime + 'ms';
+        if (elP95) elP95.textContent = engineState.p95 + ' / ' + engineState.p99;
+        if (elLong) elLong.textContent = engineState.longTaskCount;
+        if (elDom) elDom.textContent = Number(engineState.domCount).toLocaleString();
+        if (elMut) elMut.textContent = engineState.mutationsPerSec + '/s';
+        if (elStream) {
+            if (engineState.streamingFps > 0) {
+                elStream.textContent = 'Frames (' + engineState.streamingFps + ' FPS)';
+                elStream.style.color = '#10B981';
+            } else {
+                elStream.textContent = 'Idle';
+                elStream.style.color = '#64748B';
             }
-            if (elJs) elJs.textContent = engineState.lastFrameJsTime.toFixed(1) + 'ms';
-            if (elLayer) elLayer.textContent = 'Single+Tail';
-            if (elFrozen) elFrozen.textContent = engineState.frozenAnimCount;
-            if (elCham) elCham.textContent = 'Event-0Poll';
-            if (elGov) {
-                const interacting = isCurrentlyInteracting();
-                elGov.textContent = interacting ? 'Touch Priority' : 'Smooth';
-                elGov.style.color = interacting ? '#F59E0B' : '#38BDF8';
-            }
+        }
+        if (elJs) elJs.textContent = engineState.lastFrameJsTime.toFixed(1) + 'ms';
+        if (elLayer) elLayer.textContent = 'Single+Tail';
+        if (elFrozen) elFrozen.textContent = engineState.frozenAnimCount;
+        if (elCham) elCham.textContent = 'Event-0Poll';
+        if (elGov) {
+            const interacting = isCurrentlyInteracting();
+            elGov.textContent = interacting ? 'Touch Priority' : 'Smooth';
+            elGov.style.color = interacting ? '#F59E0B' : '#38BDF8';
+        }
 
-            if (elHealth) {
-                if (engineState.fps >= 75 && engineState.p95 < 18) {
-                    elHealth.textContent = '90Hz Ultra';
-                    elHealth.style.background = 'rgba(16, 185, 129, 0.15)';
-                    elHealth.style.color = '#34D399';
-                } else if (engineState.fps >= 55) {
-                    elHealth.textContent = 'Healthy';
-                    elHealth.style.background = 'rgba(16, 185, 129, 0.15)';
-                    elHealth.style.color = '#34D399';
-                } else if (engineState.fps >= 35) {
-                    elHealth.textContent = 'Warning';
-                    elHealth.style.background = 'rgba(245, 158, 11, 0.15)';
-                    elHealth.style.color = '#FBBF24';
-                } else {
-                    elHealth.textContent = 'Lagging';
-                    elHealth.style.background = 'rgba(239, 68, 68, 0.15)';
-                    elHealth.style.color = '#F87171';
-                }
+        if (elHealth) {
+            if (engineState.fps >= 75 && engineState.p95 < 18) {
+                elHealth.textContent = '90Hz Ultra';
+                elHealth.style.background = 'rgba(16, 185, 129, 0.15)';
+                elHealth.style.color = '#34D399';
+            } else if (engineState.fps >= 55) {
+                elHealth.textContent = 'Healthy';
+                elHealth.style.background = 'rgba(16, 185, 129, 0.15)';
+                elHealth.style.color = '#34D399';
+            } else if (engineState.fps >= 35) {
+                elHealth.textContent = 'Warning';
+                elHealth.style.background = 'rgba(245, 158, 11, 0.15)';
+                elHealth.style.color = '#FBBF24';
+            } else {
+                elHealth.textContent = 'Lagging';
+                elHealth.style.background = 'rgba(239, 68, 68, 0.15)';
+                elHealth.style.color = '#F87171';
             }
-        }, 200);
+        }
+    }
+
+    function startDiagnostics() {
+        if (!isPageActive() || !engineState.hudVisible || hudInterval !== null) return;
+        startFrameLoop();
+        startMutationObserver();
+        if (window.PerformanceObserver) {
+            try {
+                longTaskObserver = new PerformanceObserver((list) => {
+                    if (!isPageActive() || !engineState.hudVisible) return;
+                    engineState.longTaskCount += list.getEntries().length;
+                });
+                longTaskObserver.observe({ entryTypes: ['longtask'] });
+            } catch(_) {
+                if (longTaskObserver) longTaskObserver.disconnect();
+                longTaskObserver = null;
+            }
+        }
+        mutationInterval = setInterval(updateMutationMetrics, 1000);
+        domCountInterval = setInterval(updateDomCount, 2000);
+        hudInterval = setInterval(updateHud, 200);
+        updateDomCount();
+        updateHud();
+    }
+
+    function stopDiagnostics() {
+        for (const id of [mutationInterval, domCountInterval, hudInterval]) {
+            if (id !== null) clearInterval(id);
+        }
+        mutationInterval = null;
+        domCountInterval = null;
+        hudInterval = null;
+        stopFrameLoop();
+        stopMutationObserver();
+        if (longTaskObserver) longTaskObserver.disconnect();
+        longTaskObserver = null;
+    }
+
+    function cancelHudTransition() {
+        if (hudRevealFrame !== null) cancelAnimationFrame(hudRevealFrame);
+        hudRevealFrame = null;
+        if (hudHideTimer !== null) clearTimeout(hudHideTimer);
+        hudHideTimer = null;
     }
 
     window.__scTogglePerfHud = function() {
+        if (disposed) return false;
         if (!hudElement) createHud();
+        if (!hudElement) return false;
+        cancelHudTransition();
         engineState.hudVisible = !engineState.hudVisible;
         if (engineState.hudVisible) {
-            startFrameLoop();
-            startMutationObserver();
-            try { engineState.domCount = document.getElementsByTagName('*').length; } catch(_) {}
+            startDiagnostics();
             hudElement.style.display = 'block';
             hudElement.style.opacity = '0';
             hudElement.style.transform = 'scale(0.92) translateY(-4px)';
-            requestAnimationFrame(() => {
+            if (isPageActive()) {
+                hudRevealFrame = requestAnimationFrame(() => {
+                    hudRevealFrame = null;
+                    if (!isPageActive() || !engineState.hudVisible || !hudElement) return;
+                    hudElement.style.opacity = '1';
+                    hudElement.style.transform = 'scale(1) translateY(0)';
+                });
+            } else {
                 hudElement.style.opacity = '1';
                 hudElement.style.transform = 'scale(1) translateY(0)';
-            });
+            }
         } else {
-            stopFrameLoop();
-            stopMutationObserver();
+            stopDiagnostics();
             hudElement.style.opacity = '0';
             hudElement.style.transform = 'scale(0.92) translateY(-4px)';
-            setTimeout(() => {
-                if (!engineState.hudVisible && hudElement) {
-                    hudElement.style.display = 'none';
-                }
-            }, 160);
+            if (isPageActive()) {
+                hudHideTimer = setTimeout(() => {
+                    hudHideTimer = null;
+                    if (!engineState.hudVisible && hudElement) hudElement.style.display = 'none';
+                }, 160);
+            } else {
+                hudElement.style.display = 'none';
+            }
         }
         return engineState.hudVisible;
     };
+
+    function pausePageResources() {
+        scheduler.pause();
+        stopDiagnostics();
+        cancelHudTransition();
+        chameleonEngine.pause();
+        if (chameleonStartupTimer !== null) clearTimeout(chameleonStartupTimer);
+        chameleonStartupTimer = null;
+        pauseAnimationScan();
+        engineState.isInteracting = false;
+        if (hudElement) {
+            hudElement.style.display = engineState.hudVisible ? 'block' : 'none';
+            hudElement.style.opacity = engineState.hudVisible ? '1' : '0';
+            hudElement.style.transform = 'scale(1) translateY(0)';
+        }
+    }
+
+    let resourcesActive = isPageActive();
+    function syncPageResources() {
+        if (disposed) return;
+        if (!isPageActive()) {
+            resourcesActive = false;
+            pausePageResources();
+            return;
+        }
+        if (resourcesActive) return;
+        resourcesActive = true;
+        startChameleon();
+        if (animObserver && animationScanTimer === null && animationIdleId === null) {
+            animationScanTimer = setTimeout(scheduleIdleScan, 2000);
+        }
+        if (scheduler.readQueue.length || scheduler.writeQueue.length) scheduler.schedule();
+        startDiagnostics();
+    }
+
+    function dispose() {
+        if (disposed) return;
+        disposed = true;
+        engineState.hudVisible = false;
+        pausePageResources();
+        scheduler.readQueue.length = 0;
+        scheduler.writeQueue.length = 0;
+        for (const remove of ownedListeners.splice(0)) remove();
+        for (const restore of patchRestorers.splice(0).reverse()) restore();
+        if (hudElement) hudElement.remove();
+        hudElement = null;
+    }
+
+    listen(document, 'visibilitychange', syncPageResources);
+    listen(window, 'pagehide', (event) => {
+        pageSuspended = true;
+        if (event.persisted) syncPageResources();
+        else dispose();
+    });
+    listen(window, 'pageshow', () => {
+        pageSuspended = false;
+        syncPageResources();
+    });
 
     // ========================================================
     // 10. UNIFIED ENGINE NAMESPACE
     // ========================================================
     window.SillyClientEngine = {
-        version: '0.2.2',
+        version: '0.2.3',
         state: engineState,
         scheduler: scheduler,
         batcher: streamingBatcher,
         chameleon: chameleonEngine,
         haptic: window.__scHaptic,
-        toggleHud: window.__scTogglePerfHud
+        toggleHud: window.__scTogglePerfHud,
+        dispose: dispose
     };
 })();
 

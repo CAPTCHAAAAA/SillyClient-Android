@@ -54,39 +54,50 @@ class TavernStaticGateway(
      * 若匹配到静态文件并可读，返回 WebResourceResponse；否则返回 null 由底层网络栈兜底。
      */
     fun shouldInterceptRequest(request: WebResourceRequest?): WebResourceResponse? {
-        if (request == null) return null
-
-        // 仅拦截幂等的 GET 请求
-        if (!"GET".equals(request.method, ignoreCase = true)) {
-            return null
-        }
-
-        val url = request.url ?: return null
-        val host = url.host ?: return null
-
-        // 仅拦截本机回路请求 (127.0.0.1 / localhost)
-        if (host != "127.0.0.1" && host != "localhost") {
-            return null
-        }
-
-        val rawPath = url.path ?: return null
-
-        // 动态业务 API、Socket.io 握手与长轮询严禁拦截，全量交由 Node.js 处理
-        if (rawPath.startsWith("/api/") ||
-            rawPath.startsWith("/socket.io/") ||
-            rawPath.startsWith("/csrf-token") ||
-            rawPath.startsWith("/proxy/") ||
-            rawPath.startsWith("/thumbnail")
-        ) {
-            return null
-        }
-
-        val serverDir = serverDirProvider() ?: return null
-        if (!serverDir.exists() || !serverDir.isDirectory) return null
-
-        val localFile = resolveLocalFile(serverDir, rawPath) ?: return null
-
         return try {
+            if (request == null) return null
+
+            // 仅拦截幂等的 GET 请求
+            if (!"GET".equals(request.method, ignoreCase = true)) {
+                return null
+            }
+
+            val url = request.url ?: return null
+            val host = url.host ?: return null
+
+            // 仅拦截本机回路请求 (127.0.0.1 / localhost)
+            if (host != "127.0.0.1" && host != "localhost") {
+                return null
+            }
+
+            val rawPath = url.path ?: return null
+
+            // 动态业务 API、Webpack bundle (lib.js)、Socket.io、扩展与动态路由严禁拦截，全量交由 Node.js 处理
+            if (rawPath.startsWith("/api/") ||
+                rawPath.startsWith("/socket.io/") ||
+                rawPath.startsWith("/csrf-token") ||
+                rawPath.startsWith("/proxy/") ||
+                rawPath.startsWith("/thumbnail") ||
+                rawPath == "/lib.js" ||
+                rawPath.endsWith("/lib.js") ||
+                rawPath == "/version" ||
+                rawPath == "/login" ||
+                rawPath.startsWith("/callback") ||
+                rawPath.startsWith("/scripts/extensions/third-party/") ||
+                rawPath == "/css/user.css"
+            ) {
+                return null
+            }
+
+            val serverDir = try {
+                serverDirProvider()
+            } catch (_: Throwable) {
+                null
+            } ?: return null
+            if (!serverDir.exists() || !serverDir.isDirectory) return null
+
+            val localFile = resolveLocalFile(serverDir, rawPath) ?: return null
+
             val extension = localFile.extension.lowercase()
             val mimeType = MIME_MAP[extension] ?: "application/octet-stream"
             val encoding = if (mimeType.startsWith("text/") || mimeType == "application/javascript" || mimeType == "application/json") "UTF-8" else null
@@ -104,7 +115,7 @@ class TavernStaticGateway(
                 headers,
                 FileInputStream(localFile)
             )
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             null
         }
     }
@@ -125,21 +136,22 @@ class TavernStaticGateway(
         }
 
         val cleanPath = decodedPath.trimStart('/')
-        if (cleanPath.isEmpty()) {
-            val indexFile = File(File(serverDir, "public"), "index.html")
-            return if (indexFile.isFile && indexFile.canRead()) indexFile else null
+        if (cleanPath.isEmpty() ||
+            cleanPath.equals("index.html", ignoreCase = true) ||
+            cleanPath.equals("lib.js", ignoreCase = true) ||
+            cleanPath.endsWith("/lib.js", ignoreCase = true)
+        ) {
+            return null
         }
 
         // 搜索优先级列表：
         // 1. serverDir/public/<path> (前端核心静态资源)
         // 2. serverDir/data/default-user/<path> (角色卡、背景、头像、世界书等用户数据)
         // 3. serverDir/data/<path>
-        // 4. serverDir/<path>
         val candidates = listOf(
             File(File(serverDir, "public"), cleanPath),
             File(File(File(serverDir, "data"), "default-user"), cleanPath),
-            File(File(serverDir, "data"), cleanPath),
-            File(serverDir, cleanPath)
+            File(File(serverDir, "data"), cleanPath)
         )
 
         for (candidate in candidates) {

@@ -25,3 +25,6 @@ local.properties
 *.hprof
 *.apk
 
+
+# Bundled dependency archives exceed GitHub's 100MB blob limit; kept local-only.
+app/src/main/assets/bundled/*.tar

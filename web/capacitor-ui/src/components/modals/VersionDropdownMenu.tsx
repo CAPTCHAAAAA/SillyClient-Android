@@ -40,14 +40,14 @@ export const VersionDropdownMenu: React.FC<VersionDropdownMenuProps> = ({
       .map((r) => ({
         value: r.tag,
         label: r.tag,
-        sublabel: r.prerelease ? "预发布版本" : "正式版本",
+        sublabel: r.isBranch ? "稳定分支" : r.prerelease ? "预发布版本" : "正式版本",
         zipballUrl: r.zipballUrl,
         recommended: r.tag === releases.find((x) => !x.prerelease)?.tag,
       })),
     {
       value: "stable",
-      label: "内置版",
-      sublabel: "本地内置最新版本",
+      label: "稳定版",
+      sublabel: "自动选择稳定版本",
       zipballUrl: undefined,
     },
   ];

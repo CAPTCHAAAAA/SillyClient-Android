@@ -1,7 +1,12 @@
 package com.sillyclient.plugin
 
 import android.content.Intent
+import android.app.AlertDialog
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.DocumentsContract
+import android.provider.Settings
 import android.util.Base64
 import androidx.activity.result.ActivityResult
 import com.getcapacitor.JSArray
@@ -16,6 +21,10 @@ import com.sillyclient.auth.RemoteBasicAuthStore
 import com.sillyclient.download.TavernDownloadFiles
 import com.sillyclient.runtime.CompanionPresetInstaller
 import com.sillyclient.runtime.CompanionPresetRequest
+import com.sillyclient.runtime.PreinstalledExtensionsRequest
+import com.sillyclient.runtime.PreinstalledExtensionInstaller
+import com.sillyclient.runtime.InstanceMaintenance
+import com.sillyclient.runtime.RuntimePaths
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -31,22 +40,38 @@ import org.json.JSONObject
  */
 @CapacitorPlugin(name = "TarvenEnv")
 class TarvenEnvPlugin : Plugin() {
+    private val releaseExecutor = java.util.concurrent.Executors.newSingleThreadExecutor {
+        Thread(it, "SillyClient-releases").apply { isDaemon = true }
+    }
+    private var installationPicker: AlertDialog? = null
+    private var installationPickerCall: PluginCall? = null
 
     companion object {
         private const val TAG = "SillyClient"
         private var instance: TarvenEnvPlugin? = null
 
         /** Push event to Capacitor JS listeners. Safe from any thread. */
-        fun notify(event: String, data: JSObject) {
+        fun notify(event: String, data: JSObject, shouldDeliver: () -> Boolean = { true }) {
             val p = instance ?: return
             p.activity?.runOnUiThread {
-                p.notifyListeners(event, data)
+                if (instance === p && shouldDeliver()) p.notifyListeners(event, data)
             }
         }
     }
 
     override fun load() {
         instance = this
+    }
+
+    override fun handleOnDestroy() {
+        releaseExecutor.shutdownNow()
+        installationPicker?.setOnCancelListener(null)
+        installationPicker?.dismiss()
+        installationPicker = null
+        installationPickerCall?.reject("cancelled")
+        installationPickerCall = null
+        if (instance === this) instance = null
+        super.handleOnDestroy()
     }
 
     @PluginMethod
@@ -57,6 +82,7 @@ class TarvenEnvPlugin : Plugin() {
         }
         val port = call.data.optInt("port", 8000)
         val instanceId = call.data.optString("instanceId", "default")
+        val instanceName = call.getString("instanceName")
         val version = call.data.optString("version", "stable")
         val zipballUrl = call.data.optString("zipballUrl", "")
         val localZipPath = call.data.optString("localZipPath", "")
@@ -93,8 +119,51 @@ class TarvenEnvPlugin : Plugin() {
         }
         val urlArg = if (zipballUrl.isEmpty()) null else zipballUrl
         val localArg = if (localZipPath.isEmpty()) null else localZipPath
-        act.runOnUiThread { act.provisionAndStart(port, instanceId, version, config, urlArg, localArg, companionPreset) }
-        call.resolve()
+        val installPath = if (call.data.isNull("installPath")) null else call.data.optString("installPath", "").ifBlank { null }
+        val installPathMode = call.getString("installPathMode", "exact") ?: "exact"
+        if (installPathMode !in setOf("root", "exact")) {
+            call.reject("Invalid installation path mode")
+            return
+        }
+        val operationId = call.getString("operationId")
+        val preinstall = try { parsePreinstall(call) } catch (error: Exception) {
+            call.reject(error.message ?: "Invalid preinstall request", error)
+            return
+        }
+        act.runOnUiThread {
+            try {
+                act.provisionAndStart(port, instanceId, version, config, urlArg, localArg, companionPreset, operationId, preinstall, installPath, installPathMode, instanceName)
+                call.resolve()
+            } catch (error: Exception) {
+                call.reject(error.message ?: "Unable to start instance", error)
+            }
+        }
+    }
+
+    private fun parsePreinstall(call: PluginCall): PreinstalledExtensionsRequest? {
+        if (!call.data.has("preinstall") || call.data.isNull("preinstall")) return null
+        val request = call.data.getJSONObject("preinstall")
+        require(request.getInt("revision") == 1) { "不支持的预制安装清单版本" }
+        val ids = request.getJSONArray("extensionIds")
+        require(ids.length() <= 4) { "预制安装选择过多" }
+        val parsed = PreinstalledExtensionsRequest(1, (0 until ids.length()).map { ids.getString(it) })
+        val catalog = context.assets.open("preinstalled-extensions/catalog.json").bufferedReader().use { it.readText() }
+        PreinstalledExtensionInstaller.selection(catalog, parsed)
+        return parsed
+    }
+
+    @PluginMethod
+    fun openExternalUrl(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val url = call.getString("url") ?: run { call.reject("Missing web address"); return }
+        act.runOnUiThread {
+            try {
+                act.openExternalUrl(url)
+                call.resolve()
+            } catch (error: Exception) {
+                call.reject("无法打开系统浏览器", error)
+            }
+        }
     }
 
     @PluginMethod
@@ -104,6 +173,17 @@ class TarvenEnvPlugin : Plugin() {
         val target = if (url.isEmpty()) null else url
         val instanceId = call.data.optString("instanceId", "").ifBlank { null }
         val showGestureHint = call.data.optBoolean("showGestureHint", false)
+        if (instanceId == null && target != null) {
+            act.runOnUiThread {
+                try {
+                    act.openExternalUrl(target)
+                    call.resolve()
+                } catch (error: Exception) {
+                    call.reject("无法打开系统浏览器", error)
+                }
+            }
+            return
+        }
         try {
             val credentials = instanceId?.let { RemoteBasicAuthStore(context).load(it) }
             act.runOnUiThread {
@@ -139,14 +219,22 @@ class TarvenEnvPlugin : Plugin() {
     @PluginMethod
     fun returnToTavern(call: PluginCall) {
         val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
-        act.runOnUiThread { act.returnToTavern() }
-        call.resolve()
+        act.runOnUiThread {
+            try {
+                if (act.returnToTavern()) call.resolve()
+                else call.reject("酒馆服务尚未就绪，请重新启动实例")
+            } catch (error: Exception) {
+                call.reject(error.message ?: "无法返回酒馆页面", error)
+            }
+        }
     }
 
     @PluginMethod
     fun closeTavern(call: PluginCall) {
         val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
-        act.runOnUiThread { act.closeTavern() }
+        val instanceId = call.getString("instanceId")?.ifBlank { null }
+        val operationId = call.getString("operationId")?.ifBlank { null }
+        act.runOnUiThread { act.closeTavern(instanceId, operationId) }
         call.resolve()
     }
 
@@ -157,53 +245,62 @@ class TarvenEnvPlugin : Plugin() {
         ret.put("serverReady", act.isServerReady())
         ret.put("mode", if (act.isTavernVisible()) "tavern" else "launcher")
         ret.put("url", act.getTavernUrl())
+        act.getRunningInstanceId()?.let { ret.put("instanceId", it) }
+        act.getRunningOperationId()?.let { ret.put("operationId", it) }
         call.resolve(ret)
     }
 
     /** 拉取 GitHub SillyTavern releases。在子线程执行 HTTP。 */
     @PluginMethod
     fun fetchReleases(call: PluginCall) {
-        Thread {
+        releaseExecutor.execute {
             try {
-                val url = URL("https://api.github.com/repos/SillyTavern/SillyTavern/releases?per_page=30")
-                val conn = url.openConnection() as HttpURLConnection
-                conn.connectTimeout = 15000
-                conn.readTimeout = 20000
-                conn.setRequestProperty("Accept", "application/vnd.github+json")
-                conn.setRequestProperty("User-Agent", "SillyClient")
-                conn.connect()
-                if (conn.responseCode != 200) {
-                    call.reject("GitHub API HTTP ${conn.responseCode}")
-                    conn.disconnect()
-                    return@Thread
-                }
-                val body = conn.inputStream.bufferedReader().use { it.readText() }
-                conn.disconnect()
-                val arr = org.json.JSONArray(body)
-                val releases = JSArray()
-                val n = Math.min(arr.length(), 30)
-                for (i in 0 until n) {
-                    val o = arr.getJSONObject(i)
-                    val r = JSObject()
-                    r.put("tag", o.optString("tag_name", ""))
-                    r.put("name", o.optString("name", o.optString("tag_name", "")))
-                    r.put("publishedAt", o.optString("published_at", ""))
-                    r.put("zipballUrl", o.optString("zipball_url", ""))
-                    r.put("prerelease", o.optBoolean("prerelease", false))
-                    releases.put(r)
-                }
-                val ret = JSObject()
-                ret.put("releases", releases)
-                call.resolve(ret)
-            } catch (e: Exception) {
-                call.reject("fetchReleases: ${e.message}")
+                val releases = com.sillyclient.runtime.TavernReleaseCatalog(
+                    File(context.filesDir, "tarven/tavern-releases.json")
+                ).load()
+                call.resolve(JSObject().put("releases", releases))
+            } catch (error: Exception) {
+                call.reject("Unable to load Tavern versions", error)
             }
-        }.start()
+        }
     }
 
-    /** 系统目录选择器(ACTION_OPEN_DOCUMENT_TREE)。 */
     @PluginMethod
     fun pickDirectory(call: PluginCall) {
+        val purpose = call.getString("purpose", "source") ?: "source"
+        if (purpose !in setOf("installation", "source")) {
+            call.reject("Invalid directory selection purpose")
+            return
+        }
+
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+
+        // 如果选择安装目录且运行在 Android 11+，检查所有文件管理权限，若未授权引导用户授权
+        if (purpose == "installation" && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+            act.runOnUiThread {
+                AlertDialog.Builder(act)
+                    .setTitle("存储权限说明")
+                    .setMessage("自定义安装路径需要在系统设置中授予「所有文件访问权限」，以便在该路径读写酒馆文件与配置。")
+                    .setPositiveButton("前往授权") { _, _ ->
+                        try {
+                            val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                                data = Uri.parse("package:${act.packageName}")
+                            }
+                            act.startActivity(intent)
+                        } catch (_: Exception) {
+                            val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                            act.startActivity(intent)
+                        }
+                        call.reject("请在系统设置中授予「所有文件访问权限」后重试")
+                    }
+                    .setNegativeButton("取消") { _, _ ->
+                        call.reject("cancelled")
+                    }
+                    .show()
+            }
+            return
+        }
+
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             addFlags(
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or
@@ -346,13 +443,49 @@ class TarvenEnvPlugin : Plugin() {
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
         } catch (_: Exception) { /* 忽略持久化失败 */ }
-        // 从 tree URI 提取显示名(最后一个 path 段解码)
-        val path = treeUri.path ?: ""
-        val name = path.substringAfterLast(':').ifEmpty { "selected" }
+
+        val physicalPath = resolveTreeUriToPath(treeUri)
+        val pathStr = physicalPath ?: treeUri.path ?: ""
+        val name = if (physicalPath != null) File(physicalPath).name else pathStr.substringAfterLast(':').ifEmpty { "selected" }
+
         val ret = JSObject()
         ret.put("name", name)
-        ret.put("path", treeUri.toString())
+        ret.put("path", physicalPath ?: treeUri.toString())
+        ret.put("installPathMode", if (call.getString("purpose") == "installation") "root" else "exact")
         call.resolve(ret)
+    }
+
+    private fun resolveTreeUriToPath(treeUri: Uri): String? {
+        return try {
+            val docId = DocumentsContract.getTreeDocumentId(treeUri)
+            val parts = docId.split(":")
+            val type = parts[0]
+            val subPath = if (parts.size > 1) parts[1].trimStart('/') else ""
+            if ("primary".equals(type, ignoreCase = true)) {
+                val base = Environment.getExternalStorageDirectory().absolutePath
+                if (subPath.isEmpty()) base else "$base/$subPath"
+            } else {
+                val extDirs = getContext().getExternalFilesDirs(null)
+                var sdCardRoot: String? = null
+                for (f in extDirs) {
+                    if (f != null) {
+                        val abs = f.absolutePath
+                        val idx = abs.indexOf(type)
+                        if (idx != -1) {
+                            sdCardRoot = abs.substring(0, idx + type.length)
+                            break
+                        }
+                    }
+                }
+                if (sdCardRoot != null) {
+                    if (subPath.isEmpty()) sdCardRoot else "$sdCardRoot/$subPath"
+                } else {
+                    "/storage/$type/$subPath"
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     /** 系统图片选择器,复制到 covers/{instanceId}。 */
@@ -452,20 +585,22 @@ class TarvenEnvPlugin : Plugin() {
     @PluginMethod
     fun scanInstances(call: PluginCall) {
         val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
-        val list = act.scanInstances()
-        val arr = JSArray()
-        for (s in list) {
-            val o = JSObject()
-            o.put("instanceId", s.first)
-            o.put("version", s.second)
-            o.put("path", s.third)
-            o.put("sizeBytes", s.fourth)
-            o.put("hasServer", s.fifth)
-            arr.put(o)
-        }
-        val ret = JSObject()
-        ret.put("instances", arr)
-        call.resolve(ret)
+        Thread {
+            try {
+                val arr = JSArray()
+                for (s in act.scanInstances()) {
+                    arr.put(JSObject()
+                        .put("instanceId", s.first)
+                        .put("version", s.second)
+                        .put("path", s.third)
+                        .put("sizeBytes", s.fourth)
+                        .put("hasServer", s.fifth))
+                }
+                call.resolve(JSObject().put("instances", arr))
+            } catch (error: Exception) {
+                call.reject(error.message ?: "Instance scan failed", error)
+            }
+        }.start()
     }
 
     @PluginMethod
@@ -473,16 +608,23 @@ class TarvenEnvPlugin : Plugin() {
         val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
         val instanceId = call.data.optString("instanceId", "default")
         val port = call.data.optInt("port", 8000)
-        val info = act.getInstanceInfo(instanceId, port)
-        val ret = JSObject()
-        ret.put("instanceId", instanceId)
-        ret.put("version", info.first)
-        ret.put("path", info.second)
-        ret.put("sizeBytes", info.third)
-        ret.put("createdAt", info.fourth)
-        ret.put("port", port)
-        ret.put("status", info.fifth)
-        call.resolve(ret)
+        val installPath = call.getString("installPath")
+        Thread {
+            try {
+                val info = act.getInstanceInfo(instanceId, port, installPath)
+                val ret = JSObject()
+                ret.put("instanceId", instanceId)
+                ret.put("version", info.first)
+                ret.put("path", info.second)
+                ret.put("sizeBytes", info.third)
+                ret.put("createdAt", info.fourth)
+                ret.put("port", port)
+                ret.put("status", info.fifth)
+                call.resolve(ret)
+            } catch (error: Exception) {
+                call.reject(error.message ?: "Instance details failed", error)
+            }
+        }.start()
     }
 
     @PluginMethod
@@ -647,20 +789,105 @@ class TarvenEnvPlugin : Plugin() {
         return "${url.protocol.lowercase()}://${url.host.lowercase()}:$port"
     }
 
+    @PluginMethod
+    fun checkLegacyInstances(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        Thread {
+            try {
+                val instances = JSArray()
+                act.checkLegacyInstances().forEach { item ->
+                    instances.put(JSObject().put("instanceId", item.instanceId).put("name", item.name)
+                        .put("currentPath", item.currentPath).put("targetPath", item.targetPath).put("version", item.version))
+                }
+                call.resolve(JSObject().put("instances", instances))
+            } catch (error: Exception) {
+                call.reject(error.message ?: "Could not check legacy instances", error)
+            }
+        }.start()
+    }
+
+    @PluginMethod
+    fun relocateInstance(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val id = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
+        val target = call.getString("targetPath")
+        val installPath = call.getString("installPath")
+        val operationId = call.getString("operationId")?.ifBlank { null }
+        Thread {
+            try { call.resolve(relocationResult(act.relocateInstance(id, target, installPath, operationId))) }
+            catch (error: Exception) { call.reject(error.message ?: "Instance relocation failed", error) }
+        }.start()
+    }
+
+    @PluginMethod
+    fun renameInstance(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val id = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
+        val name = call.getString("newName") ?: run { call.reject("newName required"); return }
+        val path = call.getString("installPath")
+        val operationId = call.getString("operationId")?.ifBlank { null }
+        Thread {
+            try {
+                val result = act.renameInstance(id, name, path, operationId)
+                call.resolve(JSObject().put("success", result.success).put("oldId", result.oldId)
+                    .put("newId", result.newId).put("oldPath", result.oldPath).put("newPath", result.newPath))
+            } catch (error: Exception) { call.reject(error.message ?: "Instance rename failed", error) }
+        }.start()
+    }
+
+    @PluginMethod
+    fun migrateLegacyInstances(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val selected = try {
+            if (!call.data.has("instanceIds")) null else call.data.getJSONArray("instanceIds").let { array ->
+                require(array.length() <= 512) { "Too many legacy instances selected" }
+                (0 until array.length()).map { array.getString(it) }.toSet()
+            }
+        } catch (error: Exception) { call.reject("Invalid legacy instance selection", error); return }
+        Thread {
+            try {
+                val candidates = act.checkLegacyInstances()
+                require(selected == null || candidates.map { it.instanceId }.toSet().containsAll(selected)) {
+                    "Legacy instance list changed; refresh it before migrating"
+                }
+                val results = JSArray()
+                var succeeded = true
+                for (item in candidates.filter { selected == null || it.instanceId in selected }) {
+                    try {
+                        results.put(relocationResult(act.relocateInstance(item.instanceId)))
+                    } catch (error: Exception) {
+                        succeeded = false
+                        results.put(JSObject().put("success", false).put("instanceId", item.instanceId)
+                            .put("oldPath", item.currentPath).put("newPath", item.currentPath)
+                            .put("error", error.message ?: "Instance relocation failed"))
+                    }
+                }
+                call.resolve(JSObject().put("success", succeeded).put("results", results))
+            } catch (error: Exception) { call.reject(error.message ?: "Legacy migration failed", error) }
+        }.start()
+    }
+
+    private fun relocationResult(result: com.sillyclient.runtime.InstanceRelocation.Result): JSObject =
+        JSObject().put("success", result.success).put("instanceId", result.instanceId)
+            .put("oldPath", result.oldPath).put("newPath", result.newPath).put("unchanged", result.unchanged).also {
+                result.retainedSourcePath?.let { path -> it.put("retainedSourcePath", path) }
+            }
+
     /** 卸载实例:删除安装目录 + 封面图。 */
     @PluginMethod
     fun uninstallInstance(call: PluginCall) {
         val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
         val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
+        val operationId = call.getString("operationId")?.ifBlank { null }
         Thread {
             try {
-                val freedBytes = act.uninstallInstance(instanceId)
+                val freedBytes = act.uninstallInstance(instanceId, call.getString("installPath"), operationId)
                 val ret = JSObject()
                 ret.put("success", true)
                 ret.put("freedBytes", freedBytes)
                 call.resolve(ret)
             } catch (e: Exception) {
-                call.reject("uninstall failed: ${e.message}")
+                call.reject(e.message ?: "删除失败，请重试", e)
             }
         }.start()
     }
@@ -670,9 +897,14 @@ class TarvenEnvPlugin : Plugin() {
     fun cleanGarbage(call: PluginCall) {
         val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
         val dryRun = call.getBoolean("dryRun", true) ?: true
+        fun stringList(key: String): List<String>? = call.data.optJSONArray(key)?.let { array ->
+            (0 until array.length()).map { array.getString(it) }
+        }
+        val activeInstanceIds = stringList("activeInstanceIds")
+        val activeCoverPaths = stringList("activeCoverPaths")
         Thread {
             try {
-                val items = act.cleanGarbage(dryRun)
+                val items = act.cleanGarbage(dryRun, activeInstanceIds, activeCoverPaths)
                 var totalBytes = 0L
                 val arr = JSArray()
                 for (i in 0 until items.length()) {
@@ -690,20 +922,151 @@ class TarvenEnvPlugin : Plugin() {
         }.start()
     }
 
+    @PluginMethod
+    fun scanInstanceMaintenance(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
+        val installPath = call.getString("installPath")
+        Thread {
+            try {
+                if (!installPath.isNullOrBlank()) {
+                    runCatching {
+                        val paths = RuntimePaths.from(act)
+                        paths.launchDirectoryFor(instanceId, installPath)
+                    }
+                }
+                val scan = act.scanInstanceMaintenance(instanceId, installPath)
+                val items = JSArray()
+                scan.items.forEach { item ->
+                    items.put(JSObject()
+                        .put("id", item.id).put("token", item.token)
+                        .put("kind", item.kind).put("relativePath", item.relativePath)
+                        .put("sizeBytes", item.sizeBytes).put("description", item.description)
+                        .put("confidence", item.confidence).put("defaultSelected", item.defaultSelected)
+                        .put("action", item.action))
+                }
+                call.resolve(JSObject()
+                    .put("instanceId", instanceId).put("scanId", scan.scanId).put("expiresAt", scan.expiresAt)
+                    .put("items", items).put("warnings", JSArray(scan.warnings)))
+            } catch (error: Exception) {
+                call.reject(error.message ?: "Instance maintenance scan failed", error)
+            }
+        }.start()
+    }
+
+    @PluginMethod
+    fun applyInstanceMaintenance(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
+        val scanId = call.getString("scanId") ?: run { call.reject("scanId required"); return }
+        val installPath = call.getString("installPath")
+        val selection = try {
+            val items = call.data.getJSONArray("items")
+            require(items.length() <= 512) { "Too many maintenance selections" }
+            (0 until items.length()).map { index ->
+                val item = items.getJSONObject(index)
+                InstanceMaintenance.Selection(item.getString("id"), item.getString("token"))
+            }
+        } catch (error: Exception) {
+            call.reject(error.message ?: "Invalid maintenance selection", error)
+            return
+        }
+        Thread {
+            try {
+                if (!installPath.isNullOrBlank()) {
+                    runCatching {
+                        val paths = RuntimePaths.from(act)
+                        paths.launchDirectoryFor(instanceId, installPath)
+                    }
+                }
+                val applied = act.applyInstanceMaintenance(instanceId, scanId, selection, installPath)
+                val results = JSArray()
+                applied.results.forEach { result ->
+                    val item = JSObject().put("id", result.id).put("success", result.success)
+                        .put("action", result.action).put("freedBytes", result.freedBytes)
+                        .put("quarantinedBytes", result.quarantinedBytes)
+                    result.recoveryId?.let { item.put("recoveryId", it) }
+                    result.error?.let { item.put("error", it) }
+                    results.put(item)
+                }
+                call.resolve(JSObject().put("success", applied.success).put("results", results)
+                    .put("freedBytes", applied.freedBytes).put("quarantinedBytes", applied.quarantinedBytes)
+                    .put("recoveryIds", JSArray(applied.recoveryIds)))
+            } catch (error: Exception) {
+                call.reject(error.message ?: "Instance maintenance failed", error)
+            }
+        }.start()
+    }
+
+    @PluginMethod
+    fun listInstanceMaintenanceRecovery(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
+        val installPath = call.getString("installPath")
+        Thread {
+            try {
+                if (!installPath.isNullOrBlank()) {
+                    runCatching {
+                        val paths = RuntimePaths.from(act)
+                        paths.launchDirectoryFor(instanceId, installPath)
+                    }
+                }
+                val recovery = act.listInstanceMaintenanceRecovery(instanceId, installPath)
+                val items = JSArray()
+                recovery.items.forEach { item ->
+                    val value = JSObject().put("recoveryId", item.recoveryId).put("token", item.token)
+                        .put("createdAt", item.createdAt).put("description", item.description)
+                        .put("relativePath", item.relativePath).put("kind", item.kind).put("action", item.action)
+                        .put("sizeBytes", item.sizeBytes).put("canRestore", item.canRestore)
+                    item.conflict?.let { value.put("conflict", it) }
+                    items.put(value)
+                }
+                call.resolve(JSObject().put("items", items).put("warnings", JSArray(recovery.warnings)))
+            } catch (error: Exception) {
+                call.reject(error.message ?: "Instance recovery scan failed", error)
+            }
+        }.start()
+    }
+
+    @PluginMethod
+    fun restoreInstanceMaintenance(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
+        val recoveryId = call.getString("recoveryId") ?: run { call.reject("recoveryId required"); return }
+        val token = call.getString("token") ?: run { call.reject("token required"); return }
+        val installPath = call.getString("installPath")
+        Thread {
+            try {
+                if (!installPath.isNullOrBlank()) {
+                    runCatching {
+                        val paths = RuntimePaths.from(act)
+                        paths.launchDirectoryFor(instanceId, installPath)
+                    }
+                }
+                val restored = act.restoreInstanceMaintenance(instanceId, recoveryId, token, installPath)
+                val value = JSObject().put("success", restored.success)
+                restored.recoveryId?.let { value.put("recoveryId", it) }
+                restored.relativePath?.let { value.put("relativePath", it) }
+                restored.error?.let { value.put("error", it) }
+                call.resolve(value)
+            } catch (error: Exception) {
+                call.reject(error.message ?: "Instance maintenance restore failed", error)
+            }
+        }.start()
+    }
+
     /** 删除指定垃圾项(按 path)。 */
     @PluginMethod
     fun deleteGarbageItem(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
         val path = call.getString("path") ?: run { call.reject("path required"); return }
+        val token = call.getString("token")
         Thread {
             try {
-                val file = java.io.File(path)
-                if (!file.exists()) {
-                    call.reject("file not found")
-                    return@Thread
-                }
-                file.deleteRecursively()
+                val freedBytes = act.deleteGarbageItem(path, token)
                 val ret = JSObject()
                 ret.put("success", true)
+                ret.put("freedBytes", freedBytes)
                 call.resolve(ret)
             } catch (e: Exception) {
                 call.reject("delete failed: ${e.message}")
@@ -711,10 +1074,7 @@ class TarvenEnvPlugin : Plugin() {
         }.start()
     }
 
-    /**
-     * 数据迁移：将旧酒馆目录或 ZIP 压缩包迁入受管实例。
-     * 支持复制迁移 (copy) 与 原地接管 (takeover)。
-     */
+    /** Copy into a fresh managed instance; unsupported execution paths fail before writes. */
     @PluginMethod
     fun migrateInstance(call: PluginCall) {
         val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
@@ -723,14 +1083,20 @@ class TarvenEnvPlugin : Plugin() {
         val mode = call.getString("mode", "copy") ?: "copy"
         val includeSecrets = call.getBoolean("includeSecrets", false) ?: false
         val targetPath = call.getString("targetPath")
+        val operationId = call.getString("operationId")
+        val preinstall = try { parsePreinstall(call) } catch (error: Exception) {
+            call.reject(error.message ?: "Invalid preinstall request", error)
+            return
+        }
 
         Thread {
             try {
-                val ok = act.migrateInstance(sourcePath, instanceId, mode, includeSecrets, targetPath)
+                val ok = act.migrateInstance(sourcePath, instanceId, mode, includeSecrets, targetPath, operationId, preinstall)
                 if (ok) {
                     val ret = JSObject()
                     ret.put("success", true)
                     ret.put("instanceId", instanceId)
+                    ret.put("targetPath", act.getInstanceInfo(instanceId, 8000).second)
                     call.resolve(ret)
                 } else {
                     call.reject("数据迁移失败，请检查来源文件是否完整")
@@ -741,4 +1107,85 @@ class TarvenEnvPlugin : Plugin() {
             }
         }.start()
     }
+
+    @PluginMethod
+    fun setInstancePassword(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
+        val password = call.getString("password")
+        val oldPassword = call.getString("oldPassword")
+        try {
+            val res = act.runtimePaths.instanceLock.setPassword(instanceId, password, oldPassword)
+            val ret = JSObject().apply {
+                put("success", res.success)
+                put("hasPassword", res.hasPassword)
+            }
+            call.resolve(ret)
+        } catch (e: Exception) {
+            call.reject(e.message ?: "Failed to set instance password")
+        }
+    }
+
+    @PluginMethod
+    fun verifyInstancePassword(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
+        val password = call.getString("password") ?: ""
+        try {
+            val valid = act.runtimePaths.instanceLock.verifyPassword(instanceId, password)
+            val ret = JSObject().apply {
+                put("valid", valid)
+            }
+            call.resolve(ret)
+        } catch (e: Exception) {
+            call.reject(e.message ?: "Failed to verify instance password")
+        }
+    }
+
+    @PluginMethod
+    fun hasInstancePassword(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
+        try {
+            val has = act.runtimePaths.instanceLock.hasPassword(instanceId)
+            val ret = JSObject().apply {
+                put("hasPassword", has)
+            }
+            call.resolve(ret)
+        } catch (e: Exception) {
+            call.reject(e.message ?: "Failed to check instance password")
+        }
+    }
+
+    @PluginMethod
+    fun clearInstancePassword(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
+        val oldPassword = call.getString("oldPassword")
+        try {
+            val success = act.runtimePaths.instanceLock.clearPassword(instanceId, oldPassword)
+            val ret = JSObject().apply {
+                put("success", success)
+            }
+            call.resolve(ret)
+        } catch (e: Exception) {
+            call.reject(e.message ?: "Failed to clear instance password")
+        }
+    }
+
+    @PluginMethod
+    fun listInstancePasswordStatus(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        try {
+            val statusMap = act.runtimePaths.instanceLock.listStatus()
+            val ret = JSObject()
+            for ((k, v) in statusMap) {
+                ret.put(k, v)
+            }
+            call.resolve(ret)
+        } catch (e: Exception) {
+            call.reject(e.message ?: "Failed to list instance password status")
+        }
+    }
 }
+

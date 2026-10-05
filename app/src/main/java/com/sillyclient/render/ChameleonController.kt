@@ -154,27 +154,45 @@ class ChameleonController(
     fun setupTouchListener(webView: WebView, onReloadRequest: () -> Unit) {
         val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
         webView.setOnTouchListener { _, event ->
+            if (!isPullToRefreshEnabled()) {
+                // 下拉刷新已关闭：彻底禁用下拉重载逻辑，原样放行事件供 WebView 正常滚动
+                pullReadyToReload = false
+                isTouchScrolling = false
+                if (event.actionMasked == MotionEvent.ACTION_UP && !isTouchScrolling) {
+                    topScrimBar.sweepGloss()
+                    handler.postDelayed({
+                        if (isWebViewVisible() && !isTouchScrolling) {
+                            sampleTopColor(webView) { c -> if (c != null) applyColor(c) }
+                        }
+                    }, 500)
+                }
+                return@setOnTouchListener false
+            }
+
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     touchDownX = event.rawX
                     touchDownY = event.rawY
                     pullStartY = event.rawY
-                    pullReadyToReload = isPullToRefreshEnabled() && webView.scrollY == 0
+                    pullReadyToReload = webView.scrollY <= 0
                     isTouchScrolling = false
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = kotlin.math.abs(event.rawX - touchDownX)
-                    val dy = kotlin.math.abs(event.rawY - touchDownY)
-                    if (dx > touchSlop || dy > touchSlop) {
+                    val dy = event.rawY - pullStartY
+                    if (dx > touchSlop || kotlin.math.abs(dy) > touchSlop) {
                         isTouchScrolling = true
-                        if (dx > dy * 0.8f || event.rawY < pullStartY) {
+                        if (dx > kotlin.math.abs(dy) * 0.8f || dy < 0 || webView.scrollY > 0) {
                             pullReadyToReload = false
                         }
                     }
                 }
                 MotionEvent.ACTION_UP -> {
-                    val isTopEdge = pullStartY <= (getFixedStatusBarPx() + 180)
-                    if (pullReadyToReload && isTopEdge && (event.rawY - pullStartY) > 240) {
+                    val density = context.resources.displayMetrics.density
+                    val isTopZone = pullStartY <= (getFixedStatusBarPx() + density * 80f)
+                    val pullDist = event.rawY - pullStartY
+                    val minPullDist = density * 100f
+                    if (isPullToRefreshEnabled() && pullReadyToReload && isTopZone && pullDist > minPullDist) {
                         onReloadRequest()
                         topScrimBar.sweepGloss()
                     } else if (!isTouchScrolling) {
