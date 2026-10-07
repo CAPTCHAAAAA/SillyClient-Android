@@ -32,6 +32,7 @@ export interface GithubRelease {
   zipballUrl: string
   prerelease: boolean
   isBranch?: boolean
+  isBundled?: boolean
 }
 
 /** SillyClient 应用自身的更新检查结果。 */
@@ -194,7 +195,7 @@ export interface TarvenEnvPlugin {
   getStatus(): Promise<{ serverReady: boolean; mode: string; url?: string; instanceId?: string; operationId?: string }>
 
   /** 拉取 GitHub SillyTavern releases 列表。 */
-  fetchReleases(): Promise<{ releases: GithubRelease[] }>
+  fetchReleases(): Promise<{ releases: GithubRelease[]; warning?: string }>
 
   /** Installation selectors return an executable root; source selectors may return document URIs. */
   pickDirectory(options?: { purpose?: "installation" | "source" }): Promise<{
@@ -202,6 +203,12 @@ export interface TarvenEnvPlugin {
     path: string
     installPathMode?: InstallPathMode
   }>
+
+  /** 读取应用级设置；instancesRoot 为当前默认实例存储根（实例是其直接子目录）。 */
+  getAppSettings(): Promise<{ instancesRoot: string; defaultInstancesRoot: string; configuredInstancesRoot?: string }>
+
+  /** 设置或恢复默认实例存储根；path 留空恢复应用内置兜底（创建实例仍需先选择文件夹）。 */
+  setInstancesRoot(options?: { path?: string }): Promise<{ instancesRoot: string; configured: boolean }>
 
   /** 调用系统图片选择器,把图片复制到 covers/{instanceId},返回可加载的文件路径。 */
   pickImage(options: { instanceId: string }): Promise<{ path: string; url?: string }>
@@ -331,6 +338,29 @@ export interface TarvenEnvPlugin {
     oldPath: string
     newPath: string
   }>
+
+  /** 只读预检：压缩包里有多少用户数据会被导入、多少依赖/程序文件会被忽略。 */
+  inspectImportArchive(options: { archivePath: string }): Promise<{
+    importEntries: number
+    importBytes: number
+    skippedEntries: number
+    skippedBytes: number
+    hasSecrets: boolean
+    hasConfig: boolean
+    importable: boolean
+  }>
+
+  /** 把压缩包里的用户数据无损导入到已有实例：只覆盖用户数据，依赖与程序文件永不写入。 */
+  importInstanceData(options: {
+    instanceId: string
+    installPath?: string
+    archivePath: string
+    includeOptional?: boolean
+    operationId?: string
+  }): Promise<{ imported: number; bytes: number; skipped: number }>
+
+  /** 导出实例为 ZIP 到 Download/SillyClient-导出，返回保存路径与字节数。 */
+  exportInstance(options: { instanceId: string; installPath?: string }): Promise<{ path: string; bytes: number }>
 
   /** 设置或更新实例访问密码（本地安全开关） */
   setInstancePassword(options: {

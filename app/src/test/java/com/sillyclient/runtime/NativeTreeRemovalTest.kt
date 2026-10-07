@@ -127,6 +127,36 @@ class NativeTreeRemovalTest {
     }
 
     @Test
+    fun partiallyCompletedRemovalStopsBeforeRetryAndRetainsTheOwnerMarker() = withRemoval("""
+        const fs=require('node:fs');
+        const path=require('node:path');
+        const target=process.argv[4];
+        fs.unlinkSync(path.join(target,'removed.js'));
+        console.log("rm 'removed.js'");
+        setInterval(()=>{},1000);
+    """) { root, removal, supervisor ->
+        val marker = File(root, ".sc-identity").apply { writeText("owned") }
+        val child = File(root, "node_modules").apply { mkdirs() }
+        val removed = File(child, "removed.js").apply { writeText("synthetic") }
+        val remaining = File(child, "remaining.js").apply { writeText("synthetic") }
+        assertThrows(CancellationException::class.java) {
+            removal.remove(listOf(child), root, "test", ensureActive = {
+                if (!removed.exists()) throw CancellationException("Synthetic interrupted removal")
+            })
+        }
+        assertFalse(removed.exists())
+        assertTrue(remaining.isFile)
+        assertEquals("owned", marker.readText())
+        assertFalse(supervisor.hasProcesses())
+
+        File(root, ".native-removal-fixture.cjs").writeText(REMOVE_SCRIPT)
+        removal.remove(listOf(child), root, "test")
+        assertFalse(child.exists())
+        assertEquals("owned", marker.readText())
+        assertFalse(supervisor.hasProcesses())
+    }
+
+    @Test
     fun chattyNativeOutputProducesOnlyBoundedSummaryCallbacks() = withRemoval(
         "for(let i=0;i<4000;i++)console.log(\"rm 'synthetic'\");" + REMOVE_SCRIPT
     ) { root, removal, _ ->

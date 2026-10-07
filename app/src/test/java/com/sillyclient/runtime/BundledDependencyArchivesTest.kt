@@ -3,6 +3,7 @@ package com.sillyclient.runtime
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.nio.file.Files
+import java.util.zip.ZipFile
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -68,5 +69,33 @@ class BundledDependencyArchivesTest {
         assertEquals("""{"name":"yaml","version":"2.0.0"}""",
             File(File(target, "node_modules"), "yaml/package.json").readText())
         assertTrue(DependencyInstaller.hasRequiredPackages(target))
+    }
+
+    @Test
+    fun shippedSourceAndCompressedDependenciesRestoreOffline() = withRoot { root ->
+        val assets = listOf(File("src/main/assets/bundled"), File("app/src/main/assets/bundled"))
+            .firstOrNull { File(it, "sillytavern-release.zip").isFile }
+        assertNotNull("Bundled source must be available to the build", assets)
+        val bundled = requireNotNull(assets)
+        val target = File(root, "instance").apply { mkdirs() }
+        ZipFile(File(bundled, "sillytavern-release.zip")).use { zip ->
+            for (name in listOf("package.json", "package-lock.json")) {
+                val entry = zip.entries().asSequence().single {
+                    !it.isDirectory && it.name.substringAfterLast('/') == name && it.name.count { char -> char == '/' } <= 1
+                }
+                zip.getInputStream(entry).use { input -> File(target, name).outputStream().use(input::copyTo) }
+            }
+        }
+        assertFalse("Bundled source lock must match its manifest", DependencyInstaller.lockManifestMismatch(target))
+        val cache = File(root, "cache")
+        BundledDependencyArchives(cache, openAsset = { File(bundled, it.substringAfter('/')).inputStream() },
+            listAssets = { bundled.list()!!.toSet() }).use { it.awaitReady {} }
+        val archive = DependencyArchive(cache)
+        val key = archive.lockKey(File(target, "package-lock.json"))!!
+        assertTrue("Cold installations need an archive matching the shipped lock", archive.hasArchiveFor(key))
+        assertTrue(archive.restore(key, target, skipExecutableLinks = true,
+            validateModules = { DependencyInstaller.hasRequiredPackages(target, it) }) {})
+        assertTrue(DependencyInstaller.hasRequiredPackages(target))
+        assertTrue(File(target, "node_modules/yaml/package.json").isFile)
     }
 }

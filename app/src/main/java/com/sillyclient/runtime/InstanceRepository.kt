@@ -17,7 +17,7 @@ class InstanceRepository(
     private val installLocations: InstallLocationRegistry? = null,
     private val legacyServersRoot: File? = null,
     private val measureSize: (File) -> Long = {
-        ManagedFiles.size(it, setOf("node_modules", ".git", ".cache"))
+        ManagedFiles.size(it, setOf("node_modules", ".git", ".cache", DependencyRestoreTransaction.STAGING_NAME))
     }
 ) {
     data class Metadata(
@@ -77,7 +77,15 @@ class InstanceRepository(
 
     private fun isDiscoverable(directory: File): Boolean = directory.isDirectory &&
         ManagedFiles.isUnlinked(directory) && !directory.name.startsWith(".sillyclient-install-") &&
-        !directory.name.startsWith(InstanceRelocation.STAGING_PREFIX)
+        !directory.name.startsWith(InstanceRelocation.STAGING_PREFIX) &&
+        // Deletion-committed directories wait for their background purge; they
+        // must never resurface as instance cards in the meantime. Renamed
+        // remnants from older builds are hidden the same way. The shared
+        // dependency bank lives inside the instances root and is never an
+        // instance (a real instance always carries server.js).
+        !InstanceRemoval.RENAME_PATTERN.matches(directory.name) &&
+        !File(directory, InstanceRemoval.REMOVAL_MARKER).isFile &&
+        !(directory.name == "node_modules" && !File(directory, "server.js").isFile)
 
     private fun metadata(instanceId: String, directory: File, size: Long): Metadata {
         val installed = directory.exists()

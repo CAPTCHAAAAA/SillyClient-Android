@@ -11,6 +11,8 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.zip.GZIPInputStream
+import java.security.MessageDigest
 
 /**
  * Materializes the dependency archives shipped inside the APK into the shared
@@ -53,18 +55,30 @@ class BundledDependencyArchives(
                 if (target.isFile && target.length() > 0) continue
                 val temp = Files.createTempFile(archiveDir.toPath(), ".bundled-", ".tmp")
                 try {
-                    openAsset("$BUNDLED_ASSET_DIR/$name").use { input ->
+                    val digest = MessageDigest.getInstance("SHA-256")
+                    openAsset("$BUNDLED_ASSET_DIR/$name").let { input ->
+                        if (name.endsWith(".gz")) try { GZIPInputStream(input) }
+                        catch (error: Exception) { input.close(); throw error }
+                        else input
+                    }.use { input ->
                         FileOutputStream(temp.toFile()).use { output ->
                             val buffer = ByteArray(256 * 1024)
+                            var bytes = 0L
                             while (true) {
                                 checkInterrupted()
                                 val read = input.read(buffer)
                                 if (read < 0) break
+                                bytes += read
+                                check(bytes <= 1024L * 1024 * 1024) { "Bundled dependency archive exceeds its size limit" }
+                                digest.update(buffer, 0, read)
                                 output.write(buffer, 0, read)
                             }
                         }
                     }
                     check(temp.toFile().length() > 0) { "Bundled dependency archive '$name' is empty" }
+                    check(digest.digest().joinToString("") { "%02x".format(it) } == cacheName.substringAfter('-').removeSuffix(".tar")) {
+                        "Bundled dependency archive checksum mismatch"
+                    }
                     Files.move(temp, target.toPath(), StandardCopyOption.ATOMIC_MOVE)
                 } finally {
                     Files.deleteIfExists(temp)

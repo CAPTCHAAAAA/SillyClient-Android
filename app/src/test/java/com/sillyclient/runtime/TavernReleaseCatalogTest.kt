@@ -1,6 +1,7 @@
 package com.sillyclient.runtime
 
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -8,10 +9,13 @@ import java.net.URI
 import java.nio.file.Files
 import java.util.concurrent.CancellationException
 import java.util.concurrent.TimeUnit
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -51,6 +55,16 @@ class TavernReleaseCatalogTest {
         TavernReleaseCatalog(cache, connect = { Response(it, records.toString().toByteArray()) }).load()
 
     private fun offline(cache: File): JSONArray = TavernReleaseCatalog(cache, connect = { throw IOException("offline") }).load()
+
+    private fun bundled(version: String = "1.12.0"): BundledTavernSource {
+        val bytes = ByteArrayOutputStream()
+        ZipOutputStream(bytes).use { zip ->
+            zip.putNextEntry(ZipEntry("SillyTavern-release/package.json"))
+            zip.write(JSONObject().put("name", "sillytavern").put("version", version).toString().toByteArray())
+            zip.closeEntry()
+        }
+        return BundledTavernSource({ ByteArrayInputStream(bytes.toByteArray()) })
+    }
 
     private fun assertBranch(releases: JSONArray) {
         assertEquals(1, releases.length())
@@ -219,5 +233,88 @@ class TavernReleaseCatalogTest {
             }
             assertFalse(cache.exists())
         } finally { Thread.interrupted() }
+    }
+
+    @Test
+    fun offlineFirstLookupOffersTheActualBundledVersionBeforeTheClearlyMarkedBranch() = withCache { cache ->
+        val result = TavernReleaseCatalog(cache, connect = { throw IOException("offline") },
+            bundledSource = bundled("1.24.3")).loadResult()
+        assertEquals("在线发行版获取失败，当前显示内置版本或缓存列表。", result.warning)
+        assertEquals(2, result.releases.length())
+        val version = result.releases.getJSONObject(0)
+        assertEquals("1.24.3", version.getString("tag"))
+        assertEquals("https://github.com/SillyTavern/SillyTavern/archive/refs/tags/1.24.3.zip", version.getString("zipballUrl"))
+        assertTrue(version.getBoolean("isBundled"))
+        assertFalse(version.optBoolean("isBranch"))
+        assertFalse(version.has("publishedAt"))
+        assertFalse(version.has("latest"))
+        assertTrue(result.releases.getJSONObject(1).getBoolean("isBranch"))
+        assertFalse(cache.exists())
+    }
+
+    @Test
+    fun unavailableBundleAndNetworkDoNotInventASpecificVersion() = withCache { cache ->
+        for (source in listOf(null, BundledTavernSource({ throw IOException("missing") }), bundled("not-a-version"))) {
+            val result = TavernReleaseCatalog(cache, connect = { throw IOException("offline") },
+                bundledSource = source).loadResult()
+            assertBranch(result.releases)
+            assertEquals("在线发行版获取失败，暂无可用的正式版本列表。", result.warning)
+        }
+    }
+
+    @Test
+    fun bundlesMatchingAnApiVersionAreMarkedWithoutDuplicatingOrReorderingIt() = withCache { cache ->
+        val records = JSONArray().put(apiRecord("1.13.0")).put(apiRecord("1.12.0"))
+        val result = TavernReleaseCatalog(cache, connect = { Response(it, records.toString().toByteArray()) },
+            bundledSource = bundled()).loadResult()
+        assertNull(result.warning)
+        assertEquals(2, result.releases.length())
+        assertEquals("1.13.0", result.releases.getJSONObject(0).getString("tag"))
+        assertFalse(result.releases.getJSONObject(0).optBoolean("isBundled"))
+        assertTrue(result.releases.getJSONObject(1).getBoolean("isBundled"))
+        assertEquals("2024-07-01T12:00:00Z", result.releases.getJSONObject(1).getString("publishedAt"))
+        assertFalse(cache.readText().contains("isBundled"))
+    }
+
+    @Test
+    fun offlineCacheAndActualBundleAreMergedWithoutPersistingStaleBundleClaims() = withCache { cache ->
+        successful(cache, JSONArray().put(apiRecord("1.13.0")))
+        val original = cache.readText()
+        val result = TavernReleaseCatalog(cache, connect = { throw IOException("offline") },
+            bundledSource = bundled()).loadResult()
+        assertEquals(2, result.releases.length())
+        assertEquals("1.12.0", result.releases.getJSONObject(0).getString("tag"))
+        assertEquals("1.13.0", result.releases.getJSONObject(1).getString("tag"))
+        assertTrue(result.releases.getJSONObject(0).getBoolean("isBundled"))
+        assertEquals(original, cache.readText())
+        val noBundle = TavernReleaseCatalog(cache, connect = { throw IOException("offline") }).loadResult()
+        assertEquals(1, noBundle.releases.length())
+        assertFalse(noBundle.releases.getJSONObject(0).optBoolean("isBundled"))
+        assertEquals("在线发行版获取失败，当前显示内置版本或缓存列表。", noBundle.warning)
+    }
+
+    @Test
+    fun offlineMatchingCachedVersionIsPromotedWithoutDuplication() = withCache { cache ->
+        successful(cache, JSONArray().put(apiRecord("1.13.0")).put(apiRecord("1.12.0")))
+        val result = TavernReleaseCatalog(cache, connect = { throw IOException("offline") },
+            bundledSource = bundled()).loadResult()
+        assertEquals(2, result.releases.length())
+        assertEquals("1.12.0", result.releases.getJSONObject(0).getString("tag"))
+        assertTrue(result.releases.getJSONObject(0).getBoolean("isBundled"))
+        assertEquals("2024-07-01T12:00:00Z", result.releases.getJSONObject(0).getString("publishedAt"))
+        assertEquals("1.13.0", result.releases.getJSONObject(1).getString("tag"))
+    }
+
+    @Test
+    fun diagnosticFailuresIncludeOnlyTypesAndHttpStatusNotBodiesTokensOrUrls() = withCache { cache ->
+        val messages = mutableListOf<String>()
+        TavernReleaseCatalog(cache, connect = { throw IOException("secret-token https://private.test/") },
+            diagnostic = messages::add).loadResult()
+        val response = Response(URI(TavernReleaseCatalog.API_URL), "secret response body".toByteArray(), 403)
+        TavernReleaseCatalog(cache, connect = { response }, diagnostic = messages::add).loadResult()
+        assertEquals(listOf("tavern.releases.failed type=IOException", "tavern.releases.failed type=HttpFailure http_status=403"), messages)
+        assertFalse(response.opened)
+        assertBranch(TavernReleaseCatalog(cache, connect = { throw IOException("offline") },
+            diagnostic = { error("unavailable diagnostic sink") }).load())
     }
 }

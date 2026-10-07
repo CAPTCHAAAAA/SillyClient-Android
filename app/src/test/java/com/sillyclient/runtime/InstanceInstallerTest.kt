@@ -131,7 +131,7 @@ class InstanceInstallerTest {
         val error = assertThrows(IllegalStateException::class.java) {
             installer.prepare(target, {}, ::source, { false }, { it() })
         }
-        assertTrue(error.message.orEmpty().contains("Dependency installation failed"))
+        assertTrue(error.message.orEmpty().contains("依赖安装被拒绝"))
         assertEquals(1, error.suppressed.size)
         assertTrue(requireNotNull(staged).isDirectory)
         assertTrue(requireNotNull(owner).isFile)

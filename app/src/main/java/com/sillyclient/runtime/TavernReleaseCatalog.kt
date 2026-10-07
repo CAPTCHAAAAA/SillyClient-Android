@@ -18,25 +18,65 @@ import org.json.JSONObject
 class TavernReleaseCatalog internal constructor(
     private val cacheFile: File,
     private val connect: (URI) -> HttpURLConnection = { it.toURL().openConnection() as HttpURLConnection },
-    private val nanoTime: () -> Long = System::nanoTime
+    private val nanoTime: () -> Long = System::nanoTime,
+    private val bundledSource: BundledTavernSource? = null,
+    private val diagnostic: (String) -> Unit = {}
 ) {
-    fun load(): JSONArray {
+    data class Result(val releases: JSONArray, val warning: String? = null)
+
+    fun load(): JSONArray = loadResult().releases
+
+    fun loadResult(): Result {
         ensureActive()
         try {
             val releases = download()
             saveCache(releases)
-            return releases
+            return Result(withBundledRelease(releases))
         } catch (error: CancellationException) {
             throw error
-        } catch (_: Exception) {
+        } catch (error: Exception) {
             ensureActive()
+            runCatching {
+                diagnostic("tavern.releases.failed type=${error.javaClass.simpleName}" +
+                    if (error is HttpFailure) " http_status=${error.status}" else "")
+            }
         }
-        return readCache() ?: JSONArray().put(JSONObject()
+        val releases = withBundledRelease(readCache() ?: JSONArray().put(JSONObject()
             .put("tag", "release")
             .put("name", "SillyTavern stable release branch")
             .put("zipballUrl", STABLE_BRANCH_URL)
             .put("prerelease", false)
-            .put("isBranch", true))
+            .put("isBranch", true)), preferBundled = true)
+        val hasVersion = (0 until releases.length()).any { !releases.getJSONObject(it).optBoolean("isBranch") }
+        return Result(releases, if (hasVersion) "在线发行版获取失败，当前显示内置版本或缓存列表。"
+            else "在线发行版获取失败，暂无可用的正式版本列表。")
+    }
+
+    private fun withBundledRelease(releases: JSONArray, preferBundled: Boolean = false): JSONArray {
+        val version = bundledSource?.version ?: return releases
+        val bundled = JSONObject().put("tag", version).put("name", "SillyTavern $version")
+            .put("zipballUrl", "https://github.com/SillyTavern/SillyTavern/archive/refs/tags/$version.zip")
+            .put("prerelease", false).put("isBundled", true)
+        val result = JSONArray()
+        var included = false
+        // Cached metadata alone cannot guarantee an archive can be downloaded while offline.
+        if (preferBundled) {
+            val cached = (0 until releases.length()).map { releases.getJSONObject(it) }
+                .firstOrNull { it.getString("tag") == version }
+            result.put(cached?.let { JSONObject(it.toString()).put("isBundled", true) } ?: bundled)
+            included = true
+        }
+        for (index in 0 until releases.length()) {
+            val release = JSONObject(releases.getJSONObject(index).toString())
+            if (release.getString("tag") == version) {
+                if (preferBundled) continue
+                release.put("isBundled", true)
+                included = true
+            }
+            result.put(release)
+        }
+        if (!included) result.put(bundled)
+        return result
     }
 
     private fun download(): JSONArray {
@@ -55,7 +95,8 @@ class TavernReleaseCatalog internal constructor(
         }
         try {
             checkDeadline()
-            check(connection.responseCode == 200) { "Release lookup was unavailable" }
+            val status = connection.responseCode
+            if (status != 200) throw HttpFailure(status)
             checkDeadline()
             val total = connection.contentLengthLong
             check(total in -1..MAX_BYTES.toLong()) { "Release response is too large" }
@@ -151,6 +192,8 @@ class TavernReleaseCatalog internal constructor(
     private fun ensureActive() {
         if (Thread.currentThread().isInterrupted) throw CancellationException("Release lookup cancelled")
     }
+
+    private class HttpFailure(val status: Int) : IOException("Release lookup was unavailable")
 
     companion object {
         internal const val MAX_BYTES = 1024 * 1024

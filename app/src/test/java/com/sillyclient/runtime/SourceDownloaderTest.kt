@@ -77,13 +77,12 @@ class SourceDownloaderTest {
     }
 
     @Test
-    fun normalizesApiDownloadsToCodeloadAndMirrorArchivePaths() {
+    fun normalizesApiDownloadsToOfficialArchivePaths() {
         val candidates = SourceDownloader.candidates(api)
-        assertEquals(code, candidates.first().uri.toString())
-        assertTrue(candidates.any { it.uri.toString() == "https://ghfast.top/$archive" })
-        assertTrue(candidates.any { it.uri.toString() == "https://gh-proxy.org/$archive" })
-        assertTrue(candidates.any { it.uri.toString() == "https://ghproxy.net/$archive" })
-        assertEquals("ghfast.top", candidates[1].uri.host)
+        // 镜像源已全部移除：仅保留官方 codeload 与 GitHub 归档两个候选。
+        assertEquals("codeload.github.com", candidates.first().uri.host)
+        assertEquals("github.com", candidates[1].uri.host)
+        assertEquals(2, candidates.size)
         assertFalse(candidates.any { "api.github.com" in it.uri.toString() })
         assertEquals(candidates, SourceDownloader.candidates(archive))
         assertEquals(candidates, SourceDownloader.candidates(code))
@@ -117,7 +116,6 @@ class SourceDownloaderTest {
         val source = URI(code)
         assertTrue(SourceDownloader.validRedirect(source,
             URI("https://codeload.github.com/SillyTavern/SillyTavern/legacy.zip/refs/tags/1.12.0")))
-        assertTrue(SourceDownloader.validRedirect(URI("https://ghfast.top/$archive"), source))
         assertTrue(SourceDownloader.validRedirect(URI(code.replace("1.12.0", "release")),
             URI(code.replace("1.12.0", "refs/heads/release"))))
         assertFalse(SourceDownloader.validRedirect(URI(code.replace("1.12.0", "refs/tags/release")),
@@ -188,22 +186,20 @@ class SourceDownloaderTest {
     }
 
     @Test
-    fun rejectsHttpErrorsHtmlAndTruncatedArchivesBeforeFallingBack() = withRoot { root, operations, operation ->
+    fun fallsBackToTheOfficialArchiveWhenCodeloadIsRateLimited() = withRoot { root, operations, operation ->
         val bytes = zip()
         val responses = mutableListOf<Response>()
         val result = SourceDownloader(connect = { uri ->
             val response = when (responses.size) {
                 0 -> Response(uri, status = 429, bytes = bytes)
-                1 -> Response(uri, bytes = "<html>blocked</html>".toByteArray(), type = "text/html")
-                2 -> Response(uri, bytes = bytes.copyOf(20), length = -1)
                 else -> Response(uri, bytes = bytes)
             }
             responses.add(response)
             response
         }).downloadSillyTavern(api, root, operations, operation)
-        assertEquals(4, responses.size)
+        // 两个官方候选：codeload 429 后回退 GitHub 归档成功。
+        assertEquals(2, responses.size)
         assertFalse(responses[0].opened)
-        assertFalse(responses[1].opened)
         assertTrue(responses.all { it.disconnected })
         assertTrue(result.readBytes().contentEquals(bytes))
         assertEquals(1, root.listFiles()!!.size)

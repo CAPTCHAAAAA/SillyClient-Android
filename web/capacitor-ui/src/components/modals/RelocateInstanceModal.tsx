@@ -13,6 +13,7 @@ import type { InstanceRelocationResult } from "../../capacitor-plugin";
 import { exactInstallTarget, installationSelection } from "../../lib/install-location";
 import { requireRelocationResult } from "../../lib/instance-location-state";
 import type { TavernInstance } from "../../types";
+import { humanizeNativeError } from "@/lib/native-errors";
 
 export interface RelocateInstanceModalProps {
   instance: TavernInstance | null;
@@ -45,7 +46,6 @@ export const RelocateInstanceModal: React.FC<RelocateInstanceModalProps> = ({
   onBusyChange,
   onRelocated,
 }) => {
-  const [targetMode, setTargetMode] = useState<"default" | "custom">("default");
   const [customPath, setCustomPath] = useState("");
   const [currentRealPath, setCurrentRealPath] = useState<string>("");
   const [migrating, setMigrating] = useState(false);
@@ -55,52 +55,13 @@ export const RelocateInstanceModal: React.FC<RelocateInstanceModalProps> = ({
   const sessionRef = useRef(0);
   const busyRef = useRef(false);
 
-  const panelContainerRef = useRef<HTMLDivElement>(null);
-  const defaultFaceRef = useRef<HTMLDivElement>(null);
-  const customFaceRef = useRef<HTMLDivElement>(null);
-  const [panelHeight, setPanelHeight] = useState<number | null>(null);
-
-  // 平滑自适应高度测量与交叉溶变过渡
-  useLayoutEffect(() => {
-    if (!isOpen) return;
-    const targetEl = targetMode === "default" ? defaultFaceRef.current : customFaceRef.current;
-    if (!targetEl) return;
-
-    const measureHeight = (entry?: ResizeObserverEntry) => {
-      const h = entry?.borderBoxSize?.[0]?.blockSize ?? targetEl.offsetHeight;
-      if (h > 0) {
-        setPanelHeight(Math.ceil(h));
-      }
-    };
-
-    measureHeight();
-
-    if (typeof ResizeObserver !== "undefined") {
-      const ro = new ResizeObserver(([entry]) => {
-        measureHeight(entry);
-      });
-      ro.observe(targetEl);
-      return () => ro.disconnect();
-    }
-  }, [targetMode, isOpen, customPath]);
-
-  const handleSwitchMode = (mode: "default" | "custom") => {
-    if (mode === targetMode) return;
-    if (panelContainerRef.current) {
-      setPanelHeight(panelContainerRef.current.offsetHeight);
-    }
-    setTargetMode(mode);
-  };
-
   useEffect(() => {
     const session = ++sessionRef.current;
     setCurrentRealPath(instance?.installPath || "");
     setErrorMsg(null);
     setSuccessInfo(null);
     setProgressInfo(null);
-    setTargetMode("default");
     setCustomPath("");
-    setPanelHeight(null);
     if (!isOpen || !instance) {
       setMigrating(false);
       return;
@@ -140,6 +101,13 @@ export const RelocateInstanceModal: React.FC<RelocateInstanceModalProps> = ({
       if (session !== sessionRef.current || busyRef.current) return;
       const selected = installationSelection(res);
       setCustomPath(exactInstallTarget(selected.path, selected.mode, instance.subtitle || instance.name) || "");
+      // 与创建/迁移同一条规则：选中的文件夹就是实例新的存放位置（实例根），
+      // 实例是它的一级子目录 —— 避免嵌套路径撞上原生注册表规则。
+      try {
+        await TarvenEnv.setInstancesRoot({ path: selected.path });
+      } catch (error) {
+        setErrorMsg(humanizeNativeError(error instanceof Error ? error.message : String(error)));
+      }
     } catch (error) {
       if (session === sessionRef.current && error instanceof Error && !/cancel/i.test(error.message)) setErrorMsg(error.message);
     }
@@ -156,10 +124,10 @@ export const RelocateInstanceModal: React.FC<RelocateInstanceModalProps> = ({
     let progressHandle: { remove: () => Promise<void> } | null = null;
     try {
       const safeId = instance.installDir || instance.id;
-      const target = targetMode === "custom" ? exactInstallTarget(customPath, "exact", instance.id) : undefined;
+      const target = exactInstallTarget(customPath, "exact", instance.id);
 
-      if (targetMode === "custom" && !target) {
-        throw new Error("请先选择或输入自定义目标目录");
+      if (!target) {
+        throw new Error("请先点「浏览」选择实例新的存放文件夹（必选）");
       }
 
       progressHandle = await TarvenEnv.addListener("progress", d => {
@@ -332,126 +300,49 @@ export const RelocateInstanceModal: React.FC<RelocateInstanceModalProps> = ({
             </div>
           ) : (
             <>
-              {/* 目标位置分段切换器 (完全对齐向导模式切换器) */}
+              {/* 目标位置：只允许用户自己选择一个文件夹（不再提供"默认目录"落点） */}
               <div className="space-y-1.5">
                 <label className={cn("text-xs font-medium block", isLight ? "text-[#1a1625]/70" : "text-white/70")}>
-                  目标位置
+                  目标位置（必选）
                 </label>
-                <div className="flex gap-2">
+                <div className="flex items-center gap-2 w-full">
+                  <input
+                    type="text"
+                    value={customPath}
+                    disabled={migrating}
+                    onChange={(e) => setCustomPath(e.target.value)}
+                    placeholder="点击「浏览」选择目标文件夹"
+                    className={cn(
+                      "ios-field-control motion-control flex-1 min-w-0 h-9 px-3 rounded-xl border text-xs transition-colors",
+                      isLight
+                        ? "bg-black/[0.04] border-black/[0.08] text-[#1a1625] placeholder:text-black/30 focus:border-black/20"
+                        : "bg-white/[0.04] border-white/[0.08] text-white placeholder:text-white/30 focus:border-white/20"
+                    )}
+                  />
                   <button
                     type="button"
+                    onClick={handlePickDirectory}
                     disabled={migrating}
-                    onClick={() => handleSwitchMode("default")}
-                    aria-pressed={targetMode === "default"}
                     className={cn(
-                      "ios-choice-control motion-control flex-1 h-9 rounded-xl text-xs font-medium border transition-colors duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
-                      targetMode === "default"
-                        ? isLight
-                          ? "bg-[#1a1625]/8 border-[#1a1625]/15 text-[#1a1625]"
-                          : "bg-white/10 border-white/15 text-white"
-                        : isLight
-                        ? "bg-transparent border-black/[0.06] text-[#1a1625]/35 hover:border-black/12 hover:text-[#1a1625]/55"
-                        : "bg-transparent border-white/[0.06] text-white/35 hover:border-white/12 hover:text-white/55"
+                      "motion-control h-9 px-3 rounded-xl text-[11px] font-medium border flex-shrink-0 whitespace-nowrap transition-colors",
+                      isLight
+                        ? "border-black/[0.08] text-[#1a1625]/50 hover:bg-black/[0.04]"
+                        : "border-white/[0.08] text-white/50 hover:bg-white/[0.04]"
                     )}
                   >
-                    默认目录 (instances/)
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={migrating}
-                    onClick={() => handleSwitchMode("custom")}
-                    aria-pressed={targetMode === "custom"}
-                    className={cn(
-                      "ios-choice-control motion-control flex-1 h-9 rounded-xl text-xs font-medium border transition-colors duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
-                      targetMode === "custom"
-                        ? isLight
-                          ? "bg-[#1a1625]/8 border-[#1a1625]/15 text-[#1a1625]"
-                          : "bg-white/10 border-white/15 text-white"
-                        : isLight
-                        ? "bg-transparent border-black/[0.06] text-[#1a1625]/35 hover:border-black/12 hover:text-[#1a1625]/55"
-                        : "bg-transparent border-white/[0.06] text-white/35 hover:border-white/12 hover:text-white/55"
-                    )}
-                  >
-                    自定义目录
+                    浏览
                   </button>
                 </div>
-              </div>
-
-              {/* 模式配置切换容器 (平滑高度自适应 + 500ms 交叉溶变过渡) */}
-              <div
-                ref={panelContainerRef}
-                className="motion-panel-stack"
-                style={{ height: panelHeight ? `${panelHeight}px` : undefined }}
-              >
-                {/* 默认目录说明 */}
-                <div
-                  ref={defaultFaceRef}
-                  className={cn(
-                    "motion-panel-face w-full space-y-1.5",
-                    targetMode === "default"
-                      ? "is-active relative pointer-events-auto"
-                      : "absolute inset-x-0 top-0 pointer-events-none select-none"
-                  )}
-                  aria-hidden={targetMode !== "default"}
-                  inert={targetMode !== "default"}
-                >
-                  <p className={cn("text-xs leading-relaxed opacity-60", isLight ? "text-[#1a1625]" : "text-white")}>
-                    {isWindows ? "将实例迁至客户端默认的 " : "将实例迁至应用管理的外部 "}<code className="px-1 py-0.5 rounded bg-black/5 dark:bg-white/10 font-mono text-[11px]">instances/</code> 目录，保留聊天记录、角色、扩展与配置。
-                  </p>
-                </div>
-
-                {/* 自定义目录表单 */}
-                <div
-                  ref={customFaceRef}
-                  className={cn(
-                    "motion-panel-face w-full space-y-1.5",
-                    targetMode === "custom"
-                      ? "is-active relative pointer-events-auto"
-                      : "absolute inset-x-0 top-0 pointer-events-none select-none"
-                  )}
-                  aria-hidden={targetMode !== "custom"}
-                  inert={targetMode !== "custom"}
-                >
-                  <div className="flex items-center gap-2 w-full">
-                    <input
-                      type="text"
-                      value={customPath}
-                      disabled={migrating}
-                      onChange={(e) => setCustomPath(e.target.value)}
-                      placeholder="选择或输入完整目标目录绝对路径"
-                      className={cn(
-                        "ios-field-control motion-control flex-1 min-w-0 h-9 px-3 rounded-xl border text-xs transition-colors",
-                        isLight
-                          ? "bg-black/[0.04] border-black/[0.08] text-[#1a1625] placeholder:text-black/30 focus:border-black/20"
-                          : "bg-white/[0.04] border-white/[0.08] text-white placeholder:text-white/30 focus:border-white/20"
-                      )}
-                    />
-                    <button
-                      type="button"
-                      onClick={handlePickDirectory}
-                      disabled={migrating}
-                      className={cn(
-                        "motion-control h-9 px-3 rounded-xl text-[11px] font-medium border flex-shrink-0 transition-colors",
-                        isLight
-                          ? "border-black/[0.08] text-[#1a1625]/50 hover:bg-black/[0.04]"
-                          : "border-white/[0.08] text-white/50 hover:bg-white/[0.04]"
-                      )}
-                    >
-                      浏览
-                    </button>
-                  </div>
-                  <p className={cn("text-[11px] opacity-45 leading-relaxed", isLight ? "text-[#1a1625]" : "text-white")}>
-                    目标必须是可访问的新目录。跨存储迁移时校验副本；需要保留的原目录会在完成后明确列出。
-                  </p>
-                </div>
+                <p className={cn("text-[11px] opacity-45 leading-relaxed", isLight ? "text-[#1a1625]" : "text-white")}>
+                  自己选择实例新的存放文件夹：同一存储用目录移动，跨存储用校验复制，不覆盖目标里的已有文件。
+                </p>
               </div>
 
               {/* 异常提示 */}
               {errorMsg && (
                 <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs flex items-start gap-2">
                   <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                  <span>{errorMsg}</span>
+                  <span>{humanizeNativeError(errorMsg)}</span>
                 </div>
               )}
 
@@ -502,7 +393,7 @@ export const RelocateInstanceModal: React.FC<RelocateInstanceModalProps> = ({
               </button>
               <button
                 type="button"
-                disabled={isRunning || migrating || (targetMode === "custom" && !customPath.trim())}
+                disabled={isRunning || migrating || !customPath.trim()}
                 onClick={handleExecuteRelocate}
                 className={cn(
                   "motion-control px-5 h-8 rounded-full text-xs font-medium flex items-center justify-center gap-1.5 transition-all border disabled:opacity-40",

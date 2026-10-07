@@ -88,7 +88,7 @@ class SourceDownloader internal constructor(
             }
         }
         operations.ensureCurrent(operation)
-        throw IOException("SillyTavern download failed. Check the network or import a local ZIP. " + failures.joinToString("; "))
+        throw IOException("下载失败：请检查网络，或开启科学上网后重试，也可使用本地 ZIP 导入。 " + failures.joinToString("; "))
     }
 
     private fun download(
@@ -235,34 +235,28 @@ class SourceDownloader internal constructor(
 
     companion object {
         private const val REPOSITORY = "SillyTavern/SillyTavern"
-        // Published archive proxy endpoints; their transport does not establish upstream authenticity.
-        private val mirrors = listOf("ghfast.top", "gh-proxy.org", "ghproxy.net")
-
+        // 仅官方源：第三方代理端点会污染网络且不可控；下载缓慢或失败时由上层
+        // 引导用户改用本地 ZIP 导入或开启科学上网。
         internal fun candidates(sourceUrl: String): List<Candidate> {
             val source = try { URI(sourceUrl) } catch (_: Exception) {
                 throw IllegalArgumentException("Invalid SillyTavern archive URL")
             }
             val ref = archiveRef(source) ?: throw IllegalArgumentException("Only public SillyTavern archive URLs are supported")
             val archive = "https://github.com/$REPOSITORY/archive/$ref.zip"
-            return listOf(Candidate(URI("https://codeload.github.com/$REPOSITORY/zip/$ref"), "GitHub codeload")) +
-                mirrors.map { Candidate(URI("https://$it/$archive"), it) } + Candidate(URI(archive), "GitHub")
+            return listOf(
+                Candidate(URI("https://codeload.github.com/$REPOSITORY/zip/$ref"), "GitHub codeload"),
+                Candidate(URI(archive), "GitHub")
+            )
         }
 
         internal fun validRedirect(source: URI, target: URI): Boolean {
             if (!safeHttps(target)) return false
-            val original = unwrapMirror(source) ?: source
-            val next = unwrapMirror(target) ?: target
-            val expected = archiveRef(original) ?: return false
-            val actual = archiveRef(next) ?: return false
+            val expected = archiveRef(source) ?: return false
+            val actual = archiveRef(target) ?: return false
             if (actual == expected) return true
             // GitHub resolves an unqualified tag/branch to its fully qualified ref on redirect.
             return !expected.startsWith("refs/") &&
                 (actual == "refs/tags/$expected" || actual == "refs/heads/$expected")
-        }
-
-        private fun unwrapMirror(uri: URI): URI? {
-            if (!safeHttps(uri) || uri.host !in mirrors) return null
-            return try { URI(uri.rawPath.removePrefix("/")) } catch (_: Exception) { null }
         }
 
         private fun safeHttps(uri: URI): Boolean = uri.scheme == "https" && uri.host != null &&

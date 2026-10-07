@@ -24,8 +24,7 @@ class InstallLocationRegistry(
     private val registryFile: File,
     private val legacyServersRoot: File? = null,
     private val customRootsProvider: (() -> List<File>)? = null,
-    // Tree-backed instances resolve dependencies through the shared private-storage
-    // tree and intentionally carry no local node_modules directory.
+    // Platform callers validate the dependencies held by this instance itself.
     private val dependenciesComplete: (File) -> Boolean = { File(it, "node_modules").isDirectory }
 ) {
     private data class Location(val directory: File, val fileKey: String?, val createdAt: Long,
@@ -200,7 +199,15 @@ class InstallLocationRegistry(
             require(installPathMode in setOf("exact", "root")) { "Unknown installation path mode" }
             val state = read()
             val records = state.locations
-            val recorded = records[id]
+            // A registration whose directory has vanished (interrupted removal,
+            // manual deletion, lost volume) is a ghost: dropped on sight so it
+            // can never block a new instance. The registry, not the caller's
+            // remembered path, stays the single source of truth.
+            val recorded = records[id]?.takeIf { exists(it.directory) }
+            if (recorded == null && records.containsKey(id)) {
+                records.remove(id)
+                write(state)
+            }
             val clean = requestedPath?.trim()?.removeSurrounding("\"")?.removeSurrounding("'")?.trim()
             val requested = clean?.takeIf { it.isNotBlank() }?.let {
                 require(it.none { char -> char.code < 32 } && !it.contains("://") && !it.startsWith("file:")) {
@@ -222,18 +229,21 @@ class InstallLocationRegistry(
             }
             if (recorded != null) {
                 validateIdentity(recorded)
-                require(requested == null || requested.canonicalFile == recorded.directory.canonicalFile) {
-                    "The registered instance location cannot be changed by launch parameters"
-                }
+                // The registry wins over a stale remembered path: the frontend
+                // mirror may lag behind a rename, and the directory on disk is
+                // what the instance actually runs from.
                 if (requested != null) allowedRootFor(requested)
                 return@synchronized recorded.directory
             }
             val rawTarget = requested ?: run {
-                val existingDefault = File(serversRoot, id)
-                val legacy = legacyServersRoot?.let { File(it, id) }
+                // Deletion-committed remnants (removal marker present) are being
+                // purged: they are never adopted as an install target, so a new
+                // instance with the same name lands beside them instead.
+                val existingDefault = File(serversRoot, id).takeIf { exists(it) && !markedForRemoval(it) }
+                val legacy = legacyServersRoot?.let { File(it, id) }.takeIf { it != null && exists(it) && !markedForRemoval(it) }
                 when {
-                    exists(existingDefault) -> existingDefault
-                    legacy != null && exists(legacy) -> legacy
+                    existingDefault != null -> existingDefault
+                    legacy != null -> legacy
                     else -> chooseNamedTarget(serversRoot, id, displayName, state)
                 }
             }
@@ -266,6 +276,11 @@ class InstallLocationRegistry(
     fun isRegistered(directory: File): Boolean = synchronized(lock) {
         val target = normalized(directory).canonicalPath
         read().locations.values.any { it.directory.canonicalPath == target }
+    }
+
+    /** Canonical directories of every registered instance, innermost first. */
+    fun registeredDirectories(): List<File> = synchronized(lock) {
+        read().locations.values.map { it.directory.canonicalFile }
     }
 
     fun registerCommitted(instanceId: String, directory: File) = synchronized(lock) {
@@ -323,18 +338,24 @@ class InstallLocationRegistry(
     }
 
     fun unregisterAfterDelete(instanceId: String, directory: File) = synchronized(lock) {
-        val id = normalizeInstanceId(instanceId)
-        val state = read()
-        val records = state.locations
         val target = normalized(directory)
         allowedRootFor(target)
-        val recorded = records[id]
-        require(recorded == null || recorded.directory.canonicalFile == target.canonicalFile) {
-            "The removed directory does not match the registered instance"
+        val state = read()
+        val records = state.locations
+        // Deletion commits on the removal marker: the console forgets the
+        // instance immediately while the physical delete streams in the
+        // background. A vanished directory unregisters without the marker.
+        require(!exists(target) || File(target, InstanceRemoval.REMOVAL_MARKER).isFile) {
+            "The instance directory must be fully removed before unregistering it"
         }
-        require(!exists(target)) { "The instance directory must be fully removed before unregistering it" }
-        state.retiredSources.addAll(recorded?.retainedDirectories.orEmpty())
-        records.remove(id)
+        // Match by directory, never by identity string: renames keep folder and
+        // registration in step, but a stale remembered id must still unregister
+        // the entry that actually owns the removed directory.
+        val matched = records.entries.filter { it.value.directory.canonicalFile == target.canonicalFile }
+        for (entry in matched) {
+            state.retiredSources.addAll(entry.value.retainedDirectories)
+            records.remove(entry.key)
+        }
         write(state)
     }
 
@@ -385,21 +406,22 @@ class InstallLocationRegistry(
         require(allowedRoots.none { normalized(it).canonicalFile == directory.canonicalFile }) {
             "An installation root cannot be registered as an instance"
         }
-        val server = File(directory, "server.js")
-        val dependencies = File(directory, "node_modules")
-        val hasLocalModules = dependencies.isDirectory && ManagedFiles.isWithin(dependencies, directory)
-        require(server.isFile && ManagedFiles.isWithin(server, directory) &&
-            (hasLocalModules || dependenciesComplete(directory)) &&
-            !exists(File(directory, InstanceInstaller.DEPENDENCY_MARKER))) {
-            "Only a complete source and dependency installation can be registered"
-        }
         val existing = records[id]
         if (existing != null) {
+            // Re-registering an already known location must not depend on the
+            // instance's current dependency state: registration validated it once
+            // and later moves never change the files the directory contains.
             require(existing.directory.canonicalFile == directory.canonicalFile) {
                 "The registered instance location cannot be changed"
             }
             validateIdentity(existing)
             return
+        }
+        val server = File(directory, "server.js")
+        require(server.isFile && ManagedFiles.isWithin(server, directory) &&
+            dependenciesComplete(directory) &&
+            !exists(File(directory, InstanceInstaller.DEPENDENCY_MARKER))) {
+            "Only a complete source and dependency installation can be registered"
         }
         validateOwnership(id, directory, state)
         val directoryState = attributes(directory)
@@ -438,7 +460,9 @@ class InstallLocationRegistry(
                 "A default installation directory belongs to its matching immutable instance ID"
             }
         }
-        require(!exists(default) || directory.canonicalFile == default.canonicalFile ||
+        // A deletion-committed remnant at the default path is not a live
+        // instance: the new instance takes the collision-safe sibling instead.
+        require(!exists(default) || markedForRemoval(default) || directory.canonicalFile == default.canonicalFile ||
             (legacy != null && directory.canonicalFile == legacy.canonicalFile)) {
             "An existing default instance cannot be relocated by launch parameters"
         }
@@ -603,9 +627,7 @@ class InstallLocationRegistry(
 
     private fun validateRelocated(location: Location) {
         validateIdentity(location)
-        require(File(location.directory, "server.js").isFile && File(location.directory, "package.json").isFile &&
-            (File(location.directory, "node_modules").isDirectory || dependenciesComplete(location.directory)) &&
-            !exists(File(location.directory, InstanceInstaller.DEPENDENCY_MARKER))) {
+        require(File(location.directory, "server.js").isFile && File(location.directory, "package.json").isFile) {
             "The relocated instance is incomplete; files were preserved"
         }
     }
@@ -738,6 +760,10 @@ class InstallLocationRegistry(
 
     private fun normalized(file: File): File = file.absoluteFile.toPath().normalize().toFile()
     private fun exists(file: File): Boolean = Files.exists(file.toPath(), LinkOption.NOFOLLOW_LINKS)
+
+    /** A directory whose deletion was committed and whose background purge may still run. */
+    private fun markedForRemoval(directory: File): Boolean =
+        File(directory, InstanceRemoval.REMOVAL_MARKER).isFile
 
     private fun chooseNamedTarget(root: File, id: String, displayName: String?, state: RegistryState): File {
         val records = state.locations

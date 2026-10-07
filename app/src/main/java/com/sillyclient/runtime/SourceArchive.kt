@@ -18,7 +18,7 @@ object SourceArchive {
         val entries: Int = 150_000
     )
 
-    private data class Item(val entry: ZipEntry, val path: String)
+    internal data class Item(val entry: ZipEntry, val path: String)
 
     fun extract(
         archive: File,
@@ -73,8 +73,7 @@ object SourceArchive {
                 if (relative.isEmpty() && item.entry.isDirectory) null
                 else Item(item.entry, relative)
             }.filterNot { item ->
-                // Top-level directories are replaced from the shared dependency tree
-                // after extraction instead of being materialized from the archive.
+                // Callers may explicitly exclude top-level sections of a backup.
                 skipTopLevel.any { skip -> item.path == skip || item.path.startsWith("$skip/") }
             }
             validateOutputs(outputs, destination, ensureActive)
@@ -122,7 +121,7 @@ object SourceArchive {
         }
     }
 
-    private fun validatedPath(entry: ZipEntry): String {
+    internal fun validatedPath(entry: ZipEntry): String {
         val path = if (entry.isDirectory) entry.name.removeSuffix("/") else entry.name
         require(path.isNotEmpty() && path.length <= 4096 && !path.startsWith('/') &&
             path.none { it == '\\' || it == ':' || it.code < 32 || it.code == 127 } &&
@@ -132,7 +131,7 @@ object SourceArchive {
         return path
     }
 
-    private fun wrapperPrefix(entries: List<Item>): String {
+    internal fun wrapperPrefix(entries: List<Item>): String {
         val root = entries.first().path.substringBefore('/')
         if (root in setOf("data", "public", "src", "node_modules", "plugins", "default-user")) return ""
         val prefix = "$root/"
@@ -165,7 +164,7 @@ object SourceArchive {
         }
     }
 
-    private fun isHostMetadata(path: String): Boolean =
+    internal fun isHostMetadata(path: String): Boolean =
         path == ".sc-identity" || path == InstanceInstaller.DEPENDENCY_MARKER ||
             (!path.contains('/') && path.startsWith(InstanceInstaller.STAGING_PREFIX))
 

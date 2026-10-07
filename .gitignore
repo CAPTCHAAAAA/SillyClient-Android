@@ -28,3 +28,6 @@ local.properties
 
 # Bundled dependency archives exceed GitHub's 100MB blob limit; kept local-only.
 app/src/main/assets/bundled/*.tar
+
+# 内置依赖归档为构建输入（按 README 从上游获取/生成），不入库
+app/src/main/assets/bundled/*.tar.gz

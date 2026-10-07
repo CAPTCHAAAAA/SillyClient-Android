@@ -13,7 +13,7 @@ class InstanceRename(private val paths: RuntimePaths, private val relocation: In
         val id = RuntimePaths.normalizeInstanceId(instanceId)
         val source = paths.serverDirFor(id, installPath, create = false)
         val destination = File(requireNotNull(source.parentFile), RuntimePaths.normalizeInstanceId(name))
-        val result = relocation.relocate(id, destination.path, source.path, operation = operation)
+        val result = relocation.renameInPlace(id, destination.path, source.path, operation)
         return Result(result.success, id, id, result.oldPath, result.newPath)
     }
 }

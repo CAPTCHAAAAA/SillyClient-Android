@@ -146,6 +146,29 @@ export const nativePreview: TarvenEnvPlugin = {
   async returnToTavern() { record("returnToTavern"); },
   async getStatus() { record("getStatus"); return { ...status }; },
   async fetchReleases() { return { releases: [{ tag: "1.19.0", zipballUrl: "https://example.test/synthetic.zip", prerelease: false }] }; },
+  async inspectImportArchive(options: { archivePath: string }) {
+    record("inspectImportArchive", options);
+    return { importEntries: 12, importBytes: 3_145_728, skippedEntries: 240, skippedBytes: 52_428_800,
+      hasSecrets: true, hasConfig: true, importable: true };
+  },
+  async importInstanceData(options: { instanceId: string; archivePath: string; includeOptional?: boolean }) {
+    record("importInstanceData", options);
+    return { imported: 12, bytes: 3_145_728, skipped: 240 };
+  },
+  async exportInstance(options: { instanceId: string; installPath?: string }) {
+    record("exportInstance", options);
+    return { path: `/storage/emulated/0/Download/SillyClient-导出/${options.instanceId}-synthetic.zip`, bytes: 1048576 };
+  },
+  async getAppSettings() {
+    record("getAppSettings", {});
+    const instancesRoot = syntheticRoot();
+    return { instancesRoot, defaultInstancesRoot: `${instancesRoot}-managed` };
+  },
+  async setInstancesRoot(options) {
+    record("setInstancesRoot", options ?? {});
+    const instancesRoot = options?.path || syntheticRoot();
+    return { instancesRoot, configured: Boolean(options?.path) };
+  },
   async pickDirectory(options) {
     record("pickDirectory", options);
     const selection = directorySelection === undefined ? {

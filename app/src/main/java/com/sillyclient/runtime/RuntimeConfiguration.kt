@@ -48,14 +48,7 @@ class RuntimeConfiguration(
         builder.environment()["HOME"] = paths.tarvenHome.absolutePath
         builder.environment()["TMPDIR"] = paths.tmpDir.absolutePath
         if (values != null) builder.environment()["SILLYCLIENT_CONFIG_VALUES"] = values
-        // The YAML helper resolves modules under the same rules as the server:
-        // tree-backed instances keep no local node_modules, so the shared tree
-        // must join the resolution roots or require('yaml') cannot resolve.
-        DependencyArchive(File(paths.tarvenHome, "dependency-archives"))
-            .lockKey(File(directory, "package-lock.json"))
-            ?.let { key -> DependencyTrees(File(paths.tarvenHome, "dependency-trees")).modulesFor(key) }
-            ?.takeIf { it.isDirectory }
-            ?.let { builder.environment()["NODE_PATH"] = it.absolutePath }
+        // 实例自持：YAML 助手与服务器同样从实例目录内的 node_modules 解析依赖。
         val output = StringBuilder()
         val process = operations.commit(operation) {
             supervisor.track(builder.start(), operation.instanceId, operation)

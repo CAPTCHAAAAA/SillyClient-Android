@@ -1,13 +1,58 @@
 # 开发与调试
 
-## 当前运行时验证
+## 当前开发状态
 
-2026-10-05 的隔离运行时优化在 `feature/release-hardening`，当前本地包为
-`1.10.0 / versionCode 20`。下文 `2.0.1 / 19` 安装记录仅为历史检查点。
+2026-10-06 的修复仍在 `feature/release-hardening` 隔离工作树，目标版本为
+`1.10.0 / versionCode 32`。源码 gzip 依赖资产的真实离线恢复回归和 Release 构建已完成，
+设备安装与实际运行验收另行记录；不能由构建结果推断已装机或已解决真机问题。
+下文 `20`、`19` 以及灰屏修复包的结果都是历史检查点，不代表本轮验收。
+
+当前行为及验证重点：
+
+- 正常运行、依赖检查和迁移只使用实例自己的 `node_modules`，不再接入共享依赖树。
+- 依赖归档只用于安装加速：摘要校验后恢复到同卷 `.sillyclient-dependency-restore`，
+  完整校验后原子换入；失败、取消及强停后按事务状态恢复，不改变实例源码与用户数据。
+- `.sillyclient-dependencies-pending` 尚在时必须完成修复，不能仅凭部分包存在就跳过。
+- npm 仅配置官方源；已有部分依赖或已知锁文件不匹配时使用 `install`，避免反复通过
+  `ci` 删除已有进度。`ci` 与必要回退共用有界总预算，每十五秒检查并输出等待诊断。
+- 删除先移除内容，最后删除身份并解除登记。部分删除后重启仍保留扫描和重试能力；
+  取消须确认原生进程退出，系统 force-stop 后不承诺后台继续删除。
+- 已删除仅凭暂存目录前缀和根目录 mtime 自动清扫的机制；不在下次创建或迁移时
+  自动删除其他遗留目录。
+
+当前 APK 源资产 `app/src/main/assets/bundled/` 已补齐与内置 SillyTavern `1.19.0`
+锁文件匹配的 `dependency-*.tar.gz`，不再是只有源码 ZIP。当前 Gradle 资产合并后
+及最终 APK 内实际文件名为 `dependency-*.tar`，由 APK ZIP 层压缩；条目解压长度
+为 `310681600` 字节，ZIP 压缩长度为 `87878235` 字节。运行时兼容两种文件名，
+本轮 APK 直接读取 tar，源码 gzip 则先展开；两条路径都先核对 tar 内容摘要，
+再以不带 `dependency-` 前缀的规范缓存名原子发布。恢复时再次校验归档，最终
+每个实例拥有自己的本地 `node_modules`。资产来源和摘要见
+[内置资源说明](../app/src/main/assets/bundled/README.md)。
+
+APK 验收应打开最终 `assets/bundled/dependency-*.tar` 条目，核对解压后的长度及
+SHA-256 与文件名第二段一致，不能仅凭源码目录存在 `.tar.gz` 就认为该文件原样入包。
+
+`BundledDependencyArchivesTest.shippedSourceAndCompressedDependenciesRestoreOffline`
+实际读取仓库内源码 ZIP 的清单与锁文件，从空缓存导入完整 gzip 依赖资产，校验
+匹配锁文件及依赖恢复结果，包含 `yaml/package.json` 断言，不发起 npm 网络请求。
+本机 JUnit 回执中该真实资产测试与规范文件名测试均通过；它不执行 Bionic Node、
+酒馆启动、插件或 Android FUSE 写入，不是物理设备验收或移动端速度测试。
+离线范围限于内置源码及匹配依赖；其他版本、修改过的清单/锁文件仍可能需要 npm
+网络，扩展和模型服务请求不在此范围。
+
+定向回归包含 `BundledDependencyArchivesTest`、`DependencyRestoreTransactionTest`、`DependencyArchiveTest`、
+`DependencyInstallerTest`、`InstanceInstallerTest`、`InstanceRemovalTest` 和
+`NativeTreeRemovalTest`。重点覆盖归档中断恢复、旧依赖保护、pending 修复、npm 命令
+选择与统一超时，以及实际部分删除后取消、注册表重载和再次删除。
+
+## 历史验证：2026-10-05
+
+以下为 `1.10.0 / versionCode 20` 检查点，保留原测试事实，不作为当前版本结论。
 
 `BundledRuntimeTest` 验证共享环境异步准备、跨 Activity 串行、失败重试和取消隔离。
 `RuntimeConfigurationTest` 同进程执行配置与服务入口；`DependencyInstallerTest`
-验证实例独立依赖、共享缓存、源切换与超时。`SourceDownloaderTest`、
+当时验证实例独立依赖、共享缓存、源切换与超时；当前版本已移除源轮换。
+`SourceDownloaderTest`、
 `TavernReleaseCatalogTest` 和 `SourceArchiveTest` 分别负责有界下载、版本兜底、
 单次解压及路径/CRC 安全；`InstanceInstallerTest` 验证目标同文件系统发布与回滚。
 `InstanceRemovalTest` 验证身份标记最后删除、失败可重试和目录替换防护。
@@ -138,7 +183,7 @@ SHA-256 与归档 APK 一致，首次安装时间未变。安装后已有一次�
 合成测试、构建和安装证据统一保存在工作区
 `Local/evidence/release-hardening-20261003/output/android-approved-*`。
 
-## 首次返回酒馆灰屏急修
+## 历史验证：首次返回酒馆灰屏急修
 
 2026-10-04，用户反馈最新本地测试包进入酒馆后停留在灰色页面。
 已确认的一条路径是创建流程以 `enter=false` 完成后台启动后，首次从运行态卡片

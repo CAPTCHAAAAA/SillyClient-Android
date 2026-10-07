@@ -14,16 +14,13 @@ class InstanceRelocation(
     private val onProgress: (String) -> Unit = {},
     private val copyVerified: (File, File, OperationCoordinator.Operation) -> Unit =
         { source, target, operation ->
-            NativeInstanceTransfer(paths, operations, processes, onProgress,
-                sharedModules = { InstanceRelocation.sharedModulesPathFor(paths, it) })
-                .copyVerified(source, target, operation,
-                    skipNodeModules = InstanceRelocation.dependenciesCoveredByTree(paths, source))
+            NativeInstanceTransfer(paths, operations, processes, onProgress)
+                .copyVerified(source, target, operation)
         },
     private val sameFilesystem: (File, File) -> Boolean = ::onSameFilesystem,
     private val validateSource: (File, OperationCoordinator.Operation) -> Unit =
         { source, operation ->
-            NativeInstanceTransfer(paths, operations, processes, onProgress,
-                sharedModules = { InstanceRelocation.sharedModulesPathFor(paths, it) })
+            NativeInstanceTransfer(paths, operations, processes, onProgress)
                 .validatePortableSource(source, operation)
         },
     private val removeStaging: (File, File, String, () -> Unit) -> Unit = { target, root, id, verify ->
@@ -41,14 +38,43 @@ class InstanceRelocation(
     fun legacyInstances(): List<LegacyInstance> {
         val repository = InstanceRepository(paths.serversDir, installLocations = paths.installLocations,
             legacyServersRoot = paths.legacyServersDir)
+        val legacyRoots = listOfNotNull(paths.tarvenHome, paths.legacyExternalServersDir)
         return repository.scan().filter { metadata ->
-            metadata.hasServer && ManagedFiles.isWithin(File(metadata.path), paths.tarvenHome) &&
+            metadata.hasServer && legacyRoots.any { ManagedFiles.isWithin(File(metadata.path), it) } &&
                 !ManagedFiles.isWithin(File(metadata.path), paths.serversDir)
         }.map { metadata ->
             val source = File(metadata.path)
             LegacyInstance(metadata.instanceId, source.name, source.path,
                 paths.installLocations.defaultRelocationTarget(metadata.instanceId, source).path, metadata.version)
         }
+    }
+
+    /**
+     * A rename is a metadata-only move inside one parent directory: it never
+     * stages, copies, or inspects dependency state, because the files themselves
+     * are untouched. Chat history and user data cannot be affected by it.
+     */
+    fun renameInPlace(instanceId: String, targetPath: String, installPath: String?,
+        operation: OperationCoordinator.Operation): Result {
+        val id = RuntimePaths.normalizeInstanceId(instanceId)
+        require(operation.instanceId == id) { "Relocation operation belongs to another instance" }
+        operations.ensureCurrent(operation)
+        val plan = paths.installLocations.planRelocation(id, targetPath, installPath)
+        require(plan.source.parentFile != null && plan.target.parentFile != null &&
+            plan.source.parentFile.canonicalFile == plan.target.parentFile.canonicalFile) {
+            "重命名必须在同一父目录内进行"
+        }
+        val sourceIdentity = attributes(plan.source)
+        operations.commit(operation) {
+            paths.installLocations.commitRelocation(plan, retainedSource = false, publish = {
+                Files.move(plan.source.toPath(), plan.target.toPath(), StandardCopyOption.ATOMIC_MOVE)
+            }, rollback = {
+                requireSameDirectory(plan.target, sourceIdentity)
+                require(!exists(plan.source)) { "The original location changed; relocated files were preserved" }
+                Files.move(plan.target.toPath(), plan.source.toPath(), StandardCopyOption.ATOMIC_MOVE)
+            })
+        }
+        return Result(true, id, plan.source.path, plan.target.path)
     }
 
     fun relocate(instanceId: String, targetPath: String? = null, installPath: String? = null,
@@ -58,12 +84,13 @@ class InstanceRelocation(
         operations.ensureCurrent(operation)
         val plan = paths.installLocations.planRelocation(id, targetPath, installPath, displayName)
         if (plan.source == plan.target) return Result(true, id, plan.source.path, plan.target.path, unchanged = true)
-        validateSource(plan.source, operation)
         operations.ensureCurrent(operation)
         val parent = requireNotNull(plan.target.parentFile)
         check(parent.isDirectory || parent.mkdirs()) { "Could not create the relocation destination parent" }
         val sourceIdentity = attributes(plan.source)
         if (sameFilesystem(plan.source, parent)) {
+            // A same-volume move is a metadata-only rename: content, including any
+            // pending dependency state, moves verbatim, so no copy-time guards apply.
             operations.commit(operation) {
                 paths.installLocations.commitRelocation(plan, retainedSource = false, publish = {
                     Files.move(plan.source.toPath(), plan.target.toPath(), StandardCopyOption.ATOMIC_MOVE)
@@ -76,8 +103,11 @@ class InstanceRelocation(
             return Result(true, id, plan.source.path, plan.target.path)
         }
 
+        // Cross-volume transport copies the directory as-is, mirroring the
+        // historical simple behaviour: no dependency or configuration gating,
+        // because a first launch after the move simply finishes preparation.
+        operations.ensureCurrent(operation)
         val approvedRoot = paths.installLocations.allowedRootFor(plan.target)
-        StagingCleanup.sweepOrphans(parent, STAGING_PREFIX, InstanceInstaller.STAGING_PREFIX)
         val staging = Files.createTempDirectory(parent.toPath(), STAGING_PREFIX).toFile()
         val stagingIdentity = attributes(staging)
         val owner = UUID.randomUUID().toString()
@@ -163,7 +193,7 @@ class InstanceRelocation(
         val owners = paths.installLocations.entries()
         for ((id, directory) in owners) {
             if (!File(directory, "server.js").isFile) continue
-            if (!(File(directory, "node_modules").isDirectory || dependenciesCoveredByTree(paths, directory))) continue
+            if (!localDependenciesComplete(directory)) continue
             for (source in paths.installLocations.retainedByInstance(id)) {
                 if (!source.isDirectory) {
                     paths.installLocations.unretainPath(id, source)
@@ -195,24 +225,15 @@ class InstanceRelocation(
 
     private fun exists(file: File): Boolean = Files.exists(file.toPath(), LinkOption.NOFOLLOW_LINKS)
 
+    private fun localDependenciesComplete(directory: File): Boolean =
+        !exists(File(directory, InstanceInstaller.DEPENDENCY_MARKER)) &&
+            (DependencyInstaller.hasRequiredPackages(directory) ||
+                DependencyBank.covers(directory, DependencyArchive(File(paths.tarvenHome, "dependency-archives"))
+                    .lockKey(File(directory, "package-lock.json"))))
+
     companion object {
         internal const val STAGING_PREFIX = ".sillyclient-relocate-"
         internal const val OWNER_MARKER = ".sillyclient-relocation-owner"
-
-        /** Shared-tree modules for an instance's lock, when the tree is materialized. */
-        internal fun sharedModulesPathFor(paths: RuntimePaths, source: File): String? {
-            val lockKey = DependencyArchive(File(paths.tarvenHome, "dependency-archives"))
-                .lockKey(File(source, "package-lock.json")) ?: return null
-            val modules = DependencyTrees(File(paths.tarvenHome, "dependency-trees")).modulesFor(lockKey)
-            return modules.takeIf { it.isDirectory }?.absolutePath
-        }
-
-        /** Cross-volume copies skip node_modules whenever the shared tree covers the lock. */
-        internal fun dependenciesCoveredByTree(paths: RuntimePaths, source: File): Boolean {
-            val lockKey = DependencyArchive(File(paths.tarvenHome, "dependency-archives"))
-                .lockKey(File(source, "package-lock.json")) ?: return false
-            return DependencyTrees(File(paths.tarvenHome, "dependency-trees")).containsComplete(lockKey)
-        }
 
         /**
          * st_dev cannot be trusted on the emulated-storage fuse layer: app-private

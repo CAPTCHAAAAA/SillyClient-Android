@@ -125,9 +125,9 @@ class InstallLocationRegistryTest {
         complete(target)
         paths.installLocations.registerCommitted("stable-id", target)
         assertEquals(target, paths.launchDirectoryFor("stable-id", root.path, "root", "New title"))
-        assertThrows(IllegalArgumentException::class.java) {
-            paths.launchDirectoryFor("stable-id", File(paths.installationsDir, "different-root").path, "root", "New title")
-        }
+        // A stale remembered root cannot redirect a registered instance: the
+        // registry directory always wins.
+        assertEquals(target, paths.launchDirectoryFor("stable-id", File(paths.installationsDir, "different-root").path, "root", "New title"))
     }
 
     @Test
@@ -175,6 +175,34 @@ class InstallLocationRegistryTest {
     }
 
     @Test
+    fun configuredRootStillAcceptsHistoricalDefaultDirectoriesAsInstanceLocations() = withRoot { root, paths ->
+        // Instances created by earlier builds under the app-private or public
+        // default roots must not become "illegal paths" once another root is
+        // configured: one such entry used to poison every registry read, so
+        // scans, migrations and deletions all failed (or crashed the app).
+        val chosenRoot = File(root, "chosen/instances")
+        val privateDefault = File(root, "files/instances")
+        val publicDefault = File(root, "storage/SillyClient/instances")
+        val historyAware = paths.copy(
+            serversDir = chosenRoot,
+            customRootsProvider = { listOf(privateDefault, publicDefault) }
+        )
+        assertEquals(privateDefault,
+            historyAware.installLocations.allowedRootFor(File(privateDefault, "not-created-yet")))
+        val privateInstance = complete(File(privateDefault, "old-private"))
+        historyAware.installLocations.registerCommitted("old-private", privateInstance)
+        val publicInstance = complete(File(publicDefault, "old-public"))
+        historyAware.installLocations.registerCommitted("old-public", publicInstance)
+        assertEquals(setOf("old-private", "old-public"), historyAware.installLocations.entries().keys)
+        assertEquals(privateInstance, historyAware.launchDirectoryFor("old-private", null))
+        assertEquals(publicInstance, historyAware.launchDirectoryFor("old-public", null))
+        val intruder = complete(File(root, "outside/instance"))
+        assertThrows(IllegalArgumentException::class.java) {
+            historyAware.installLocations.registerCommitted("intruder", intruder)
+        }
+    }
+
+    @Test
     fun registryContainingForeignPathsFailsWithoutRecursiveFallback() = withRoot { root, paths ->
         val target = complete(File(paths.installationsDir, "registered"))
         paths.installLocations.registerCommitted("stable-id", target)
@@ -217,9 +245,8 @@ class InstallLocationRegistryTest {
         val target = complete(File(paths.installationsDir, "display-name"))
         paths.installLocations.registerCommitted("stable-id", target)
         assertEquals(target, paths.launchDirectoryFor("stable-id", target.path))
-        assertThrows(IllegalArgumentException::class.java) {
-            paths.launchDirectoryFor("stable-id", File(paths.installationsDir, "elsewhere").path)
-        }
+        // Stale launch paths resolve to the registered directory, never relocate it.
+        assertEquals(target, paths.launchDirectoryFor("stable-id", File(paths.installationsDir, "elsewhere").path))
         assertThrows(IllegalArgumentException::class.java) {
             paths.installLocations.registerCommitted("stable-id", complete(File(paths.installationsDir, "elsewhere")))
         }
@@ -289,6 +316,32 @@ class InstallLocationRegistryTest {
         assertThrows(IllegalArgumentException::class.java) {
             paths.installLocations.registerCommitted("pending-id", pending)
         }
+        assertTrue(paths.installLocations.entries().isEmpty())
+    }
+
+    @Test
+    fun anExistingModuleDirectoryCannotBypassTheDependencyManifestCheck() = withRoot { _, paths ->
+        val target = complete(File(paths.installationsDir, "partial-dependencies"))
+        write(target, "package.json", """{"dependencies":{"yaml":"2.0.0"}}""")
+        assertThrows(IllegalArgumentException::class.java) {
+            paths.installLocations.registerCommitted("partial-id", target)
+        }
+        assertTrue(File(target, "node_modules").isDirectory)
+        assertTrue(paths.installLocations.entries().isEmpty())
+    }
+
+    @Test
+    fun aLegacySharedTreeCannotSubstituteForInstanceLocalDependencies() = withRoot { _, paths ->
+        val target = complete(File(paths.installationsDir, "shared-only"))
+        assertTrue(File(target, "node_modules").delete())
+        val lock = write(target, "package-lock.json", """{"lockfileVersion":3,"packages":{}}""")
+        val key = requireNotNull(DependencyArchive(File(paths.tarvenHome, "dependency-archives")).lockKey(lock))
+        val shared = complete(File(paths.tarvenHome, "dependency-trees/$key"))
+        assertThrows(IllegalArgumentException::class.java) {
+            paths.installLocations.registerCommitted("shared-id", target)
+        }
+        assertEquals("server source", File(target, "server.js").readText())
+        assertTrue(shared.isDirectory)
         assertTrue(paths.installLocations.entries().isEmpty())
     }
 
@@ -437,15 +490,39 @@ class InstallLocationRegistryTest {
     }
 
     @Test
+    fun unregisterAcceptsADeletionCommittedDirectory() = withRoot { root, paths ->
+        val target = complete(File(paths.installationsDir, "display-name"))
+        paths.installLocations.registerCommitted("stable-id", target)
+        // Deletion commits on the removal marker; the physical purge runs in
+        // the background after the console already forgot the instance.
+        File(target, InstanceRemoval.REMOVAL_MARKER).writeText("sillyclient-removal-v1\n")
+        paths.installLocations.unregisterAfterDelete("stable-id", target)
+        assertTrue(target.exists())
+        assertTrue(paths(root).installLocations.entries().isEmpty())
+    }
+
+    @Test
+    fun markedRemnantsAreNeverAdoptedAsInstallTargets() = withRoot { root, paths ->
+        val remnant = complete(File(paths.serversDir, "remnant-name"))
+        File(remnant, InstanceRemoval.REMOVAL_MARKER).writeText("sillyclient-removal-v1\n")
+        // A new instance with the same name lands beside the remnant instead of
+        // installing into a directory that is being purged.
+        val target = paths.launchDirectoryFor("remnant-name", null, displayName = "remnant-name")
+        assertNotEquals(remnant.canonicalFile, target.canonicalFile)
+        assertTrue(target.name.startsWith("remnant-name-"))
+    }
+
+    @Test
     fun unregisterRequiresTheMatchingDirectoryToBeFullyRemoved() = withRoot { root, paths ->
         val target = complete(File(paths.installationsDir, "display-name"))
         paths.installLocations.registerCommitted("stable-id", target)
         assertThrows(IllegalArgumentException::class.java) {
             paths.installLocations.unregisterAfterDelete("stable-id", target)
         }
-        assertThrows(IllegalArgumentException::class.java) {
-            paths.installLocations.unregisterAfterDelete("stable-id", File(paths.installationsDir, "other"))
-        }
+        // A path that no registration owns removes nothing: the registration
+        // keyed by the remembered id survives untouched.
+        paths.installLocations.unregisterAfterDelete("stable-id", File(paths.installationsDir, "other"))
+        assertTrue(paths(root).installLocations.entries().isNotEmpty())
         assertTrue(ManagedFiles.deleteDirectory(target, paths.installLocations.allowedRootFor(target)))
         paths.installLocations.unregisterAfterDelete("stable-id", target)
         assertTrue(paths(root).installLocations.entries().isEmpty())

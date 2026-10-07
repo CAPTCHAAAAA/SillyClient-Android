@@ -334,6 +334,7 @@ internal object UstarArchive {
         }
 
         fun discard() {
+            if (remaining <= 0) return
             val buffer = ByteArray(64 * 1024)
             while (remaining > 0) {
                 if (read(buffer, 0, buffer.size) < 0) {

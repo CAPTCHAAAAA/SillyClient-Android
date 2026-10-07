@@ -60,14 +60,51 @@ Android `shouldOverrideUrlLoading` 不覆盖任意 POST 导航或应用主动 `l
 在酒馆自己的 Node 进程内先解析 YAML 再加载 `server.js`，不再额外拉起配置进程，
 不改写上游 `open` 依赖；配置值未变化时不重写文件。
 
-`DependencyInstaller` 使用内置 Node、共享 npm 完整性缓存和实例自身清单安装，
-不复用任意另一个实例的 `node_modules`。外部存储安装禁用 npm bin 链接，
-生命周期命令的 Node 入口仍明确指向内置二进制。网络失败切换 npmmirror/官方源，
-超时先确认旧进程退出，不能同时启动两个依赖写入者。
+正常启动和迁移仅接受实例自身的 `node_modules`；共享依赖树类及其接线已移除，
+不设置指向共享树的 `NODE_PATH` 或 ESM 解析桥，也不借用其他实例的依赖。
+多个实例仅共享内置 Node/npm/原生库和安装缓存，不共享运行时依赖目录或酒馆进程。
 
-`TavernReleaseCatalog` 独立处理版本元数据、已验证缓存和明确标注的稳定分支兜底；
-`SourceDownloader` 独立负责公共 SillyTavern 官方归档与 HTTPS 镜像，限制来源、
-重定向、体积、超时和取消。第三方镜像不构成上游真实性签名。
+`DependencyArchive` 是安装缓存，不是运行时依赖来源。命中相同锁文件的归档后，
+先校验归档摘要，再通过 `DependencyRestoreTransaction` 解压到实例内同文件系统的
+`.sillyclient-dependency-restore/node_modules`；通过实例依赖校验后才原子重命名换入。
+原依赖在换入过程中保留为事务内的 `previous`，成功后仅清理已验证归属的事务目录；
+恢复失败或状态有歧义时保留文件并报错，不直接覆盖或递归合并已有依赖。
+重试先恢复事务；`.sillyclient-dependencies-pending` 存在时不能因顶层包目录齐全就
+跳过修复。整个过程不重装或改写既有源码、配置、角色卡和聊天数据。
+
+`DependencyInstaller` 使用内置 Node、共享 npm 完整性缓存和实例自身清单安装。
+已知清单/锁文件不匹配、无锁文件或已有部分依赖时选择 `npm install`；干净且适合
+锁文件安装的目录选择 `npm ci`，仅已识别的锁文件不一致错误允许回退到 `install`。
+两种命令共用十分钟总预算，网络请求有界重试，仅配置官方 `registry.npmjs.org`，
+不再轮换第三方镜像。外部存储安装禁用 npm bin 链接，生命周期命令的 Node 入口
+明确指向内置二进制。每十五秒检查等待诊断，区分累计耗时、最近输出和 npm 阶段；
+超时或取消先确认旧进程退出，不能同时启动两个依赖写入者。
+
+源码 `assets/bundled/` 提供 SillyTavern `1.19.0` 源码 ZIP 及匹配锁文件的
+`dependency-<锁文件摘要>-<tar摘要>.tar.gz`。本轮 Gradle 资产合并展开了 gzip，
+最终 APK 中是 ZIP 压缩的 `dependency-<锁文件摘要>-<tar摘要>.tar` 条目，不是 gzip 文件。
+`BundledDependencyArchives` 兼容 `.tar` 与 `.tar.gz`：前者直接读取，后者流式解开
+gzip；输出均限制在 1 GiB 内，校验 tar 内容 SHA-256 后原子发布到私有归档缓存。
+本轮实际打包路径读取 `.tar`，最终 APK 验收须校验该条目解压后的 tar 摘要。
+`DependencyArchive` 恢复前再次校验 tar，并在实例内物化独立依赖目录，不把缓存
+挂成共享运行树。文件名第二段摘要对应 tar 内容，不是 gzip 或 APK 的压缩字节。
+资产来源、大小和两种文件的摘要见 [内置资源说明](../app/src/main/assets/bundled/README.md)。
+
+内置源码及其匹配依赖恢复无需 npm 网络；其他版本、用户修改的锁文件或无有效匹配
+缓存的实例仍可能需要官方 npm 下载。扩展下载和用户模型请求也不在此离线范围内。
+主机真实资产恢复测试不能替代 Android Bionic 运行或真机启动验收。
+归档缺失可回退 npm，但文件系统恢复失败不能静默降级后继续写入同一目录。
+
+`BundledTavernSource` 单次有界读取内置 ZIP 根 `package.json` 的真实正式版本；不硬编码
+版本号、不把嵌套依赖清单当成酒馆版本，完整 ZIP 仍在安装时校验。
+`TavernReleaseCatalog` 合并官方版本元数据、已验证缓存与真实内置版本，联网保留官方
+顺序，离线优先内置包并返回明确 warning；缓存元数据不等于已下载源码。
+只有选择与内置清单相符的具体版本或旧原生无 URL 的 stable 默认调用才使用内置包，
+显式 release 分支不能被替换为内置旧版本。向导每次重新打开列表可重试，选择版本清除
+旧 ZIP 状态，失效的版本选择不能偷偷换成另一版；SillyClient 退役版本规则不用于酒馆。
+`SourceDownloader` 独立负责公共 SillyTavern 官方归档，仅使用 GitHub/codeload 来源，
+限制重定向、体积、超时和取消；失败提示本地 ZIP 导入或检查网络/代理。
+`SourceArchiveCache` 复用经过摘要校验的源码归档，不提供第三方下载镜像。
 `SourceArchive` 先读 ZIP 中央目录，再单次流式解压并检查 CRC、路径和展开大小。
 
 `storage/InstanceDocumentsProvider` 通过系统 SAF 显式提供标准用户数据的只读浏览/导出。
@@ -92,7 +129,13 @@ Android `shouldOverrideUrlLoading` 不覆盖任意 POST 导航或应用主动 `l
 `NativeTreeRemoval` 对归属已验证的直接子路径调用原生删除，按实际输出进展监督闲置，
 不以总耗时 60 秒杀掉仍在工作的进程。每文件输出仅用于计数，公开诊断不含路径；
 退出状态和物理残留才决定成功。`InstanceRemoval` 仍在最后删除身份与解除登记。
+删除中断后保留既有 `.sc-identity` 和登记；旧版非标记身份仍按原文件系统 fileKey
+核验，不要求补写标记。即使源码已经删除、仅剩部分依赖，也能在
+重启后扫描为未完成实例并重试删除。主动取消会等待原生删除进程退出；系统强制停止
+应用后不承诺继续后台执行，下次由用户重新发起删除，不自动清理实例残留。
 新安装回滚共用原生删除，宿主暂存归属标记保留到内容移除后，避免 JVM 再逐文件遍历。
+已取消仅按目录前缀和根目录修改时间判断孤儿的自动后台清扫；深层写入不会可靠更新
+根目录时间，不能据此删除其他或尚活跃的安装、迁移暂存。
 补依赖前记录宿主自有未完成标记，成功后才移除；取消或 npm 失败后即使存在半成品
 `node_modules`，后续启动仍会重试，不替换已有源码和数据。
 
@@ -109,7 +152,9 @@ Android `shouldOverrideUrlLoading` 不覆盖任意 POST 导航或应用主动 `l
 SAF 目录树和 ZIP 只作为迁移来源，不能把 content URI 当成 Node 可执行路径。
 新安装与复制迁移只在目标同级暂存，全部复制与依赖验证通过后才原子提交，无跨卷移动
 失败后的复制兜底。现有非空目标不能覆盖；原地接管仍明确拒绝。
-既有实例同 ID 的跨卷迁出仍需独立事务实现，本轮不自动移动或删除旧实例。
+`InstanceRelocation` 要求来源实例的本地依赖完整。同卷通过原子重命名移动，跨卷
+迁移在目标同级暂存复制实例自己的依赖、校验后发布；不能因旧共享树记录而跳过依赖。
+迁移仅响应显式操作，不自动移动或删除旧实例。
 
 ### 可选预制安装
 

@@ -15,9 +15,10 @@ data class RuntimePaths(
     val nativeLibDir: File,
     val nodeBin: File,
     val legacyServersDir: File? = null,
-    val customRootsProvider: (() -> List<File>)? = null
+    val customRootsProvider: (() -> List<File>)? = null,
+    val legacyExternalServersDir: File? = null
 ) {
-    val installationsDir: File get() = File(serversDir.parentFile ?: tarvenHome, "installations")
+    val installationsDir: File get() = File(tarvenHome, "installations")
     val instancePasswordsFile: File get() = File(tarvenHome, "instance-passwords.json")
     val instanceLock: InstanceLock by lazy { InstanceLock(instancePasswordsFile) }
     val installLocations: InstallLocationRegistry by lazy {
@@ -28,16 +29,12 @@ data class RuntimePaths(
             File(tarvenHome, "install-locations.json"),
             legacyServersDir,
             customRootsProvider,
-            dependenciesComplete = ::sharedDependenciesComplete
+            dependenciesComplete = { directory ->
+                DependencyInstaller.hasRequiredPackages(directory) ||
+                    DependencyBank.covers(directory, DependencyArchive(File(tarvenHome, "dependency-archives"))
+                        .lockKey(File(directory, "package-lock.json")))
+            }
         )
-    }
-
-    /** True when dependencies resolve locally or through the shared dependency tree. */
-    private fun sharedDependenciesComplete(directory: File): Boolean {
-        if (File(directory, "node_modules").isDirectory) return true
-        val lockKey = DependencyArchive(File(tarvenHome, "dependency-archives"))
-            .lockKey(File(directory, "package-lock.json")) ?: return false
-        return DependencyTrees(File(tarvenHome, "dependency-trees")).containsComplete(lockKey)
     }
 
     companion object {
@@ -51,24 +48,49 @@ data class RuntimePaths(
             val native = File(context.applicationInfo.nativeLibraryDir)
             val legacyServers = File(bootstrap, "servers")
 
-            // Prefer a public root when the user granted all-files access so instances are
-            // visible in ordinary file managers; Android/data stays the unscoped fallback.
+            // The instances root is the folder the user chose in the creation
+            // wizard (saved in app settings) so instances are plain folders any
+            // file manager can browse; there is no software default root. The
+            // app-private fallback keeps instances from the earlier managed-area
+            // layout discoverable and launchable. The all-files management
+            // permission is requested from the user when the folder is chosen,
+            // never assumed.
             val externalFiles = try { context.getExternalFilesDir(null) } catch (_: Exception) { null }
-            val servers = when {
-                android.os.Environment.isExternalStorageManager() ->
-                    File(android.os.Environment.getExternalStorageDirectory(), "SillyClient/instances").apply { mkdirs() }
-                externalFiles != null -> File(externalFiles, "instances").apply { mkdirs() }
-                else -> legacyServers
-            }
+            val settings = AppSettingsStore(AppSettingsStore.settingsFile(home)).load()
+            val configuredRoot = settings.instancesRoot
+                ?.takeIf { root -> root.startsWith("/") && !root.contains("://") }
+                ?.let(::File)
+            val servers = configuredRoot ?: File(files, "instances")
+            // Legacy discovery candidates kept exactly as in build62: the
+            // configured root, the public SillyClient/instances era and the
+            // app-external dir, first one that exists wins.
+            val legacyExternal = listOfNotNull(
+                configuredRoot,
+                File(android.os.Environment.getExternalStorageDirectory(), "SillyClient/instances"),
+                externalFiles?.let { File(it, "instances") }
+            ).firstOrNull { it.isDirectory }
 
             val customRoots: () -> List<File> = {
-                listOfNotNull(
+                val sharedRoots = listOfNotNull(
                     externalFiles,
                     try { android.os.Environment.getExternalStorageDirectory() } catch (_: Exception) { null },
                     File("/storage/emulated/0"),
                     File("/storage"),
                     File("/sdcard")
                 ).filter { it.exists() }
+                // Historical default instance locations stay accepted no matter which
+                // root is configured now, and whether or not the directory currently
+                // exists: instances created under them in earlier builds must remain
+                // readable, launchable, deletable and migratable. Excluding them made
+                // one such entry poison the whole registry read, so every scan,
+                // migration or deletion failed (or crashed) afterwards.
+                val legacyDefaults = listOfNotNull(
+                    File(files, "instances"),
+                    try { android.os.Environment.getExternalStorageDirectory() } catch (_: Exception) { null }
+                        ?.let { File(it, "SillyClient/instances") },
+                    externalFiles?.let { File(it, "instances") }
+                )
+                sharedRoots + legacyDefaults
             }
 
             return RuntimePaths(
@@ -83,7 +105,8 @@ data class RuntimePaths(
                 nativeLibDir = native,
                 nodeBin = File(native, "libtarven-node.so"),
                 legacyServersDir = legacyServers,
-                customRootsProvider = customRoots
+                customRootsProvider = customRoots,
+                legacyExternalServersDir = legacyExternal
             )
         }
     }

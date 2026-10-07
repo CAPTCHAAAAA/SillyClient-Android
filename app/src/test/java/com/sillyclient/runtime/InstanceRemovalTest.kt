@@ -3,7 +3,10 @@ package com.sillyclient.runtime
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.attribute.BasicFileAttributes
 import java.util.concurrent.CancellationException
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -13,7 +16,12 @@ import org.junit.Test
 
 class InstanceRemovalTest {
     private data class Fixture(val root: File, val instances: File, val target: File, val registry: InstallLocationRegistry) {
-        fun verify() { assertEquals(target, registry.resolve("instance-id")) }
+        fun verify() {
+            val resolved = registry.resolve("instance-id")
+            // Ghost pruning may already have dropped the vanished registration;
+            // whatever resolves must never point at another instance's directory.
+            assertTrue(resolved == target || !registry.isRegistered(target))
+        }
         fun unregister() { registry.unregisterAfterDelete("instance-id", target) }
         fun delete(children: List<File>) {
             for (child in children) {
@@ -94,6 +102,71 @@ class InstanceRemovalTest {
         assertTrue(File(fixture.target, ".sc-identity").isFile)
         fixture.remove()
         assertFalse(fixture.target.exists())
+    }
+
+    @Test
+    fun partiallyDeletedDependenciesRemainDiscoverableAndRetryableAfterRegistryReload() = withFixture { fixture ->
+        val marker = File(fixture.target, ".sc-identity")
+        val identity = marker.readText()
+        val remaining = File(fixture.target, "node_modules/remaining/index.js").apply {
+            parentFile.mkdirs()
+            writeText("partial dependency")
+        }
+        assertThrows(CancellationException::class.java) {
+            fixture.remove(removeChildren = { children ->
+                fixture.delete(children.filter { it.name != "node_modules" })
+                Files.delete(File(fixture.target, "node_modules/dependency").toPath())
+                throw CancellationException("Application stopped during native removal")
+            })
+        }
+        assertEquals(identity, marker.readText())
+        assertTrue(remaining.isFile)
+        assertFalse(File(fixture.target, "server.js").exists())
+
+        val reloaded = InstallLocationRegistry(fixture.root, fixture.instances,
+            File(fixture.root, "installations"), File(fixture.root, "state/locations.json"))
+        val scanned = InstanceRepository(fixture.instances, installLocations = reloaded).scan().single()
+        assertEquals("instance-id", scanned.instanceId)
+        assertEquals(fixture.target.absolutePath, scanned.path)
+        assertFalse(scanned.hasServer)
+        assertEquals("未完成", scanned.status)
+        InstanceRemoval.remove(fixture.target, fixture.instances,
+            verifyIdentity = { assertEquals(fixture.target, reloaded.resolve("instance-id")) },
+            ensureActive = {}, removeChildren = fixture::delete, commit = { it() },
+            unregister = { reloaded.unregisterAfterDelete("instance-id", fixture.target) })
+        assertFalse(fixture.target.exists())
+        assertTrue(reloaded.entries().isEmpty())
+    }
+
+    @Test
+    fun legacyFileKeyRegistrationWithoutMarkerRemainsRetryableAfterPartialDeletion() = withFixture { fixture ->
+        val fileKey = Files.readAttributes(fixture.target.toPath(), BasicFileAttributes::class.java,
+            LinkOption.NOFOLLOW_LINKS).fileKey()?.toString()
+        assumeTrue("Legacy inode registration requires a filesystem file key", fileKey != null)
+        val registryFile = File(fixture.root, "state/locations.json")
+        val document = JSONObject(registryFile.readText())
+        document.getJSONArray("locations").getJSONObject(0).put("fileKey", fileKey)
+        registryFile.writeText(document.toString())
+        Files.delete(File(fixture.target, ".sc-identity").toPath())
+
+        assertThrows(CancellationException::class.java) {
+            fixture.remove(removeChildren = { children ->
+                fixture.delete(children.filter { it.name != "node_modules" })
+                throw CancellationException("Application stopped with dependency remnants")
+            })
+        }
+        val reloaded = InstallLocationRegistry(fixture.root, fixture.instances,
+            File(fixture.root, "installations"), registryFile)
+        val scanned = InstanceRepository(fixture.instances, installLocations = reloaded).scan().single()
+        assertEquals("instance-id", scanned.instanceId)
+        assertFalse(scanned.hasServer)
+        assertFalse(File(fixture.target, ".sc-identity").exists())
+        InstanceRemoval.remove(fixture.target, fixture.instances,
+            verifyIdentity = { assertEquals(fixture.target, reloaded.resolve("instance-id")) },
+            ensureActive = {}, removeChildren = fixture::delete, commit = { it() },
+            unregister = { reloaded.unregisterAfterDelete("instance-id", fixture.target) })
+        assertFalse(fixture.target.exists())
+        assertTrue(reloaded.entries().isEmpty())
     }
 
     @Test

@@ -33,6 +33,9 @@ class InstanceInstaller(
                 "Installation target does not match the instance location"
             }
         } else require(ManagedFiles.isWithin(target, serversRoot)) { "Instance is outside the managed scope" }
+        require(!File(target, InstanceRemoval.REMOVAL_MARKER).isFile) {
+            "该位置正在后台清理，请稍后重试或更换实例名"
+        }
         require(ManagedFiles.isWithin(File(target, "server.js"), target)) { "Linked instance source was preserved" }
         if (File(target, "server.js").isFile) {
             prepareDependencies(target, ensureActive, installDependencies, commit)
@@ -43,10 +46,10 @@ class InstanceInstaller(
         requireEmptyOrMissing(target)
         val originalTarget = if (exists(target)) attributes(target) else null
         val parent = requireNotNull(target.absoluteFile.parentFile) { "Instance has no parent directory" }
-        StagingCleanup.sweepOrphans(parent, STAGING_PREFIX, InstanceRelocation.STAGING_PREFIX)
         check(parent.isDirectory || parent.mkdirs()) { "Could not create the installation parent directory" }
         val root = installLocations?.allowedRootFor(target) ?: serversRoot
         require(ManagedFiles.isWithin(target, root)) { "Installation parent changed; existing files were preserved" }
+        sweepStaleStaging(parent)
         // A sibling is on the destination filesystem; publication never copies node_modules.
         val staging = Files.createTempDirectory(parent.toPath(), STAGING_PREFIX).toFile()
         val identity = attributes(staging)
@@ -153,9 +156,11 @@ class InstanceInstaller(
             }
         }
         // Failed or cancelled npm may leave a partial node_modules directory; retry while marked.
-        check(installDependencies(directory) && ManagedFiles.isWithin(dependencies, directory) &&
-            dependenciesComplete(directory)) {
-            "Dependency installation failed; existing instance data was preserved"
+        val installed = installDependencies(directory)
+        check(installed) { "依赖安装被拒绝；实例数据已保留" }
+        check(ManagedFiles.isWithin(dependencies, directory)) { "依赖目录逃逸实例范围；实例数据已保留" }
+        check(dependenciesComplete(directory)) {
+            "依赖完整性校验未通过（未找到本实例可解析的依赖）；实例数据已保留"
         }
         ensureActive()
         commit {
@@ -182,6 +187,25 @@ class InstanceInstaller(
     }
 
     private fun exists(file: File): Boolean = Files.exists(file.toPath(), LinkOption.NOFOLLOW_LINKS)
+
+    /**
+     * Installs are serialized, so any `.sillyclient-install-*` sibling from an
+     * earlier run is a cancelled or crashed transaction: reclaim it in the
+     * background so failed creations never litter the instance root.
+     */
+    private fun sweepStaleStaging(parent: File) {
+        val stale = parent.listFiles { file -> file.isDirectory && file.name.startsWith(STAGING_PREFIX) }
+            ?.takeIf { it.isNotEmpty() } ?: return
+        Thread {
+            for (directory in stale) {
+                try { ManagedFiles.deleteDirectory(directory, parent) }
+                catch (_: Exception) { /* best effort; retried on the next install */ }
+            }
+        }.apply {
+            name = "SC-install-staging-sweep"
+            isDaemon = true
+        }.start()
+    }
 
     companion object {
         internal const val STAGING_PREFIX = ".sillyclient-install-"

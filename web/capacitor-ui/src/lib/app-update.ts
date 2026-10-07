@@ -12,6 +12,11 @@ interface Release {
 const REPOSITORY = "CAPTCHAAAAA/SillyClient";
 const RETIRED = new Set(["2.0.0", "2.0.1", "2.0.2"]);
 
+/** 已退役版本（2.0.x 公告位残留）不进入任何版本列表或公告。 */
+export function isRetiredRelease(tag: string): boolean {
+  return RETIRED.has(tag.trim().replace(/^v/i, ""));
+}
+
 function version(value: string): number[] | null {
   const clean = value.trim().replace(/^v/i, "");
   if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(clean)) return null;
@@ -25,7 +30,8 @@ export function isAppUpgrade(current: string, candidate: string, assetVerified: 
   const from = left.join(".");
   const to = right.join(".");
   if (RETIRED.has(to)) return false;
-  if (RETIRED.has(from) && to === "1.10.0") return true;
+  // 退役的 2.0.x 公告位残留版本可以回到当前 1.x 维护线（含 1.11.0）。
+  if (RETIRED.has(from) && right[0] === 1) return true;
   for (let index = 0; index < 3; index += 1) {
     if (left[index] !== right[index]) return left[index] < right[index];
   }

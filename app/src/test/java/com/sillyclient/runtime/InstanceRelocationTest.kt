@@ -43,6 +43,12 @@ class InstanceRelocationTest {
         paths.installLocations.registerCommitted("stable-id", it)
     }
 
+    private fun legacySharedTree(paths: RuntimePaths, source: File): File {
+        val lock = File(source, "package-lock.json").apply { writeText("{\"lockfileVersion\":3,\"packages\":{}}") }
+        val key = requireNotNull(DependencyArchive(File(paths.tarvenHome, "dependency-archives")).lockKey(lock))
+        return complete(File(paths.tarvenHome, "dependency-trees/$key"))
+    }
+
     private fun copy(source: File, target: File) {
         source.listFiles().orEmpty().forEach { entry ->
             val destination = File(target, entry.name)
@@ -84,10 +90,12 @@ class InstanceRelocationTest {
         assertThrows(IllegalArgumentException::class.java) {
             InstanceRename(paths, service).rename("stable-id", "Other Tavern", operation = operation)
         }
-        assertThrows(IllegalArgumentException::class.java) {
-            InstanceRename(paths, service).rename("stable-id", "Third Tavern", other.path, operation)
-        }
-        assertEquals(source, paths.serverDirFor("stable-id", create = false))
+        // A stale remembered path cannot hijack the rename towards another
+        // instance's directory: the registered location wins, the rename lands
+        // on the new name beside the original directory.
+        val renamed = InstanceRename(paths, service).rename("stable-id", "Third Tavern", other.path, operation)
+        assertEquals(File(paths.serversDir, "Third Tavern").path, renamed.newPath)
+        assertFalse(source.exists())
         assertEquals(other, paths.serverDirFor("other-id", create = false))
         assertTrue(operations.isCurrent(operation))
     }
@@ -100,6 +108,72 @@ class InstanceRelocationTest {
         val result = service.relocate("stable-id", source.path, operation = operations.begin("stable-id"))
         assertTrue(result.unchanged)
         assertEquals(source.path, result.newPath)
+    }
+
+    @Test
+    fun legacySharedOnlyInstancesMoveFreelyInPlaceAndAcrossVolumes() = fixture { _, paths, operations, processes ->
+        val source = current(paths)
+        val shared = legacySharedTree(paths, source)
+        assertTrue(File(source, "node_modules").delete())
+        val moved = File(paths.installationsDir, "Moved Tavern")
+        // A same-volume move publishes the very same files, so an instance whose
+        // dependencies live on a retired shared tree can still be renamed/moved.
+        val mover = InstanceRelocation(paths, operations, processes,
+            copyVerified = { _, _, _ -> throw AssertionError("Same-volume move must not copy dependencies") },
+            sameFilesystem = { _, _ -> true })
+        val result = mover.relocate("stable-id", moved.path, operation = operations.begin("stable-id"))
+        assertFalse(source.exists())
+        assertEquals(moved, paths.serverDirFor("stable-id", create = false))
+        assertEquals("chat history", File(moved, "data/default-user/chats/log.jsonl").readText())
+        assertFalse(File(moved, "node_modules").exists())
+        assertTrue(shared.isDirectory)
+        assertTrue(paths.installLocations.retainedSources().isEmpty())
+
+        // A cross-volume transport copies the directory as-is; dependency state
+        // is the first launch's concern, never a relocation blocker.
+        val destination = File(paths.installationsDir, "Copied Tavern")
+        val crossVolume = InstanceRelocation(paths, operations, processes,
+            copyVerified = { from, to, _ -> copy(from, to) },
+            sameFilesystem = { _, _ -> false })
+        val copied = crossVolume.relocate("stable-id", destination.path, operation = operations.begin("stable-id"))
+        assertEquals(moved.path, copied.retainedSourcePath)
+        assertEquals(destination, paths.serverDirFor("stable-id", create = false))
+        assertFalse(File(destination, "node_modules").exists())
+        assertTrue(paths.installLocations.retainedSources().isNotEmpty())
+    }
+
+    @Test
+    fun pendingDependenciesMoveVerbatimWhenRenamedInPlace() = fixture { _, paths, operations, processes ->
+        val source = current(paths)
+        val marker = File(source, InstanceInstaller.DEPENDENCY_MARKER).apply {
+            writeText("sillyclient-dependencies-v1\n")
+        }
+        val destination = File(paths.serversDir, "Renamed Tavern")
+        val result = InstanceRelocation(paths, operations, processes, sameFilesystem = { _, _ -> true })
+            .relocate("stable-id", destination.path, operation = operations.begin("stable-id"))
+        assertFalse(source.exists())
+        assertEquals(destination, paths.serverDirFor("stable-id", create = false))
+        val movedMarker = File(destination, InstanceInstaller.DEPENDENCY_MARKER)
+        assertTrue(movedMarker.isFile)
+        assertEquals("sillyclient-dependencies-v1\n", movedMarker.readText())
+    }
+
+    @Test
+    fun aCopyMissingLocalDependenciesStillPublishesWithTheSourceRetained() = fixture { _, paths, operations, processes ->
+        val source = current(paths)
+        legacySharedTree(paths, source)
+        val destination = File(paths.installationsDir, "Incomplete Tavern")
+        val service = InstanceRelocation(paths, operations, processes,
+            copyVerified = { from, to, _ -> copy(from, to); assertTrue(File(to, "node_modules").delete()) },
+            sameFilesystem = { _, _ -> false },
+            removeStaging = { target, root, _, verify -> cleanup(target, root, verify) })
+        val result = service.relocate("stable-id", destination.path, operation = operations.begin("stable-id"))
+        assertEquals(source.path, result.retainedSourcePath)
+        assertEquals(destination, paths.serverDirFor("stable-id", create = false))
+        assertFalse(File(destination, "node_modules").exists())
+        assertEquals("chat history", File(destination, "data/default-user/chats/log.jsonl").readText())
+        assertTrue(source.isDirectory)
+        assertEquals(setOf(source), paths.installLocations.retainedSources())
     }
 
     @Test
@@ -218,6 +292,77 @@ class InstanceRelocationTest {
         assertFalse(File(source, ".sc-identity").exists())
     }
 
+    @Test
+    fun legacyDiscoveryIncludesRegisteredRestrictedStorageWithoutChangingIt() = fixture { root, originalPaths, operations, processes ->
+        val restrictedRoot = File(root, "Android/data/com.sillyclient/files/instances")
+        val paths = originalPaths.copy(legacyExternalServersDir = restrictedRoot,
+            customRootsProvider = { listOf(restrictedRoot) })
+        val source = complete(File(restrictedRoot, "My Tavern"))
+        paths.installLocations.registerCommitted("restricted-id", source)
+        val registry = File(paths.tarvenHome, "install-locations.json")
+        val before = registry.readText() to registry.lastModified()
+        val filesBefore = source.walkTopDown().filter { it.isFile }
+            .associate { it.relativeTo(source).path to (it.readText() to it.lastModified()) }
+
+        val item = InstanceRelocation(paths, operations, processes).legacyInstances().single()
+
+        assertEquals("restricted-id", item.instanceId)
+        assertEquals("My Tavern", item.name)
+        assertEquals(source.path, item.currentPath)
+        assertEquals(File(paths.serversDir, "My Tavern").path, item.targetPath)
+        assertFalse(File(item.targetPath).exists())
+        assertEquals(before, registry.readText() to registry.lastModified())
+        assertEquals(filesBefore, source.walkTopDown().filter { it.isFile }
+            .associate { it.relativeTo(source).path to (it.readText() to it.lastModified()) })
+        assertEquals(mapOf("restricted-id" to source), paths.installLocations.entries())
+    }
+
+    @Test
+    fun legacyDiscoveryExcludesPublicCustomAndUnregisteredRestrictedInstances() = fixture { root, originalPaths, operations, processes ->
+        val externalFiles = File(root, "Android/data/com.sillyclient/files")
+        val restrictedRoot = File(externalFiles, "instances")
+        val customRoot = File(externalFiles, "instances-other")
+        val paths = originalPaths.copy(legacyExternalServersDir = restrictedRoot,
+            customRootsProvider = { listOf(externalFiles) })
+        val privateSource = complete(File(requireNotNull(paths.legacyServersDir), "private-old"))
+        val restricted = complete(File(restrictedRoot, "Restricted Tavern"))
+        paths.installLocations.registerCommitted("restricted-id", restricted)
+        paths.installLocations.registerCommitted("custom-id", complete(File(customRoot, "Custom Tavern")))
+        current(paths)
+        complete(File(restrictedRoot, "Unregistered Tavern"))
+
+        val items = InstanceRelocation(paths, operations, processes).legacyInstances()
+
+        assertEquals(setOf("private-old", "restricted-id"), items.map { it.instanceId }.toSet())
+        assertEquals(setOf(privateSource.path, restricted.path), items.map { it.currentPath }.toSet())
+        assertEquals(setOf("restricted-id", "custom-id", "stable-id"), paths.installLocations.entries().keys)
+    }
+
+    @Test
+    fun explicitlyRelocatedRestrictedInstanceLeavesTheLegacyListAndPreservesIdentity() = fixture { root, originalPaths, operations, processes ->
+        val restrictedRoot = File(root, "Android/data/com.sillyclient/files/instances")
+        val paths = originalPaths.copy(legacyExternalServersDir = restrictedRoot,
+            customRootsProvider = { listOf(restrictedRoot) })
+        val source = complete(File(restrictedRoot, "My Tavern"))
+        paths.installLocations.registerCommitted("restricted-id", source)
+        val identity = File(source, ".sc-identity").readText()
+        val service = InstanceRelocation(paths, operations, processes,
+            copyVerified = { _, _, _ -> throw AssertionError("Same-volume relocation must not copy") },
+            sameFilesystem = { _, _ -> true }, validateSource = { _, _ -> })
+        assertEquals(1, service.legacyInstances().size)
+
+        val result = service.relocate("restricted-id", installPath = source.path,
+            operation = operations.begin("restricted-id"))
+
+        assertEquals("restricted-id", result.instanceId)
+        assertEquals(File(paths.serversDir, "My Tavern").path, result.newPath)
+        assertFalse(source.exists())
+        assertEquals(identity, File(result.newPath, ".sc-identity").readText())
+        assertEquals("chat history", File(result.newPath, "data/default-user/chats/log.jsonl").readText())
+        assertEquals(File(result.newPath), paths.serverDirFor("restricted-id", create = false))
+        assertTrue(service.legacyInstances().isEmpty())
+    }
+
     private class SimulatedInterruption : Error("Simulated process exit")
 
     @Test
@@ -256,6 +401,29 @@ class InstanceRelocationTest {
         assertEquals("chat history", File(source, "data/default-user/chats/log.jsonl").readText())
         assertEquals("chat history", File(plan.target, "data/default-user/chats/log.jsonl").readText())
         assertFalse(File(plan.target, InstanceRelocation.OWNER_MARKER).exists())
+    }
+
+    @Test
+    fun interruptedPublicationRecoveryAcceptsADependencylessCopy() = fixture { _, paths, _, _ ->
+        val source = current(paths)
+        legacySharedTree(paths, source)
+        val plan = paths.installLocations.planRelocation("stable-id", File(paths.installationsDir, "Incomplete recovery").path)
+        val registry = File(paths.tarvenHome, "install-locations.json")
+        assertThrows(SimulatedInterruption::class.java) {
+            paths.installLocations.commitRelocation(plan, true, {
+                plan.target.mkdirs()
+                copy(source, plan.target)
+                assertTrue(File(plan.target, "node_modules").delete())
+                throw SimulatedInterruption()
+            }, { throw AssertionError("A terminated process cannot roll back") })
+        }
+        // Journal recovery moves the registration to the copied directory even
+        // without local dependencies; the first launch finishes preparation.
+        val recovered = paths.copy()
+        assertEquals(plan.target, recovered.serverDirFor("stable-id", create = false))
+        assertEquals(source, recovered.installLocations.retainedSources().single())
+        assertEquals("chat history", File(plan.target, "data/default-user/chats/log.jsonl").readText())
+        assertFalse(File(paths.tarvenHome, "install-location-move.json").isFile)
     }
 
     @Test

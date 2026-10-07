@@ -4,10 +4,11 @@ import android.content.Intent
 import android.app.AlertDialog
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
+import android.Manifest
 import android.provider.DocumentsContract
 import android.provider.Settings
 import android.util.Base64
+import android.util.Log
 import androidx.activity.result.ActivityResult
 import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
@@ -16,15 +17,20 @@ import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import com.getcapacitor.annotation.ActivityCallback
+import com.getcapacitor.annotation.Permission
+import com.getcapacitor.annotation.PermissionCallback
 import com.sillyclient.MainActivity
 import com.sillyclient.auth.RemoteBasicAuthStore
 import com.sillyclient.download.TavernDownloadFiles
 import com.sillyclient.runtime.CompanionPresetInstaller
 import com.sillyclient.runtime.CompanionPresetRequest
+import com.sillyclient.runtime.AppSettingsStore
+import com.sillyclient.runtime.ManagedFiles
 import com.sillyclient.runtime.PreinstalledExtensionsRequest
 import com.sillyclient.runtime.PreinstalledExtensionInstaller
 import com.sillyclient.runtime.InstanceMaintenance
 import com.sillyclient.runtime.RuntimePaths
+import com.sillyclient.storage.InstanceStorageAccess
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -38,13 +44,18 @@ import org.json.JSONObject
  * All heavy lifting lives in MainActivity; this plugin is a thin bridge.
  * Events (progress / log / ready) are pushed from MainActivity via [notify].
  */
-@CapacitorPlugin(name = "TarvenEnv")
+@CapacitorPlugin(name = "TarvenEnv", permissions = [
+    Permission(alias = InstanceStorageAccess.LEGACY_PERMISSION_ALIAS,
+        strings = [Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE])
+])
 class TarvenEnvPlugin : Plugin() {
     private val releaseExecutor = java.util.concurrent.Executors.newSingleThreadExecutor {
         Thread(it, "SillyClient-releases").apply { isDaemon = true }
     }
     private var installationPicker: AlertDialog? = null
     private var installationPickerCall: PluginCall? = null
+    private var storagePermissionDialog: AlertDialog? = null
+    private var storagePermissionCall: PluginCall? = null
 
     companion object {
         private const val TAG = "SillyClient"
@@ -64,6 +75,7 @@ class TarvenEnvPlugin : Plugin() {
     }
 
     override fun handleOnDestroy() {
+        cancelStoragePermission()
         releaseExecutor.shutdownNow()
         installationPicker?.setOnCancelListener(null)
         installationPicker?.dismiss()
@@ -127,14 +139,21 @@ class TarvenEnvPlugin : Plugin() {
         }
         val operationId = call.getString("operationId")
         val preinstall = try { parsePreinstall(call) } catch (error: Exception) {
+            Log.w(TAG, "reject: ${error.message}")
             call.reject(error.message ?: "Invalid preinstall request", error)
             return
         }
         act.runOnUiThread {
             try {
+                val paths = act.runtimePaths
+                val destination = paths.launchDirectoryFor(instanceId, installPath, installPathMode, instanceName)
+                if (InstanceStorageAccess.requiresPublicAccess(paths, destination) && !requestStorageAccess(call)) {
+                    return@runOnUiThread
+                }
                 act.provisionAndStart(port, instanceId, version, config, urlArg, localArg, companionPreset, operationId, preinstall, installPath, installPathMode, instanceName)
                 call.resolve()
             } catch (error: Exception) {
+                Log.w(TAG, "reject: ${error.message}")
                 call.reject(error.message ?: "Unable to start instance", error)
             }
         }
@@ -201,10 +220,12 @@ class TarvenEnvPlugin : Plugin() {
                         call.reject("酒馆暂时无法打开")
                     }
                 } catch (error: Exception) {
+                    Log.w(TAG, "reject: ${error.message}")
                     call.reject(error.message ?: "无法打开酒馆页面", error)
                 }
             }
         } catch (error: Exception) {
+            Log.w(TAG, "reject: ${error.message}")
             call.reject(error.message ?: "无法读取远程连接凭据", error)
         }
     }
@@ -224,6 +245,7 @@ class TarvenEnvPlugin : Plugin() {
                 if (act.returnToTavern()) call.resolve()
                 else call.reject("酒馆服务尚未就绪，请重新启动实例")
             } catch (error: Exception) {
+                Log.w(TAG, "reject: ${error.message}")
                 call.reject(error.message ?: "无法返回酒馆页面", error)
             }
         }
@@ -234,7 +256,14 @@ class TarvenEnvPlugin : Plugin() {
         val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
         val instanceId = call.getString("instanceId")?.ifBlank { null }
         val operationId = call.getString("operationId")?.ifBlank { null }
-        act.runOnUiThread { act.closeTavern(instanceId, operationId) }
+        act.runOnUiThread {
+            storagePermissionCall?.takeIf {
+                it.methodName == "provisionAndStart" &&
+                    (instanceId == null || it.getString("instanceId", "default") == instanceId) &&
+                    (operationId == null || it.getString("operationId") == operationId)
+            }?.let { cancelStoragePermission() }
+            act.closeTavern(instanceId, operationId)
+        }
         call.resolve()
     }
 
@@ -253,12 +282,17 @@ class TarvenEnvPlugin : Plugin() {
     /** 拉取 GitHub SillyTavern releases。在子线程执行 HTTP。 */
     @PluginMethod
     fun fetchReleases(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
         releaseExecutor.execute {
             try {
-                val releases = com.sillyclient.runtime.TavernReleaseCatalog(
-                    File(context.filesDir, "tarven/tavern-releases.json")
-                ).load()
-                call.resolve(JSObject().put("releases", releases))
+                val result = com.sillyclient.runtime.TavernReleaseCatalog(
+                    File(context.filesDir, "tarven/tavern-releases.json"),
+                    bundledSource = act.bundledTavernSource,
+                    diagnostic = { android.util.Log.w(TAG, it) }
+                ).loadResult()
+                val response = JSObject().put("releases", result.releases)
+                result.warning?.let { response.put("warning", it) }
+                call.resolve(response)
             } catch (error: Exception) {
                 call.reject("Unable to load Tavern versions", error)
             }
@@ -275,32 +309,6 @@ class TarvenEnvPlugin : Plugin() {
 
         val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
 
-        // 如果选择安装目录且运行在 Android 11+，检查所有文件管理权限，若未授权引导用户授权
-        if (purpose == "installation" && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
-            act.runOnUiThread {
-                AlertDialog.Builder(act)
-                    .setTitle("存储权限说明")
-                    .setMessage("自定义安装路径需要在系统设置中授予「所有文件访问权限」，以便在该路径读写酒馆文件与配置。")
-                    .setPositiveButton("前往授权") { _, _ ->
-                        try {
-                            val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-                                data = Uri.parse("package:${act.packageName}")
-                            }
-                            act.startActivity(intent)
-                        } catch (_: Exception) {
-                            val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
-                            act.startActivity(intent)
-                        }
-                        call.reject("请在系统设置中授予「所有文件访问权限」后重试")
-                    }
-                    .setNegativeButton("取消") { _, _ ->
-                        call.reject("cancelled")
-                    }
-                    .show()
-            }
-            return
-        }
-
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             addFlags(
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or
@@ -309,7 +317,154 @@ class TarvenEnvPlugin : Plugin() {
                     Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
             )
         }
-        startActivityForResult(call, intent, "pickDir")
+        act.runOnUiThread {
+            if (purpose == "installation" && !requestStorageAccess(call)) return@runOnUiThread
+            startActivityForResult(call, intent, "pickDir")
+        }
+    }
+
+    /** Called on the UI thread, before any instance operation or file write starts. */
+    private fun requestStorageAccess(call: PluginCall): Boolean {
+        if (InstanceStorageAccess.isGranted(context)) return true
+        if (storagePermissionCall != null) {
+            call.reject("请先完成当前存储授权，再重试此操作")
+            return false
+        }
+        storagePermissionCall = call
+        storagePermissionDialog = AlertDialog.Builder(activity)
+            .setTitle("允许访问实例文件")
+            .setMessage("实例将保存到你在创建时选择的文件夹，方便在文件管理器中查看和管理。需要授予存储访问权限；取消不会改存到其他目录，也不会移动现有实例。")
+            .setPositiveButton("前往授权") { _, _ ->
+                storagePermissionDialog = null
+                try {
+                    if (InstanceStorageAccess.usesAllFilesAccess(Build.VERSION.SDK_INT)) {
+                        val appSettings = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                            Uri.parse("package:${context.packageName}"))
+                        try {
+                            startActivityForResult(call, appSettings, "storageAccessResult")
+                        } catch (_: android.content.ActivityNotFoundException) {
+                            startActivityForResult(call, Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION),
+                                "storageAccessResult")
+                        }
+                    } else {
+                        requestPermissionForAlias(InstanceStorageAccess.LEGACY_PERMISSION_ALIAS, call, "legacyStorageAccessResult")
+                    }
+                } catch (error: Exception) {
+                    storagePermissionCall = null
+                    call.reject("无法打开存储授权，请在系统应用设置中授权后重试", error)
+                }
+            }
+            .setNegativeButton("取消") { _, _ -> cancelStoragePermission() }
+            .setOnCancelListener { cancelStoragePermission() }
+            .show()
+        return false
+    }
+
+    private fun cancelStoragePermission() {
+        val pending = storagePermissionCall
+        storagePermissionCall = null
+        storagePermissionDialog?.setOnCancelListener(null)
+        storagePermissionDialog?.dismiss()
+        storagePermissionDialog = null
+        pending?.reject("cancelled: ${InstanceStorageAccess.DENIED_MESSAGE}")
+    }
+
+    @ActivityCallback
+    private fun storageAccessResult(call: PluginCall?, result: ActivityResult) {
+        resumeStorageOperation(call)
+    }
+
+    @PermissionCallback
+    private fun legacyStorageAccessResult(call: PluginCall) {
+        resumeStorageOperation(call)
+    }
+
+    private fun resumeStorageOperation(call: PluginCall?) {
+        if (call == null || storagePermissionCall?.callbackId != call.callbackId) return
+        storagePermissionCall = null
+        if (!InstanceStorageAccess.isGranted(context)) {
+            call.reject(InstanceStorageAccess.DENIED_MESSAGE)
+            return
+        }
+        when (call.methodName) {
+            "provisionAndStart" -> provisionAndStart(call)
+            "pickDirectory" -> pickDirectory(call)
+            "relocateInstance" -> relocateInstance(call)
+            "migrateLegacyInstances" -> migrateLegacyInstances(call)
+            "setInstancesRoot" -> setInstancesRoot(call)
+            "uninstallInstance" -> uninstallInstance(call)
+            "exportInstance" -> exportInstance(call)
+            "importInstanceData" -> importInstanceData(call)
+            else -> call.reject("存储授权请求已失效，请重试")
+        }
+    }
+
+    /** 应用级设置：默认实例存储根。实例始终是该根的直接子目录。 */
+    @PluginMethod
+    fun getAppSettings(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val paths = act.runtimePaths
+        val settings = AppSettingsStore(AppSettingsStore.settingsFile(paths.tarvenHome)).load()
+        val response = JSObject()
+        response.put("instancesRoot", paths.serversDir.absolutePath)
+        // Kept under the build62 key name for compatibility, but it no longer
+        // advertises a public root: there is no software default path, creation
+        // always requires a user-chosen folder, and this private fallback only
+        // hosts instances from the earlier managed-area layout.
+        response.put("defaultInstancesRoot", File(paths.appFilesDir, "instances").absolutePath)
+        settings.instancesRoot?.let { response.put("configuredInstancesRoot", it) }
+        call.resolve(response)
+    }
+
+    /** 保存或清除实例存储根；留空 path 表示清除已保存的选择（创建时需要重新选择）。 */
+    @PluginMethod
+    fun setInstancesRoot(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val paths = act.runtimePaths
+        act.runOnUiThread {
+            val requested = call.getString("path")?.trim()
+                ?.removeSurrounding("\"")?.removeSurrounding("'")?.trim()?.takeIf { it.isNotEmpty() }
+            if (requested == null) {
+                persistInstancesRoot(call, paths, null)
+                return@runOnUiThread
+            }
+            val destination = try {
+                require(requested.none { it.code < 32 } && !requested.contains("://") && !requested.startsWith("file:")) {
+                    "存储路径必须是本机绝对路径"
+                }
+                val directory = File(requested)
+                require(directory.isAbsolute) { "存储路径必须是本机绝对路径" }
+                require(paths.installLocations.registeredDirectories().none {
+                    it == directory || ManagedFiles.isWithin(directory, it)
+                }) { "存储路径不能位于某个实例目录之内" }
+                paths.installLocations.allowedRootFor(directory)
+                directory
+            } catch (error: Exception) {
+                Log.w(TAG, "reject: ${error.message}")
+                call.reject(error.message ?: "存储路径无效", error)
+                return@runOnUiThread
+            }
+            if (InstanceStorageAccess.requiresPublicAccess(paths, destination) && !requestStorageAccess(call)) {
+                return@runOnUiThread
+            }
+            persistInstancesRoot(call, paths, destination.absolutePath)
+        }
+    }
+
+    private fun persistInstancesRoot(call: PluginCall, paths: RuntimePaths, root: String?) {
+        try {
+            val file = AppSettingsStore.settingsFile(paths.tarvenHome)
+            AppSettingsStore(file).save(AppSettingsStore.Snapshot(instancesRoot = root))
+            val effective = if (root != null) root
+            else File(paths.appFilesDir, "instances").absolutePath
+            // Choosing a root is also the moment leftover deletion remnants in
+            // that directory (from interrupted purges) become reclaimable.
+            (activity as? MainActivity)?.sweepRemovalRemnants(File(effective), "maintenance")
+            call.resolve(JSObject().put("instancesRoot", effective).put("configured", root != null))
+        } catch (error: Exception) {
+            Log.w(TAG, "reject: ${error.message}")
+            call.reject(error.message ?: "无法保存存储路径设置", error)
+        }
     }
 
     /** 共享控制台的小型文本/JSON 导出，Android 通过 SAF 选择保存位置。 */
@@ -462,7 +617,7 @@ class TarvenEnvPlugin : Plugin() {
             val type = parts[0]
             val subPath = if (parts.size > 1) parts[1].trimStart('/') else ""
             if ("primary".equals(type, ignoreCase = true)) {
-                val base = Environment.getExternalStorageDirectory().absolutePath
+                val base = android.os.Environment.getExternalStorageDirectory().absolutePath
                 if (subPath.isEmpty()) base else "$base/$subPath"
             } else {
                 val extDirs = getContext().getExternalFilesDirs(null)
@@ -598,6 +753,7 @@ class TarvenEnvPlugin : Plugin() {
                 }
                 call.resolve(JSObject().put("instances", arr))
             } catch (error: Exception) {
+                Log.w(TAG, "reject: ${error.message}")
                 call.reject(error.message ?: "Instance scan failed", error)
             }
         }.start()
@@ -622,6 +778,7 @@ class TarvenEnvPlugin : Plugin() {
                 ret.put("status", info.fifth)
                 call.resolve(ret)
             } catch (error: Exception) {
+                Log.w(TAG, "reject: ${error.message}")
                 call.reject(error.message ?: "Instance details failed", error)
             }
         }.start()
@@ -686,6 +843,7 @@ class TarvenEnvPlugin : Plugin() {
             ret.put("username", credentials.username)
             call.resolve(ret)
         } catch (error: Exception) {
+            Log.w(TAG, "reject: ${error.message}")
             call.reject(error.message ?: "无法保存远程连接凭据", error)
         }
     }
@@ -700,6 +858,7 @@ class TarvenEnvPlugin : Plugin() {
             credentials?.let { ret.put("username", it.username) }
             call.resolve(ret)
         } catch (error: Exception) {
+            Log.w(TAG, "reject: ${error.message}")
             call.reject(error.message ?: "无法读取远程连接凭据", error)
         }
     }
@@ -801,6 +960,7 @@ class TarvenEnvPlugin : Plugin() {
                 }
                 call.resolve(JSObject().put("instances", instances))
             } catch (error: Exception) {
+                Log.w(TAG, "reject: ${error.message}")
                 call.reject(error.message ?: "Could not check legacy instances", error)
             }
         }.start()
@@ -813,10 +973,18 @@ class TarvenEnvPlugin : Plugin() {
         val target = call.getString("targetPath")
         val installPath = call.getString("installPath")
         val operationId = call.getString("operationId")?.ifBlank { null }
-        Thread {
-            try { call.resolve(relocationResult(act.relocateInstance(id, target, installPath, operationId))) }
-            catch (error: Exception) { call.reject(error.message ?: "Instance relocation failed", error) }
-        }.start()
+        act.runOnUiThread {
+            val paths = act.runtimePaths
+            val destination = target?.takeIf { it.isNotBlank() }?.let(::File) ?: paths.serversDir
+            if (InstanceStorageAccess.requiresPublicAccess(paths, destination) && !requestStorageAccess(call)) return@runOnUiThread
+            Thread {
+                try { call.resolve(relocationResult(act.relocateInstance(id, target, installPath, operationId))) }
+                catch (error: Exception) {
+                    Log.w(TAG, "relocate reject: ${error.javaClass.simpleName}: ${error.message}")
+                    call.reject(error.message ?: "Instance relocation failed", error)
+                }
+            }.start()
+        }
     }
 
     @PluginMethod
@@ -831,13 +999,22 @@ class TarvenEnvPlugin : Plugin() {
                 val result = act.renameInstance(id, name, path, operationId)
                 call.resolve(JSObject().put("success", result.success).put("oldId", result.oldId)
                     .put("newId", result.newId).put("oldPath", result.oldPath).put("newPath", result.newPath))
-            } catch (error: Exception) { call.reject(error.message ?: "Instance rename failed", error) }
+            } catch (error: Exception) {
+                Log.w(TAG, "rename reject: ${error.javaClass.simpleName}: ${error.message}")
+                call.reject(error.message ?: "Instance rename failed", error)
+            }
         }.start()
     }
 
     @PluginMethod
     fun migrateLegacyInstances(call: PluginCall) {
         val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        act.runOnUiThread {
+            if (requestStorageAccess(call)) migrateLegacyInstancesAuthorized(call, act)
+        }
+    }
+
+    private fun migrateLegacyInstancesAuthorized(call: PluginCall, act: MainActivity) {
         val selected = try {
             if (!call.data.has("instanceIds")) null else call.data.getJSONArray("instanceIds").let { array ->
                 require(array.length() <= 512) { "Too many legacy instances selected" }
@@ -863,7 +1040,10 @@ class TarvenEnvPlugin : Plugin() {
                     }
                 }
                 call.resolve(JSObject().put("success", succeeded).put("results", results))
-            } catch (error: Exception) { call.reject(error.message ?: "Legacy migration failed", error) }
+            } catch (error: Exception) {
+                Log.w(TAG, "migrate reject: ${error.javaClass.simpleName}: ${error.message}")
+                call.reject(error.message ?: "Legacy migration failed", error)
+            }
         }.start()
     }
 
@@ -873,23 +1053,121 @@ class TarvenEnvPlugin : Plugin() {
                 result.retainedSourcePath?.let { path -> it.put("retainedSourcePath", path) }
             }
 
+    /** 导出实例:打包为 ZIP 保存到 Download/SillyClient-导出（用户可在文件管理器中查看）。 */
+    @PluginMethod
+    fun exportInstance(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
+        act.runOnUiThread {
+            if (!InstanceStorageAccess.isGranted(context) && !requestStorageAccess(call)) return@runOnUiThread
+            Thread {
+                try {
+                    com.sillyclient.runtime.KeepAlive.acquire(act)
+                    try {
+                        val (path, bytes) = act.exportInstance(instanceId, call.getString("installPath"))
+                        call.resolve(JSObject().put("path", path).put("bytes", bytes))
+                    } finally {
+                        act.runOnUiThread { com.sillyclient.runtime.KeepAlive.release(act.applicationContext) }
+                    }
+                } catch (error: Exception) {
+                    Log.w(TAG, "export reject: ${error.javaClass.simpleName}: ${error.message}")
+                    call.reject(error.message ?: "导出失败，请重试", error)
+                }
+            }.start()
+        }
+    }
+
+    /** 只读预检：压缩包里有多少用户数据会被导入、多少依赖/程序文件会被忽略。 */
+    @PluginMethod
+    fun inspectImportArchive(call: PluginCall) {
+        val archivePath = call.getString("archivePath") ?: run { call.reject("archivePath required"); return }
+        Thread {
+            try {
+                val archive = java.io.File(archivePath)
+                val summary = com.sillyclient.runtime.InstanceDataImport.inspect(archive)
+                call.resolve(JSObject()
+                    .put("importEntries", summary.importEntries)
+                    .put("importBytes", summary.importBytes)
+                    .put("skippedEntries", summary.skippedEntries)
+                    .put("skippedBytes", summary.skippedBytes)
+                    .put("hasSecrets", summary.hasSecrets)
+                    .put("hasConfig", summary.hasConfig)
+                    .put("importable", summary.importable))
+            } catch (error: Exception) {
+                Log.w(TAG, "inspect reject: ${error.javaClass.simpleName}: ${error.message}")
+                call.reject(error.message ?: "无法读取该压缩包", error)
+            }
+        }.start()
+    }
+
+    /**
+     * 把压缩包里的用户数据无损导入到已有实例：只覆盖用户数据，依赖与程序文件永不写入。
+     * 实例必须处于停止状态（原生维护入口会拒绝运行中的实例）。
+     */
+    @PluginMethod
+    fun importInstanceData(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
+        val archivePath = call.getString("archivePath") ?: run { call.reject("archivePath required"); return }
+        val includeOptional = call.getBoolean("includeOptional", false) ?: false
+        act.runOnUiThread {
+            val paths = act.runtimePaths
+            val destination = try {
+                paths.serverDirFor(instanceId, call.getString("installPath"), create = false)
+            } catch (error: Exception) {
+                call.reject(error.message ?: "实例目录无效", error)
+                return@runOnUiThread
+            }
+            if (InstanceStorageAccess.requiresPublicAccess(paths, destination) && !requestStorageAccess(call)) {
+                return@runOnUiThread
+            }
+            Thread {
+                try {
+                    com.sillyclient.runtime.KeepAlive.acquire(act)
+                    try {
+                        val (imported, bytes, skipped) = act.importInstanceData(
+                            instanceId, call.getString("installPath"), archivePath,
+                            includeOptional, call.getString("operationId"))
+                        call.resolve(JSObject().put("imported", imported).put("bytes", bytes).put("skipped", skipped))
+                    } finally {
+                        act.runOnUiThread { com.sillyclient.runtime.KeepAlive.release(act.applicationContext) }
+                    }
+                } catch (error: Exception) {
+                    Log.w(TAG, "import reject: ${error.javaClass.simpleName}: ${error.message}")
+                    call.reject(error.message ?: "数据导入失败，请重试", error)
+                }
+            }.start()
+        }
+    }
+
     /** 卸载实例:删除安装目录 + 封面图。 */
     @PluginMethod
     fun uninstallInstance(call: PluginCall) {
         val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
         val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
         val operationId = call.getString("operationId")?.ifBlank { null }
-        Thread {
-            try {
-                val freedBytes = act.uninstallInstance(instanceId, call.getString("installPath"), operationId)
-                val ret = JSObject()
-                ret.put("success", true)
-                ret.put("freedBytes", freedBytes)
-                call.resolve(ret)
-            } catch (e: Exception) {
-                call.reject(e.message ?: "删除失败，请重试", e)
+        act.runOnUiThread {
+            // Deleting instance files touches public storage: without the access
+            // grant the physical delete would fail after the registry was
+            // already updated, leaving orphaned directories behind.
+            val paths = act.runtimePaths
+            val destination = paths.installLocations.entries()[instanceId] ?: paths.serversDir
+            if (InstanceStorageAccess.requiresPublicAccess(paths, destination) && !requestStorageAccess(call)) {
+                return@runOnUiThread
             }
-        }.start()
+            Thread {
+                try {
+                    val freedBytes = act.uninstallInstance(instanceId, call.getString("installPath"), operationId)
+                    val ret = JSObject()
+                    ret.put("success", true)
+                    ret.put("freedBytes", freedBytes)
+                    call.resolve(ret)
+                } catch (e: Exception) {
+                    Log.w(TAG, "uninstall reject: ${e.javaClass.simpleName}: ${e.message}")
+                    call.reject(e.message ?: "删除失败，请重试", e)
+                }
+            }.start()
+        }
     }
 
     /** 清理垃圾:扫描孤立文件/目录。dryRun=true 仅扫描不删除。 */
@@ -949,6 +1227,7 @@ class TarvenEnvPlugin : Plugin() {
                     .put("instanceId", instanceId).put("scanId", scan.scanId).put("expiresAt", scan.expiresAt)
                     .put("items", items).put("warnings", JSArray(scan.warnings)))
             } catch (error: Exception) {
+                Log.w(TAG, "reject: ${error.message}")
                 call.reject(error.message ?: "Instance maintenance scan failed", error)
             }
         }.start()
@@ -968,6 +1247,7 @@ class TarvenEnvPlugin : Plugin() {
                 InstanceMaintenance.Selection(item.getString("id"), item.getString("token"))
             }
         } catch (error: Exception) {
+            Log.w(TAG, "reject: ${error.message}")
             call.reject(error.message ?: "Invalid maintenance selection", error)
             return
         }
@@ -993,6 +1273,7 @@ class TarvenEnvPlugin : Plugin() {
                     .put("freedBytes", applied.freedBytes).put("quarantinedBytes", applied.quarantinedBytes)
                     .put("recoveryIds", JSArray(applied.recoveryIds)))
             } catch (error: Exception) {
+                Log.w(TAG, "reject: ${error.message}")
                 call.reject(error.message ?: "Instance maintenance failed", error)
             }
         }.start()
@@ -1023,6 +1304,7 @@ class TarvenEnvPlugin : Plugin() {
                 }
                 call.resolve(JSObject().put("items", items).put("warnings", JSArray(recovery.warnings)))
             } catch (error: Exception) {
+                Log.w(TAG, "reject: ${error.message}")
                 call.reject(error.message ?: "Instance recovery scan failed", error)
             }
         }.start()
@@ -1050,6 +1332,7 @@ class TarvenEnvPlugin : Plugin() {
                 restored.error?.let { value.put("error", it) }
                 call.resolve(value)
             } catch (error: Exception) {
+                Log.w(TAG, "reject: ${error.message}")
                 call.reject(error.message ?: "Instance maintenance restore failed", error)
             }
         }.start()
@@ -1085,6 +1368,7 @@ class TarvenEnvPlugin : Plugin() {
         val targetPath = call.getString("targetPath")
         val operationId = call.getString("operationId")
         val preinstall = try { parsePreinstall(call) } catch (error: Exception) {
+            Log.w(TAG, "reject: ${error.message}")
             call.reject(error.message ?: "Invalid preinstall request", error)
             return
         }
@@ -1188,4 +1472,3 @@ class TarvenEnvPlugin : Plugin() {
         }
     }
 }
-

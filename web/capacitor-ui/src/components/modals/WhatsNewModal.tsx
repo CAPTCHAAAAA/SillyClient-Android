@@ -106,14 +106,14 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({
           >
             <div className="flex items-center justify-between mb-1.5">
               <span className={cn("text-[13px] font-semibold tracking-tight", isLight ? "text-[#1a1625]/90" : "text-white/90")}>
-                新功能：实例维护与隔离恢复
+                新方式：实例存放位置由你选择
               </span>
               <span className={cn("text-[10px] font-mono", isLight ? "text-[#1a1625]/35" : "text-white/30")}>
                 01
               </span>
             </div>
             <div className={cn("text-[11.5px] leading-relaxed", isLight ? "text-[#1a1625]/65" : "text-white/65")}>
-              按实例扫描疑似未完成扩展、失效禁用记录及归属已核验的下载缓存。疑似扩展默认不选，隔离内容保留恢复记录。
+              创建、迁移与搬迁都必须先选一个存放文件夹，实例就放在该文件夹内；不再有任何默认落点，所选位置同时作为之后的默认存放位置。
             </div>
           </div>
 
@@ -126,14 +126,14 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({
           >
             <div className="flex items-center justify-between mb-1.5">
               <span className={cn("text-[13px] font-semibold tracking-tight", isLight ? "text-[#1a1625]/90" : "text-white/90")}>
-                新更新：可选预制安装与受控外链
+                新更新：导入旧数据只认你选的文件夹
               </span>
               <span className={cn("text-[10px] font-mono", isLight ? "text-[#1a1625]/35" : "text-white/30")}>
                 02
               </span>
             </div>
             <div className={cn("text-[11.5px] leading-relaxed", isLight ? "text-[#1a1625]/65" : "text-white/65")}>
-              创建本地实例或复制迁移时可选择主题与扩展，默认关闭。项目与更新页面在系统浏览器打开，不替换当前酒馆。
+              数据迁移的目标位置只能由你自己选择（必选），原地接管沿用来源目录；“迁移至默认路径”一类选项已全部移除。
             </div>
           </div>
 
@@ -146,14 +146,14 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({
           >
             <div className="flex items-center justify-between mb-1.5">
               <span className={cn("text-[13px] font-semibold tracking-tight", isLight ? "text-[#1a1625]/90" : "text-white/90")}>
-                新优化：任务取消与运行时保护
+                新优化：报错说人话与界面细节
               </span>
               <span className={cn("text-[10px] font-mono", isLight ? "text-[#1a1625]/35" : "text-white/30")}>
                 03
               </span>
             </div>
             <div className={cn("text-[11.5px] leading-relaxed", isLight ? "text-[#1a1625]/65" : "text-white/65")}>
-              取消与切换实例后拒绝旧任务回包，日志按实例限制容量。维护在停止运行后执行，文件变化或恢复冲突时保留现有内容。
+              失败原因直接以中文说明（不再出现内部英文报错）；管理面板的导出与操作按钮在窄屏下不再被挤成竖排。
             </div>
           </div>
 

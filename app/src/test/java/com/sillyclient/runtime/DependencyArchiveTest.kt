@@ -230,4 +230,38 @@ class DependencyArchiveTest {
             assertThrows(IllegalArgumentException::class.java) { archive.archive(root, key) }
         }
     }
+
+    @Test
+    fun repairsPartialModulesFromArchiveWithoutTouchingUserData() = withRoot { root ->
+        val source = instance(root, "source")
+        buildModules(File(source, "node_modules"))
+        val key = "a".repeat(64)
+        val archive = DependencyArchive(File(root, "store"))
+        assertTrue(archive.archive(source, key))
+        val target = instance(root, "target")
+        File(target, "node_modules/yaml/package.json").apply { parentFile!!.mkdirs(); writeText("partial") }
+        File(target, "chat.jsonl").writeText("keep")
+        assertTrue(archive.restore(key, target, replaceIncomplete = true,
+            validateModules = { File(it, "big.dat").length() == 5000L }) {})
+        assertEquals("keep", File(target, "chat.jsonl").readText())
+        assertEquals("""{"name":"yaml","version":"2.0.0"}""", File(target, "node_modules/yaml/package.json").readText())
+        assertFalse(File(target, DependencyRestoreTransaction.STAGING_NAME).exists())
+    }
+
+    @Test
+    fun executableAliasesCanBeSkippedWithoutRequiringHostSymlinkPermissions() = withRoot { root ->
+        val store = File(root, "store").apply { mkdirs() }
+        val tar = File(root, "modules.tar")
+        UstarArchive.write(tar, sequenceOf(
+            UstarArchive.Entry(".bin/yaml", false, true, "../yaml/bin.mjs", 0, 0, UstarArchive::emptyContent),
+            UstarArchive.Entry("yaml", true, false, "", 0, 0, UstarArchive::emptyContent)
+        ))
+        val key = "a".repeat(64)
+        val digest = DependencyArchive.lockKeyFor(tar.readBytes())!!
+        Files.move(tar.toPath(), File(store, "$key-$digest.tar").toPath())
+        val target = instance(root, "target")
+        assertTrue(DependencyArchive(store).restore(key, target, skipExecutableLinks = true) {})
+        assertTrue(File(target, "node_modules/yaml").isDirectory)
+        assertFalse(Files.exists(File(target, "node_modules/.bin/yaml").toPath(), java.nio.file.LinkOption.NOFOLLOW_LINKS))
+    }
 }

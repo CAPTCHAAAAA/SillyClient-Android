@@ -27,7 +27,17 @@ import java.util.concurrent.CancellationException
  */
 class DependencyArchive(
     private val archiveDir: File,
-    private val maxEntries: Int = DEFAULT_MAX_ENTRIES
+    private val maxEntries: Int = DEFAULT_MAX_ENTRIES,
+    private val removeStaging: (File, File, () -> Unit) -> Unit = { directory, root, verify ->
+        verify()
+        check(ManagedFiles.deleteDirectory(directory, root)) { "Could not remove dependency staging" }
+    },
+    /**
+     * Optional out-of-process extractor (parallel platform tar on shards).
+     * When it reports success the in-process restorer is skipped entirely;
+     * otherwise its partial output is wiped and the restorer takes over.
+     */
+    private val childExtract: ((File, File, () -> Unit, (Int) -> Unit) -> Boolean)? = null
 ) {
     fun lockKey(lockFile: File): String? {
         if (!lockFile.isFile || lockFile.length() > MAX_LOCK_BYTES) return null
@@ -37,28 +47,42 @@ class DependencyArchive(
     fun hasArchiveFor(lockKey: String): Boolean =
         lockKey.matches(KEY_PATTERN) && !archivesFor(lockKey).isNullOrEmpty()
 
-    fun restore(lockKey: String, instanceDirectory: File, ensureActive: () -> Unit): Boolean {
+    fun restore(
+        lockKey: String,
+        instanceDirectory: File,
+        onFileRestored: (Int) -> Unit = {},
+        replaceIncomplete: Boolean = false,
+        skipExecutableLinks: Boolean = false,
+        validateModules: (File) -> Boolean = { true },
+        ensureActive: () -> Unit
+    ): Boolean {
         require(lockKey.matches(KEY_PATTERN)) { "Invalid dependency archive key" }
+        val transaction = DependencyRestoreTransaction(removeStaging)
+        if (transaction.recover(instanceDirectory, lockKey, validateModules, ensureActive)) return true
         val nodeModules = File(instanceDirectory, "node_modules")
-        if (occupied(nodeModules)) return false
+        if (!replaceIncomplete && occupied(nodeModules)) return false
         val candidates = archivesFor(lockKey) ?: return false
         for (candidate in candidates) {
             ensureActive()
-            if (sha256Of(candidate) != digestInName(candidate)) {
+            val digest = sha256Of(candidate, ensureActive) ?: throw IOException("Could not read dependency archive")
+            if (digest != digestInName(candidate)) {
                 runCatching { candidate.delete() }
                 continue
             }
-            try {
-                if (UstarArchive.read(candidate, Restorer(nodeModules, ensureActive)) <= 0) {
-                    throw IOException("Archive has no entries")
+            return transaction.restore(instanceDirectory, lockKey, replaceIncomplete, validateModules, ensureActive) { prepared ->
+                val extractedByChildren = childExtract?.invoke(candidate, prepared, ensureActive, onFileRestored) ?: false
+                if (!extractedByChildren) {
+                    // A failed child attempt may have written a partial tree; the
+                    // in-process restorer must start from a clean directory.
+                    prepared.listFiles()?.forEach { partial -> partial.deleteRecursively() }
+                    if (!prepared.isDirectory) Files.createDirectories(prepared.toPath())
+                    Restorer(prepared, ensureActive, onFileRestored, skipExecutableLinks).use { restorer ->
+                        if (UstarArchive.read(candidate, restorer) <= 0) {
+                            throw IOException("Archive has no entries")
+                        }
+                        restorer.await()
+                    }
                 }
-                return true
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                runCatching { ManagedFiles.deleteDirectory(nodeModules, instanceDirectory) }
-                runCatching { candidate.delete() }
-                return false
             }
         }
         return false
@@ -157,50 +181,133 @@ class DependencyArchive(
         }
     }
 
-    private fun sha256Of(file: File): String? = runCatching {
+    private fun sha256Of(file: File, ensureActive: () -> Unit = {}): String? = try {
         Files.newInputStream(file.toPath()).use { input ->
             val digest = MessageDigest.getInstance("SHA-256")
             val buffer = ByteArray(64 * 1024)
             while (true) {
+                ensureActive()
                 val read = input.read(buffer)
                 if (read < 0) break
                 digest.update(buffer, 0, read)
             }
             BigInteger(1, digest.digest()).toString(16).padStart(64, '0')
         }
-    }.getOrNull()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: IOException) {
+        null
+    }
 
+    /**
+     * Tar is read strictly sequentially, but FUSE file creation is what makes a
+     * restore take minutes: file bodies are therefore read on this thread and
+     * handed to a bounded pool of concurrent writers. In-flight bytes stay
+     * capped so memory cannot balloon; oversized entries write inline.
+     */
     private class Restorer(
         private val nodeModules: File,
-        private val ensureActive: () -> Unit
-    ) : UstarArchive.Visitor {
+        private val ensureActive: () -> Unit,
+        private val onFileRestored: (Int) -> Unit,
+        private val skipExecutableLinks: Boolean
+    ) : UstarArchive.Visitor, AutoCloseable {
+        private val writers = java.util.concurrent.Executors.newFixedThreadPool(WRITERS) { runnable ->
+            Thread(runnable, "SC-dependency-writer").apply { isDaemon = true }
+        }
+        private val futures = java.util.concurrent.ConcurrentLinkedQueue<java.util.concurrent.Future<*>>()
+        private val inFlight = java.util.concurrent.Semaphore(IN_FLIGHT_BYTES)
+        private val restored = java.util.concurrent.atomic.AtomicInteger()
+        // The tar lists every directory before its contents, so only unseen
+        // parents need a mkdir; on FUSE each avoided stat is a round trip.
+        private val createdDirectories = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        @Volatile private var failure: Exception? = null
+
         override fun directory(name: String, mode: Int) {
             ensureActive()
             resolve(name).mkdirs()
+            createdDirectories.add(name)
         }
 
         override fun file(name: String, mode: Int, size: Long, content: InputStream) {
             val target = resolve(name)
-            target.parentFile?.mkdirs()
-            Files.newOutputStream(target.toPath()).use { output ->
-                val buffer = ByteArray(64 * 1024)
-                var remaining = size
-                while (remaining > 0) {
-                    ensureActive()
-                    val read = content.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
-                    if (read < 0) throw IOException("Archive entry content ended early: $name")
-                    output.write(buffer, 0, read)
-                    remaining -= read
-                }
+            val parentName = name.substringBeforeLast('/', "")
+            if (parentName.isNotEmpty() && !createdDirectories.contains(parentName)) {
+                target.parentFile?.mkdirs()
+                createdDirectories.add(parentName)
             }
-            if (mode and 0b001_000_000 != 0) runCatching { target.setExecutable(true, false) }
+            if (size > IN_FLIGHT_BYTES) {
+                writeInline(target, size, content, mode)
+                return
+            }
+            inFlight.acquireUninterruptibly(size.toInt())
+            val bytes = ByteArray(size.toInt())
+            var filled = 0
+            while (filled < size) {
+                ensureActive()
+                val read = content.read(bytes, filled, size.toInt() - filled)
+                if (read < 0) throw IOException("Archive entry content ended early: $name")
+                filled += read
+            }
+            futures.add(writers.submit {
+                try {
+                    Files.newOutputStream(target.toPath(), java.nio.file.StandardOpenOption.CREATE_NEW,
+                        java.nio.file.StandardOpenOption.WRITE).use { output -> output.write(bytes) }
+                    if (mode and 0b001_000_000 != 0) runCatching { target.setExecutable(true, false) }
+                    onFileRestored(restored.incrementAndGet())
+                } catch (error: Exception) {
+                    failure = failure ?: (error as? IOException ?: IOException("Could not restore $name", error))
+                } finally {
+                    inFlight.release(bytes.size)
+                }
+            })
+        }
+
+        private fun writeInline(target: File, size: Long, content: InputStream, mode: Int) {
+            try {
+                target.parentFile?.mkdirs()
+                Files.newOutputStream(target.toPath(), java.nio.file.StandardOpenOption.CREATE_NEW,
+                    java.nio.file.StandardOpenOption.WRITE).use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    var remaining = size
+                    while (remaining > 0) {
+                        val read = content.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
+                        if (read < 0) throw IOException("Archive entry content ended early: ${target.name}")
+                        output.write(buffer, 0, read)
+                        remaining -= read
+                    }
+                }
+                if (mode and 0b001_000_000 != 0) runCatching { target.setExecutable(true, false) }
+                onFileRestored(restored.incrementAndGet())
+            } catch (error: Exception) {
+                failure = failure ?: (error as? IOException ?: IOException("Could not restore ${target.name}", error))
+            }
         }
 
         override fun symbolicLink(name: String, target: String, mode: Int) {
             ensureActive()
+            // npm's --bin-links=false policy on shared storage: executable aliases
+            // are unused by Node resolution and cannot be created on FUSE.
+            if (skipExecutableLinks && name.split('/').dropLast(1).lastOrNull() == ".bin") return
             val link = resolve(name)
             link.parentFile?.mkdirs()
             Files.createSymbolicLink(link.toPath(), java.nio.file.Paths.get(target))
+        }
+
+        /** Blocks until every queued write has finished and surfaces failures. */
+        fun await() {
+            writers.shutdown()
+            for (future in futures) {
+                try { future.get() }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (error: Exception) {
+                    failure = failure ?: (error.cause as? Exception ?: IOException("Dependency restore failed", error))
+                }
+            }
+            failure?.let { throw it }
+        }
+
+        override fun close() {
+            writers.shutdownNow()
         }
 
         private fun resolve(name: String): File {
@@ -215,6 +322,8 @@ class DependencyArchive(
     companion object {
         internal const val DEFAULT_MAX_ENTRIES = 3
         internal const val MAX_LOCK_BYTES = 16L * 1024 * 1024
+        internal const val WRITERS = 16
+        internal const val IN_FLIGHT_BYTES = 48 * 1024 * 1024
         private const val TEMPORARY_MAX_AGE_MILLIS = 3_600_000L
         private val KEY_PATTERN = Regex("[0-9a-f]{64}")
         private val ARCHIVE_NAME = Regex("^([0-9a-f]{64})-([0-9a-f]{64})\\.tar$")
@@ -223,7 +332,7 @@ class DependencyArchive(
         /** Cache name for an APK-bundled asset ("dependency-<key>-<digest>.tar" → "<key>-<digest>.tar"); null otherwise. */
         internal fun bundledCacheName(assetName: String): String? {
             if (!assetName.startsWith(BUNDLED_ASSET_PREFIX)) return null
-            return assetName.removePrefix(BUNDLED_ASSET_PREFIX).takeIf(ARCHIVE_NAME::matches)
+            return assetName.removePrefix(BUNDLED_ASSET_PREFIX).removeSuffix(".gz").takeIf(ARCHIVE_NAME::matches)
         }
 
         /** Lock key for in-memory lock content (ZIP peek); null when oversized. */

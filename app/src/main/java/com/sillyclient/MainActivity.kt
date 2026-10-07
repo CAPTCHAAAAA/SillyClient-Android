@@ -46,6 +46,7 @@ import androidx.core.view.WindowInsetsAnimationCompat
 import androidx.core.graphics.Insets
 import androidx.documentfile.provider.DocumentFile
 import com.getcapacitor.JSObject
+import com.sillyclient.runtime.InstanceDataImport
 import com.sillyclient.runtime.CompanionPresetInstaller
 import com.sillyclient.runtime.CompanionPresetRequest
 import com.sillyclient.runtime.CompanionPresetTransaction
@@ -54,18 +55,21 @@ import com.sillyclient.runtime.RuntimeFileUtils
 import com.sillyclient.runtime.SourceArchiveCache
 import com.sillyclient.runtime.CleanupService
 import com.sillyclient.runtime.InstanceRepository
+import com.sillyclient.runtime.DependencyBank
+import com.sillyclient.runtime.KeepAlive
+import com.sillyclient.runtime.InstanceRemoval
+import com.sillyclient.runtime.WebpackCacheSeed
 import com.sillyclient.runtime.InstanceMaintenance
 import com.sillyclient.runtime.InstanceInstaller
 import com.sillyclient.runtime.DependencyInstaller
 import com.sillyclient.runtime.DependencyArchive
-import com.sillyclient.runtime.DependencyTrees
-import com.sillyclient.runtime.FrontendBundlePrebuild
 import com.sillyclient.runtime.NativeTreeRemoval
 import com.sillyclient.runtime.InstanceRelocation
 import com.sillyclient.runtime.InstanceRename
 import com.sillyclient.runtime.SourceDownloader
 import com.sillyclient.runtime.BundledDependencyArchives
 import com.sillyclient.runtime.BundledRuntime
+import com.sillyclient.runtime.BundledTavernSource
 import com.sillyclient.runtime.LogService
 import com.sillyclient.runtime.MigrationPolicy
 import com.sillyclient.runtime.ManagedFiles
@@ -119,9 +123,8 @@ class MainActivity : BridgeActivity() {
             listAssets = { dir -> assets.list(dir)?.toSet() ?: emptySet() })
     }
 
-    private val bundledReleaseAsset: String? by lazy {
-        "bundled/sillytavern-release.zip"
-            .takeIf { assets.list("bundled")?.contains("sillytavern-release.zip") == true }
+    val bundledTavernSource by lazy {
+        BundledTavernSource(openAsset = assets::open, diagnostic = ::runtimeDiagnostic)
     }
 
     val runtimePaths: RuntimePaths get() = RuntimePaths.from(this)
@@ -309,6 +312,7 @@ class MainActivity : BridgeActivity() {
         private const val STATE_TAVERN_PORT = "tavern_port"
         private const val STATE_TAVERN_INSTANCE_ID = "tavern_instance_id"
         private const val RETIRED_MODULES_NAME = ".sillyclient-retired-modules"
+        private val DEPENDENCY_ARCHIVE_NAME = Regex("^([0-9a-f]{64})-([0-9a-f]{64})[.]tar$")
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -719,6 +723,7 @@ class MainActivity : BridgeActivity() {
                     installTavernDownloadSupport(url)
                     installChameleonProbes()
                     injectRenderEngine()
+                    injectMobileLayoutOptimizations()
                     recordTavernDocumentDiagnostics(url)
                 }
             }
@@ -954,6 +959,7 @@ class MainActivity : BridgeActivity() {
         tavernUrl = "http://${if (config.ipv4) "127.0.0.1" else "[::1]"}:$port/"
         currentTavernInstanceId = id
         clearTavernBasicAuth()
+        KeepAlive.acquire(this)
         operations.execute(operation) {
             val started = System.nanoTime()
             val storage = if (targetServerDir.absoluteFile.toPath().startsWith(paths.appFilesDir.absoluteFile.toPath()))
@@ -980,7 +986,7 @@ class MainActivity : BridgeActivity() {
                             if (localZipPath != null) {
                                 updateProgress(50, "Extracting local zip")
                                 extractLocalZip(File(localZipPath), directory)
-                            } else if (version in setOf("stable", "release") && bundledReleaseAsset != null) {
+                            } else if (bundledTavernSource.matchesRequestedVersion(version, zipballUrl)) {
                                 updateProgress(50, "Extracting bundled source")
                                 appendLog("> 使用内置源码包，无需下载...")
                                 extractBundledRelease(paths, directory)
@@ -993,8 +999,20 @@ class MainActivity : BridgeActivity() {
                             }
                         },
                         installDependencies = { directory ->
-                            updateProgress(85, "Installing dependencies")
-                            runNpmInstall(paths, directory)
+                            if (localZipPath == null &&
+                                bundledTavernSource.matchesRequestedVersion(version, zipballUrl)) {
+                                // Bundled source: one shared tree serves every instance
+                                // from <root>/node_modules via standard Node resolution.
+                                updateProgress(85, "正在准备共享依赖组件（仅首次）")
+                                ensureDependencyBank(paths, { operations.ensureCurrent(operation) },
+                                    manifestDirectory = directory)
+                                true
+                            } else {
+                                updateProgress(85, "正在准备实例依赖")
+                                runNpmInstall(paths, directory) { restored ->
+                                    updateProgress(85, "正在恢复依赖组件 · $restored")
+                                }
+                            }
                         },
                         commit = { action -> operations.commit(operation, action) },
                         instanceId = id
@@ -1017,14 +1035,23 @@ class MainActivity : BridgeActivity() {
                     operations.ensureCurrent(operation)
                     appendLog("[OK] SC Bordeaux 主题预设已就绪")
                 }
-                updateProgress(96, "Preparing frontend")
-                prebuildFrontendBundle(paths, targetServerDir, operation)
                 updateProgress(97, "Starting server")
+                ensureBankForLaunch(paths, targetServerDir, operation)
+                bundledDependencyArchive(paths) { operations.ensureCurrent(operation) }?.let { (key, _) ->
+                    if (webpackCacheSeed(paths).seedInstance(targetServerDir, key) { operations.ensureCurrent(operation) }) {
+                        runtimeDiagnostic("webpack.seeded key=${key.take(12)}")
+                    }
+                }
                 launched = startServer(paths, targetServerDir, port, config, operation)
                 check(launched != null) { "Node.js 服务启动失败，请检查实例完整性" }
                 appendLog("[OK] Node.js process launched")
                 updateProgress(99, "Waiting for server")
                 if (pollUntilReady(tavernUrl, launched, operation)) {
+                    // The first successful start compiled the frontend libraries;
+                    // harvest that cache so later instances start warm.
+                    bundledDependencyArchive(paths) { operations.ensureCurrent(operation) }?.let { (key, _) ->
+                        webpackCacheSeed(paths).harvestInBackground(targetServerDir, key)
+                    }
                     operations.commit(operation) {
                         presetTransaction?.commit()
                         extensionsTransaction?.commit()
@@ -1032,8 +1059,7 @@ class MainActivity : BridgeActivity() {
                     // Archive after the server is ready so the heavy tree copy cannot
                     // compete with Node's cold-start dependency reads.
                     archiveDependenciesInBackground(paths, targetServerDir)
-                    // Build the shared tree from legacy local dependencies, then retire them.
-                    promoteLocalDependenciesInBackground(paths, targetServerDir)
+
                 } else {
                     runtimeDiagnostic("server.not_ready alive=${launched?.isAlive == true}")
                     rollbackPresets()
@@ -1057,6 +1083,7 @@ class MainActivity : BridgeActivity() {
                 }
             } finally {
                 runtimeDiagnostic("provision.end instance=$id elapsedMs=${(System.nanoTime() - started) / 1_000_000} ready=$serverReady")
+                KeepAlive.release(this)
             }
         }
     }
@@ -1796,6 +1823,40 @@ class MainActivity : BridgeActivity() {
         }.start()
     }
 
+    /**
+     * Always-on mobile layout patches (keyboard-fitting input bar and the
+     * bottom padding), independent of whether the optional companion theme is
+     * enabled. These rules used to ride inside that theme's CSS; making them
+     * part of the page itself keeps the behaviour on every instance.
+     */
+    private fun injectMobileLayoutOptimizations() {
+        if (!::webView.isInitialized) return
+        val script = """
+            (function() {
+                try {
+                    if (document.getElementById('sc-mobile-layout')) return;
+                    const style = document.createElement('style');
+                    style.id = 'sc-mobile-layout';
+                    style.textContent = ':root { --sc-nav-bottom: 18px; }' +
+                        '#form_sheld { padding-bottom: 0 !important; }' +
+                        '#send_form { padding-bottom: max(12px, var(--sc-nav-bottom, 14px)) !important;' +
+                        ' box-sizing: border-box !important;' +
+                        ' transition: padding-bottom 120ms cubic-bezier(0.12, 0.98, 0.24, 1) !important; }' +
+                        '#chat { padding-bottom: calc(var(--bottomFormBlockSize, 60px) + var(--sc-nav-bottom, 14px) + 6px) !important; }';
+                    document.head.appendChild(style);
+                } catch(_) {}
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(script, null)
+        // Re-apply the current insets so the fresh stylesheet starts from the
+        // real keyboard/navigation state instead of the 18px default.
+        val insets = ViewCompat.getRootWindowInsets(webViewScreen)
+        val imeVisible = insets?.isVisible(WindowInsetsCompat.Type.ime()) ?: false
+        val imeHeight = insets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
+        val navHeight = insets?.getInsets(WindowInsetsCompat.Type.navigationBars())?.bottom ?: 0
+        dispatchImeOffset(if (imeVisible) imeHeight else 0, navHeight)
+    }
+
     private fun dispatchImeOffset(imeHeightPx: Int, navHeightPx: Int) {
         if (!::webView.isInitialized) return
         val density = resources.displayMetrics.density
@@ -1830,24 +1891,6 @@ class MainActivity : BridgeActivity() {
         bundledRuntime.awaitReady(::ensureOperationActive)
     }
 
-    /**
-     * Tree-backed instances resolve server modules through the shared dependency
-     * tree, but SillyTavern's own webpack build at startup cannot see that tree,
-     * leaving /lib.js missing and the WebView grey. The prebuild compiles the
-     * bundle through the tree before the server starts; a local node_modules
-     * instance simply keeps building on its own.
-     */
-    private fun prebuildFrontendBundle(paths: RuntimePaths, instanceDirectory: File, operation: OperationCoordinator.Operation) {
-        val treeModules = dependencyArchive(paths)
-            .lockKey(File(instanceDirectory, "package-lock.json"))
-            ?.let { dependencyTrees(paths).modulesFor(it) } ?: return
-        val ready = FrontendBundlePrebuild(paths, operations, processSupervisor, ::appendLog, ::runtimeDiagnostic)
-            .ensure(instanceDirectory, treeModules, operation, writeEsmResolutionBridge(paths))
-        if (!ready) {
-            throw IllegalStateException("前端资源预构建失败，无法提供页面脚本；请重试启动，若持续失败请查看 prebuild.log")
-        }
-    }
-
     private fun startServer(
         paths: RuntimePaths,
         targetServerDir: File,
@@ -1878,25 +1921,11 @@ class MainActivity : BridgeActivity() {
             env["TMPDIR"] = paths.tmpDir.absolutePath
             env["HOST"] = "127.0.0.1"
             env["PORT"] = port.toString()
-            // The bridge is inert without SILLYCLIENT_NODE_MODULES, so it loads for
-            // local-node_modules instances too and simply changes nothing there.
-            val bridge = writeEsmResolutionBridge(paths)
-            env["NODE_OPTIONS"] = "--max-old-space-size=2048 --import $bridge"
+            env["NODE_OPTIONS"] = "--max-old-space-size=2048"
             // V8 bytecode cache: repeat launches skip re-parsing thousands of CJS
             // modules, which dominates SillyTavern cold-start time on Android.
             env["NODE_COMPILE_CACHE"] = File(paths.tarvenHome, "node-compile-cache").apply { mkdirs() }.absolutePath
-            // Resolve modules from the shared private-storage tree; a local
-            // node_modules inside the instance directory still takes precedence.
-            dependencyArchive(paths).lockKey(File(targetServerDir, "package-lock.json"))?.let { lockKey ->
-                val modules = dependencyTrees(paths).modulesFor(lockKey)
-                if (modules.isDirectory) {
-                    env["NODE_PATH"] = modules.absolutePath
-                    env["SILLYCLIENT_NODE_MODULES"] = modules.absolutePath
-                }
-            }
-            // ESM ignores NODE_PATH entirely, and tree-backed instances carry no
-            // local node_modules; without this bridge every ESM import in the
-            // server dies at startup with MODULE_NOT_FOUND.
+            // 实例自持：模块全部由实例目录内的 node_modules 解析，无需任何桥接。
             return operations.commit(operation) {
                 processSupervisor.track(pb.start(), operation.instanceId, operation).also { process ->
                     serverProcess = process
@@ -1931,38 +1960,6 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    /**
-     * Node's ESM resolver ignores NODE_PATH, so shared-tree instances need a
-     * resolve hook that retries failed bare specifiers from the tree. The bridge
-     * only activates when SILLYCLIENT_NODE_MODULES is present at launch.
-     */
-    private fun writeEsmResolutionBridge(paths: RuntimePaths): String {
-        val bridge = File(paths.tarvenHome, "sc-esm-bridge.mjs")
-        bridge.writeText(
-            """
-            const tree = process.env.SILLYCLIENT_NODE_MODULES;
-            if (tree) {
-              const { registerHooks } = await import('node:module');
-              const { pathToFileURL } = await import('node:url');
-              const parent = pathToFileURL(tree.endsWith('/') ? tree : tree + '/').href;
-              registerHooks({
-                resolve(specifier, context, nextResolve) {
-                  try {
-                    return nextResolve(specifier, context);
-                  } catch (error) {
-                    if (specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('#') ||
-                        specifier.startsWith('node:') || specifier.startsWith('file:') ||
-                        specifier.startsWith('data:')) throw error;
-                    return nextResolve(specifier, { ...context, parentURL: parent });
-                  }
-                },
-              });
-            }
-            """.trimIndent()
-        )
-        return bridge.absolutePath
-    }
-
     private fun instanceConfigValues(config: InstanceConfig, port: Int): JSONObject = JSONObject()
         .put("port", port)
         .put("listen", config.listen)
@@ -1984,6 +1981,7 @@ class MainActivity : BridgeActivity() {
         runtimeDiagnostic("source.cache.${if (cached != null) "hit" else "miss"} key=${urlKey.take(12)}")
         var stored = false
         val archive: File = cached ?: run {
+            appendLog("[提示] 若下载缓慢或失败，可改用本地 ZIP 导入，或开启科学上网后重试")
             val downloaded = SourceDownloader().downloadSillyTavern(
                 zipballUrl, paths.tmpDir, operations, operation, ::appendLog
             ) { progress ->
@@ -2012,13 +2010,27 @@ class MainActivity : BridgeActivity() {
     }
     /** Streams the SillyTavern zipball shipped inside the APK to the staging directory. */
     private fun extractBundledRelease(paths: RuntimePaths, destDir: File): Boolean {
-        val name = bundledReleaseAsset ?: error("Bundled source archive is unavailable")
+        check(bundledTavernSource.version != null) { "Bundled source archive is unavailable" }
+        val name = BundledTavernSource.ASSET_PATH
         val tmpDir = paths.tmpDir.apply { check(isDirectory || mkdirs()) { "Cannot prepare the staging directory" } }
         val temp = File.createTempFile("bundled-release-", ".zip", tmpDir)
         return try {
             assets.open(name).use { input ->
                 FileOutputStream(temp).use { output -> copyWhileActive(input, output) }
             }
+            // Preferred path: cached ustar of the bundled source, extracted by
+            // parallel tar groups (a few hundred ms) instead of in-process
+            // per-file writes. Falls back to the in-process extractor, which
+            // requires a clean target — partial tar output is wiped first.
+            val tar = com.sillyclient.runtime.SourceTarCache.tarFor(
+                temp, File(paths.tarvenHome, "source-archives"))
+            val extractor = shardExtractor(paths)
+            if (tar != null && extractor.available() &&
+                extractor.extract(tar, destDir, ::ensureOperationActive)) {
+                runtimeDiagnostic("source.tar extracted")
+                return true
+            }
+            destDir.listFiles()?.forEach { partial -> runCatching { partial.deleteRecursively() } }
             extractLocalZip(temp, destDir)
         } finally {
             if (!temp.delete() && temp.exists()) appendLog("[WARN] Bundled source cache retained for later cleanup")
@@ -2031,11 +2043,8 @@ class MainActivity : BridgeActivity() {
         return try {
             val entryCount = com.sillyclient.runtime.SourceArchive.extract(
                 zipFile, destDir, ::ensureOperationActive,
-                // Skip the archive's node_modules only when the shared tree or a
-                // cached dependency archive can rebuild them; a tree carrying
-                // user-installed extras must be extracted in full or those
-                // packages would be lost.
-                skipTopLevel = if (zipModulesCovered(zipFile)) setOf("node_modules") else emptySet(),
+                // Imported packages belong to this instance, including extras
+                // not represented by a cached dependency archive.
                 onProgress = { count ->
                     if (count % 200 == 0) updateProgress(78 + (count / 1000).coerceAtMost(6), "Extracting ($count files)")
                 })
@@ -2056,26 +2065,6 @@ class MainActivity : BridgeActivity() {
         } catch (e: Exception) {
             android.util.Log.e(TAG, "extractLocalZip", e)
             appendLog("[ERR] Source extraction failed: ${e.message}")
-            false
-        }
-    }
-
-    /** Peeks the ZIP's top-level package-lock.json; true when dependencies are rebuildable. */
-    private fun zipModulesCovered(zipFile: File): Boolean {
-        return try {
-            java.util.zip.ZipFile(zipFile).use { zip ->
-                val entry = zip.entries().asSequence()
-                    .filter { !it.isDirectory && it.name.substringAfterLast('/') == "package-lock.json" }
-                    .firstOrNull { it.name.count { c -> c == '/' } <= 1 }
-                    ?: return false
-                if (entry.size > com.sillyclient.runtime.DependencyArchive.MAX_LOCK_BYTES) return false
-                val lockKey = com.sillyclient.runtime.DependencyArchive
-                    .lockKeyFor(zip.getInputStream(entry).readBytes()) ?: return false
-                val paths = RuntimePaths.from(this)
-                dependencyTrees(paths).containsComplete(lockKey) ||
-                    dependencyArchive(paths).hasArchiveFor(lockKey)
-            }
-        } catch (_: Exception) {
             false
         }
     }
@@ -2102,7 +2091,7 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    private fun runNpmInstall(paths: RuntimePaths, targetServerDir: File): Boolean {
+    private fun runNpmInstall(paths: RuntimePaths, targetServerDir: File, onRestoreProgress: (Int) -> Unit = {}): Boolean {
         val operation = operations.context() ?: error("Missing dependency installation operation")
         // The APK ships dependency archives for the bundled release; make sure they
         // are materialized before the archive lookup so the common path needs no network.
@@ -2118,60 +2107,190 @@ class MainActivity : BridgeActivity() {
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: IllegalStateException) { /* Only npm paths need the runtime; let them report their own error. */ }
-        // An already-complete local tree (full extraction of an uncovered archive)
-        // needs no install here; the background promotion hands it to the shared
-        // tree after first launch.
-        if (DependencyInstaller.hasRequiredPackages(targetServerDir)) return true
+        // 实例自持：依赖一律落进实例目录，目录即完整可运行沙盒；
+        // 归档仅作为安装加速缓存，缺失或损坏时回退 npm（同 Windows 语义）。
+        val recoveryDirectory = File(targetServerDir, ".sillyclient-dependency-restore")
+        if (!File(targetServerDir, InstanceInstaller.DEPENDENCY_MARKER).exists() && !recoveryDirectory.exists() &&
+            DependencyInstaller.hasRequiredPackages(targetServerDir)) return true
         val archive = dependencyArchive(paths)
-        val trees = dependencyTrees(paths)
-        val lockFile = File(targetServerDir, "package-lock.json")
-        val lockKey = archive.lockKey(lockFile)
-        // Dependencies live in a private-storage install root shared by every
-        // instance with the same lock; the server resolves them via NODE_PATH.
-        // Staging on external FUSE storage would be an order of magnitude slower.
-        if (lockKey != null) {
-            return trees.buildExclusively(lockKey) {
-                val treeRoot = trees.adopt(lockKey, lockFile) { ensureOperationActive() }
-                if (DependencyInstaller.hasRequiredPackages(treeRoot)) return@buildExclusively true
-                if (restoreDependencies(archive, lockKey, treeRoot)) return@buildExclusively true
-                if (restoreDependenciesFromSibling(paths, lockKey, treeRoot)) return@buildExclusively true
-                DependencyInstaller(paths, operations, processSupervisor, ::appendLog, ::runtimeDiagnostic)
-                    .install(treeRoot, operation)
+        val lockKey = archive.lockKey(File(targetServerDir, "package-lock.json"))
+        val lockMismatch = DependencyInstaller.lockManifestMismatch(targetServerDir)
+        if (lockMismatch || lockKey == null) {
+            check(!recoveryDirectory.exists()) {
+                "依赖恢复所需的安装清单或锁文件已改变，恢复目录已保留，请检查实例文件"
             }
-        }
+            runtimeDiagnostic("deps.archive.skipped reason=${if (lockMismatch) "manifest_lock_mismatch" else "missing_lock_key"}")
+        } else if (restoreDependencies(archive, lockKey, targetServerDir, onRestoreProgress)) return true
+        runtimeDiagnostic("deps.archive.miss instance=${operation.instanceId} key=${lockKey?.take(12) ?: "none"}")
+        updateProgress(85, "正在安装依赖，请查看控制台进度")
         return DependencyInstaller(paths, operations, processSupervisor, ::appendLog, ::runtimeDiagnostic)
             .install(targetServerDir, operation)
     }
 
-    /** An instance is dependency-complete with a local tree or the shared tree for its lock. */
-    private fun instanceDependenciesComplete(directory: File): Boolean {
-        if (DependencyInstaller.hasRequiredPackages(directory)) return true
+    /**
+     * Complete with the instance's own node_modules or with the shared bank at
+     * `<root>/node_modules` covering the instance's lock file.
+     */
+    private fun instanceDependenciesComplete(directory: File): Boolean =
+        DependencyInstaller.hasRequiredPackages(directory) || bankCovers(directory)
+
+    private fun bankCovers(instanceDirectory: File): Boolean {
         val paths = RuntimePaths.from(this)
-        val lockKey = dependencyArchive(paths).lockKey(File(directory, "package-lock.json")) ?: return false
-        return dependencyTrees(paths).containsComplete(lockKey)
+        val lockKey = DependencyArchive(File(paths.tarvenHome, "dependency-archives"))
+            .lockKey(File(instanceDirectory, "package-lock.json"))
+        return DependencyBank.covers(instanceDirectory, lockKey)
     }
 
-    private fun dependencyArchive(paths: RuntimePaths) =
-        DependencyArchive(File(paths.tarvenHome, "dependency-archives"))
+    /**
+     * Materialize/refresh the shared dependency bank at `<root>/node_modules`
+     * from the bundled archive. Extraction goes directly into the bank — a
+     * populated tree must never be renamed on shared storage (MediaProvider
+     * re-indexes every descendant), and a stale bank is cleared first so a
+     * half-swapped version can never survive.
+     */
+    private fun ensureDependencyBank(paths: RuntimePaths, ensureActive: () -> Unit,
+                                     manifestDirectory: File? = null) {
+        // Node resolves packages by walking up from the instance directory: from
+        // `<parent>/<name>` the first candidate is `<parent>/node_modules`, and
+        // during creation the staging directory shares that same parent. The
+        // bank must sit exactly there — bankDirectory(instanceOrStaging)
+        // answers `<parent>/node_modules` for both.
+        val bank = DependencyBank.bankDirectory(manifestDirectory ?: paths.serversDir)
+        // The earlier private layout (files/node_modules) is one level off and
+        // must not linger as dead weight.
+        val legacyBank = File(paths.appFilesDir, "node_modules")
+        if (legacyBank != bank && legacyBank.isDirectory) {
+            runCatching { ManagedFiles.deleteDirectory(legacyBank, paths.appFilesDir) }
+        }
+        val (key, archive) = bundledDependencyArchive(paths, ensureActive)
+            ?: error("缺少内置依赖归档，无法准备共享依赖，请检查安装包完整性")
+        val manifest = manifestDirectory
+        if (DependencyBank.read(bank)?.key == key &&
+            (manifest == null || DependencyInstaller.hasRequiredPackages(manifest, bank))) {
+            runtimeDiagnostic("bank.hit key=${key.take(12)}")
+            return
+        }
+        if (bank.exists()) {
+            // The bank sits one level above the instances root; its own parent
+            // is the managed scope, and deletion runs through the child rm so
+            // tens of thousands of files never serialize the app process.
+            runtimeDiagnostic("bank.reset")
+            val bankParent = requireNotNull(bank.parentFile)
+            NativeTreeRemoval(processSupervisor).remove(
+                listOf(bank), bankParent, "dependencies", operations.context(), ensureActive)
+            check(!bank.exists()) { "无法清理旧的共享依赖目录，请重试" }
+        }
+        val extractor = shardExtractor(paths)
+        val extractorProgress: (Int) -> Unit = { count ->
+            updateProgress(85, "正在准备共享依赖组件 · $count")
+        }
+        val extracted = extractor.available() && extractor.extract(archive, bank, ensureActive, extractorProgress)
+        if (!extracted) {
+            // No platform tar (or child extraction failed): fall back to the
+            // in-process transaction, which publishes through a same-parent
+            // rename. The completeness check needs the manifest that defines
+            // the dependency set — the instance being created or launched.
+            // Without one (idle prewarm) the fallback is skipped and the work
+            // is retried on the next opportunity.
+            check(manifestDirectory != null) { "共享依赖准备失败，请重试" }
+            bank.deleteRecursively()
+            check(dependencyArchive(paths).restore(key,
+                manifestDirectory?.parentFile ?: paths.serversDir, replaceIncomplete = true,
+                skipExecutableLinks = true,
+                validateModules = { modules -> DependencyInstaller.hasRequiredPackages(manifest, modules) },
+                ensureActive = ensureActive)) { "共享依赖准备失败，请重试" }
+        }
+        // The bank holds node_modules only; verify against the instance manifest
+        // when one is available (prewarm has none — the tar path already
+        // verified every top-level package exists).
+        check(manifest == null || DependencyInstaller.hasRequiredPackages(manifest, bank)) {
+            "共享依赖校验失败，请重试"
+        }
+        DependencyBank.write(bank, key)
+        runtimeDiagnostic("bank.ready key=${key.take(12)}")
+    }
 
-    private fun dependencyTrees(paths: RuntimePaths) =
-        DependencyTrees(File(paths.tarvenHome, "dependency-trees"))
+    /** Self-heal hook: a launch that needs the bank rebuilds it before the server starts. */
+    private fun ensureBankForLaunch(paths: RuntimePaths, target: File, operation: OperationCoordinator.Operation) {
+        if (DependencyInstaller.hasRequiredPackages(target)) return
+        if (File(target, InstanceInstaller.DEPENDENCY_MARKER).exists()) return
+        val extract = { operations.ensureCurrent(operation) }
+        val lockKey = DependencyArchive(File(paths.tarvenHome, "dependency-archives"))
+            .lockKey(File(target, "package-lock.json")) ?: return
+        if (DependencyBank.covers(target, lockKey)) return
+        // The bank can only serve the lock the bundled archive was built from;
+        // anything else keeps the npm flow as its owner.
+        val bundled = bundledDependencyArchive(paths, extract) ?: return
+        if (bundled.first != lockKey) return
+        updateProgress(96, "正在准备共享依赖组件（仅首次）")
+        ensureDependencyBank(paths, extract, manifestDirectory = target)
+    }
 
-    /** Restores an archived dependency tree; any archive problem falls back to npm. */
+    /** (lockKey, archiveFile) of the bundled dependency archive, materialized on demand. */
+    private fun bundledDependencyArchive(paths: RuntimePaths, ensureActive: () -> Unit): Pair<String, File>? {
+        bundledArchives.awaitReady(ensureActive)
+        val archive = File(paths.tarvenHome, "dependency-archives")
+            .listFiles { file -> file.isFile && DEPENDENCY_ARCHIVE_NAME.matches(file.name) }
+            ?.maxByOrNull { it.lastModified() } ?: return null
+        val key = DEPENDENCY_ARCHIVE_NAME.find(archive.name)?.groupValues?.get(1) ?: return null
+        return key to archive
+    }
+
+    private fun dependencyArchive(paths: RuntimePaths) = DependencyArchive(
+        File(paths.tarvenHome, "dependency-archives"),
+        childExtract = { archive, target, ensureActive, onFiles ->
+            shardExtractor(paths).let { extractor ->
+                extractor.available() && extractor.extract(archive, target, ensureActive, onFiles)
+            }
+        },
+        removeStaging = { staging, owner, verify ->
+            val operation = operations.context() ?: error("Missing dependency recovery operation")
+            com.sillyclient.runtime.InstanceRemoval.remove(
+                staging, owner, verifyIdentity = verify, ensureActive = ::ensureOperationActive,
+                removeChildren = { children ->
+                    NativeTreeRemoval(processSupervisor).remove(children, staging, operation.instanceId, operation,
+                        ::ensureOperationActive, onProgress = {
+                            runtimeDiagnostic("deps.cleanup $it")
+                            updateProgress(85, "正在清理旧依赖 · ${it.removedEntries}")
+                        })
+                },
+                commit = { action -> operations.commit(operation, action) }, unregister = {}
+            )
+        })
+
+    private fun shardExtractor(paths: RuntimePaths) =
+        com.sillyclient.runtime.TarGroupExtractor(paths, operations, processSupervisor)
+
+    private fun webpackCacheSeed(paths: RuntimePaths) =
+        WebpackCacheSeed(paths)
+
+    /** Only a cache miss falls back to npm; filesystem failures preserve both copies. */
     private fun restoreDependencies(
         archive: DependencyArchive,
         lockKey: String,
-        directory: File
+        directory: File,
+        onFileRestored: (Int) -> Unit = {}
     ): Boolean {
         val started = System.nanoTime()
+        var lastProgress = 0L
         return try {
-            archive.restore(lockKey, directory, ::ensureOperationActive) &&
+            runtimeDiagnostic("deps.archive.check key=${lockKey.take(12)}")
+            archive.restore(lockKey, directory, onFileRestored = { restored ->
+                val now = System.nanoTime()
+                if (now - lastProgress >= 500_000_000L) {
+                    lastProgress = now
+                    onFileRestored(restored)
+                    runtimeDiagnostic("deps.archive.progress files=$restored elapsed_ms=${(now - started) / 1_000_000}")
+                }
+            }, replaceIncomplete = true, skipExecutableLinks = true,
+                validateModules = { DependencyInstaller.hasRequiredPackages(directory, it) },
+                ensureActive = ::ensureOperationActive) &&
                 DependencyInstaller.hasRequiredPackages(directory)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
-            runtimeDiagnostic("deps.archive.unavailable ${error.message?.take(160)}")
-            false
+            runtimeDiagnostic("deps.archive.failed type=${error.javaClass.simpleName} msg=${error.message?.take(160)}")
+            throw IllegalStateException("本地依赖恢复失败，原有文件已保留：${error.message}", error)
         }.also { restored ->
             if (restored) {
                 appendLog("[OK] 依赖归档命中，已跳过网络安装")
@@ -2181,87 +2300,16 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    /** Reuses another instance's dependency tree with the same lock before falling back to network installs. */
-    private fun restoreDependenciesFromSibling(paths: RuntimePaths, lockKey: String, dependencyRoot: File): Boolean {
-        val started = System.nanoTime()
-        val target = File(dependencyRoot, "node_modules")
-        if (target.exists()) return false
-        val archive = dependencyArchive(paths)
-        val siblings = mutableListOf<File>()
-        siblings.addAll(paths.installLocations.entries().values)
-        paths.serversDir.listFiles()?.filter { it.isDirectory }?.let(siblings::addAll)
-        for (sibling in siblings.distinctBy { it.canonicalPath }) {
-            ensureOperationActive()
-            if (sibling.canonicalFile == dependencyRoot.canonicalFile) continue
-            val siblingLock = runCatching { archive.lockKey(File(sibling, "package-lock.json")) }.getOrNull()
-                ?: continue
-            if (siblingLock != lockKey) continue
-            val source = File(sibling, "node_modules")
-            if (!source.isDirectory || source.listFiles().isNullOrEmpty()) continue
-            return try {
-                appendLog("> 正在复用现有实例的依赖...")
-                copyDependencyTree(source, target)
-                if (DependencyInstaller.hasRequiredPackages(dependencyRoot)) {
-                    appendLog("[OK] 已从相同版本的现有实例复用依赖，跳过网络安装")
-                    runtimeDiagnostic("deps.sibling.restored key=${lockKey.take(12)} " +
-                        "elapsed_ms=${(System.nanoTime() - started) / 1_000_000}")
-                    true
-                } else {
-                    appendLog("[WARN] 复用的依赖未通过完整性校验，回退网络安装")
-                    runCatching { target.deleteRecursively() }
-                    false
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                runtimeDiagnostic("deps.sibling.unavailable ${error.message?.take(160)}")
-                runCatching { target.deleteRecursively() }
-                false
-            }
-        }
-        return false
-    }
-
-    /** Copies a node_modules tree; symbolic links are recreated so npm layout stays intact. */
-    private fun copyDependencyTree(source: File, destination: File) {
-        fun copyDir(from: File, to: File) {
-            ensureOperationActive()
-            to.mkdirs()
-            val entries = from.listFiles() ?: return
-            for (entry in entries) {
-                ensureOperationActive()
-                val target = File(to, entry.name)
-                if (entry.isDirectory) {
-                    copyDir(entry, target)
-                } else if (java.nio.file.Files.isSymbolicLink(entry.toPath())) {
-                    target.parentFile?.mkdirs()
-                    val link = java.nio.file.Files.readSymbolicLink(entry.toPath()).toString()
-                    java.nio.file.Files.createSymbolicLink(target.toPath(), java.nio.file.Paths.get(link))
-                } else {
-                    entry.inputStream().use { input ->
-                        FileOutputStream(target).use { output -> copyWhileActive(input, output) }
-                    }
-                    if (entry.canExecute()) target.setExecutable(true, false)
-                }
-            }
-        }
-        copyDir(source, destination)
-    }
-
     /** Archives a published instance's dependencies for the next same-lock install. */
     private fun archiveDependenciesInBackground(paths: RuntimePaths, instanceDirectory: File) {
         val archive = dependencyArchive(paths)
-        val trees = dependencyTrees(paths)
         val lockKey = archive.lockKey(File(instanceDirectory, "package-lock.json")) ?: return
-        // Prefer the shared tree; legacy instances only hold a local node_modules.
-        val source = trees.rootFor(lockKey)
-            .takeIf { File(it, "node_modules").isDirectory }
-            ?: instanceDirectory.takeIf { File(it, "node_modules").isDirectory }
-            ?: return
+        if (File(instanceDirectory, InstanceInstaller.DEPENDENCY_MARKER).exists() ||
+            !DependencyInstaller.hasRequiredPackages(instanceDirectory)) return
         Thread {
             val started = System.nanoTime()
             try {
-                if (archive.archive(source, lockKey)) {
+                if (archive.archive(instanceDirectory, lockKey)) {
                     runtimeDiagnostic("deps.archive.stored key=${lockKey.take(12)} " +
                         "elapsed_ms=${(System.nanoTime() - started) / 1_000_000}")
                 }
@@ -2274,85 +2322,9 @@ class MainActivity : BridgeActivity() {
         }.start()
     }
 
-    /**
-     * Builds the shared dependency tree for a legacy instance that still carries
-     * a local node_modules, preferring the bundled archive over a slow per-file
-     * copy from external storage. Once the tree serves the lock, the local copy
-     * is retired so launches resolve from private storage and relocation no
-     * longer copies the dependency tree.
-     */
-    private fun promoteLocalDependenciesInBackground(paths: RuntimePaths, instanceDirectory: File) {
-        val localModules = File(instanceDirectory, "node_modules")
-        val archive = dependencyArchive(paths)
-        val trees = dependencyTrees(paths)
-        val lockFile = File(instanceDirectory, "package-lock.json")
-        val lockKey = archive.lockKey(lockFile) ?: return
-        // A leftover retired copy also re-enters so a failed cleanup retries.
-        if (!localModules.isDirectory && !File(instanceDirectory, RETIRED_MODULES_NAME).exists()) return
-        Thread {
-            val started = System.nanoTime()
-            try {
-                val promoted = trees.buildExclusively(lockKey) {
-                    if (trees.containsComplete(lockKey)) return@buildExclusively true
-                    val treeRoot = trees.adopt(lockKey, lockFile) { }
-                    if (!File(treeRoot, "node_modules").exists() &&
-                        !restoreDependencies(archive, lockKey, treeRoot)
-                    ) {
-                        runtimeDiagnostic("deps.local.promote.begin key=${lockKey.take(12)}")
-                        copyDependencyTree(localModules, File(treeRoot, "node_modules"))
-                    }
-                    if (DependencyInstaller.hasRequiredPackages(treeRoot)) {
-                        runtimeDiagnostic("deps.local.promoted key=${lockKey.take(12)} " +
-                            "elapsed_ms=${(System.nanoTime() - started) / 1_000_000}")
-                        true
-                    } else {
-                        runtimeDiagnostic("deps.local.promote_incomplete; keeping local modules")
-                        false
-                    }
-                }
-                if (!promoted) return@Thread
-                // Retire the local copy with an O(1) rename: module resolution
-                // immediately falls through to the shared tree, and the retired
-                // directory is then removed natively. The per-file Java walker
-                // used here before saturated FUSE for minutes and starved every
-                // concurrent install, import and relocation on the volume.
-                val retired = File(instanceDirectory, RETIRED_MODULES_NAME)
-                if (retired.exists()) retireModules(retired, instanceDirectory, lockKey, started)
-                if (localModules.isDirectory && localModules.renameTo(retired)) {
-                    runtimeDiagnostic("deps.local.retired key=${lockKey.take(12)}")
-                    retireModules(retired, instanceDirectory, lockKey, started)
-                } else if (localModules.exists()) {
-                    runtimeDiagnostic("deps.local.retire_failed key=${lockKey.take(12)}")
-                }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                runtimeDiagnostic("deps.local.promote_failed ${error.message?.take(160)}")
-            }
-        }.apply {
-            name = "SC-dependency-promote"
-            isDaemon = true
-        }.start()
-    }
-
-    private fun retireModules(retired: File, instanceDirectory: File, lockKey: String, started: Long) {
-        try {
-            NativeTreeRemoval(processSupervisor).remove(
-                listOf(retired), instanceDirectory, instanceDirectory.name
-            )
-            if (!retired.exists()) {
-                runtimeDiagnostic("deps.local.demoted key=${lockKey.take(12)} " +
-                    "elapsed_ms=${(System.nanoTime() - started) / 1_000_000}")
-            }
-        } catch (error: Exception) {
-            // The retired copy no longer affects resolution; leave it behind and
-            // let the next promotion retry the removal.
-            runtimeDiagnostic("deps.local.retire_cleanup_failed ${error.message?.take(120)}")
-        }
-    }
-
     private fun runtimeDiagnostic(message: String) {
         android.util.Log.i(TAG, "runtime ${message.take(512)}")
+        com.sillyclient.runtime.Diag.append(RuntimePaths.from(this).tarvenHome, "runtime ${message.take(512)}")
     }
 
     private fun instanceInstaller(paths: RuntimePaths) = InstanceInstaller(
@@ -2386,6 +2358,14 @@ class MainActivity : BridgeActivity() {
 
     /** 扫描本地已存在的酒馆实例。返回五元组:instanceId, version, path, sizeBytes, hasServer。 */
     fun scanInstances(): List<Quint<String, String, String, Long, Boolean>> {
+        // Console refreshes double as the retry point for interrupted removals:
+        // marked or renamed remnants are hidden from the scan and reclaimed here.
+        // Never start a purge while a user operation is running: both compete for
+        // the same emulated-storage queue, which can stall the foreground work.
+        if (operations.current() == null &&
+            com.sillyclient.storage.InstanceStorageAccess.isGranted(this)) {
+            runCatching { sweepRemovalRemnants(RuntimePaths.from(this).serversDir, "maintenance") }
+        }
         return instanceRepository.scan().map { info ->
             Quint(info.instanceId, info.version, info.path, info.sizeBytes, info.hasServer)
         }
@@ -2568,30 +2548,124 @@ class MainActivity : BridgeActivity() {
         }
     }
 
+    /**
+     * Package an instance directory into a ZIP under Download/SillyClient-导出
+     * so the user always has a file-manager-visible copy on demand, whether the
+     * instance itself lives in the managed area or a custom directory.
+     */
+    /**
+     * 把完整压缩包里的用户数据无损导入到已有实例：只覆盖用户数据
+     * （data/、第三方扩展、plugins/，可选的 secrets.json/config.yaml），
+     * 依赖与程序文件（node_modules、package.json、其余 public/、构建缓存）永不写入。
+     * 实例必须处于停止状态；逐文件"临时文件 + 原子替换"，取消不会留下半个文件。
+     */
+    fun importInstanceData(
+        instanceId: String,
+        installPath: String?,
+        archivePath: String,
+        includeOptional: Boolean,
+        operationId: String? = null
+    ): Triple<Int, Long, Int> {
+        val archive = File(archivePath)
+        require(archive.isFile) { "压缩包不存在，请重新选择" }
+        val paths = RuntimePaths.from(this)
+        return runInstanceMaintenance(instanceId, operationId) { id ->
+            val directory = paths.serverDirFor(id, installPath, create = false)
+            require(directory.isDirectory && File(directory, "server.js").isFile) {
+                "实例目录不存在或尚未安装"
+            }
+            pushLog("> 正在从备份导入用户数据…")
+            val outcome = InstanceDataImport.import(
+                archive = archive,
+                instanceDir = directory,
+                includeOptional = includeOptional,
+                ensureActive = { ensureOperationActive() },
+                onProgress = { count, bytes ->
+                    if (count % 200 == 0) pushLog("正在导入数据 · $count 项 · ${bytes / 1024 / 1024} MB")
+                }
+            )
+            pushLog("[OK] 数据导入完成：${outcome.imported} 项（忽略依赖与程序文件 ${outcome.skippedEntries} 项）")
+            runtimeDiagnostic("import.done imported=${outcome.imported} skipped=${outcome.skippedEntries} bytes=${outcome.bytes}")
+            Triple(outcome.imported, outcome.bytes, outcome.skippedEntries)
+        }
+    }
+
+    fun exportInstance(instanceId: String, installPath: String? = null): Pair<String, Long> {
+        val paths = RuntimePaths.from(this)
+        val id = RuntimePaths.normalizeInstanceId(instanceId)
+        val directory = paths.serverDirFor(id, installPath, create = false)
+        require(directory.isDirectory && File(directory, "server.js").isFile) { "实例目录不存在或尚未安装" }
+        val targetDir = File(android.os.Environment.getExternalStorageDirectory(), "Download/SillyClient-导出").apply { mkdirs() }
+        require(targetDir.isDirectory) { "无法创建导出目录，请检查存储权限" }
+        val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
+        val zip = File(targetDir, "${directory.name}-$stamp.zip")
+        var entries = 0
+        var bytes = 0L
+        val rootPath = directory.toPath()
+        java.util.zip.ZipOutputStream(java.io.BufferedOutputStream(java.io.FileOutputStream(zip), 256 * 1024)).use { output ->
+            directory.walkTopDown().forEach { file ->
+                if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("export cancelled")
+                if (java.nio.file.Files.isSymbolicLink(file.toPath())) return@forEach
+                val relative = rootPath.relativize(file.toPath()).toString().replace(File.separatorChar, '/')
+                if (relative.isEmpty()) return@forEach
+                if (file.isDirectory) {
+                    output.putNextEntry(java.util.zip.ZipEntry("$relative/"))
+                    output.closeEntry()
+                } else if (file.isFile) {
+                    output.putNextEntry(java.util.zip.ZipEntry(relative))
+                    file.inputStream().use { it.copyTo(output, 256 * 1024) }
+                    output.closeEntry()
+                    entries++
+                    bytes += file.length()
+                    if (entries % 200 == 0) pushLog("正在打包实例 · $entries 项")
+                }
+            }
+        }
+        runtimeDiagnostic("export.done entries=$entries bytes=$bytes path=${zip.name}")
+        return zip.absolutePath to bytes
+    }
+
     private fun uninstallInstanceFiles(instanceId: String, targetDir: File): Long {
         val paths = RuntimePaths.from(this)
         val operation = operations.context() ?: error("Missing removal operation")
         runtimeDiagnostic("removal.begin")
-        com.sillyclient.runtime.InstanceRemoval.remove(
-            targetDir, paths.installLocations.allowedRootFor(targetDir),
-            verifyIdentity = {
-                require(paths.installLocations.resolve(instanceId, targetDir.absolutePath).canonicalFile == targetDir.canonicalFile)
-            },
-            ensureActive = { operations.ensureCurrent(operation) },
-            removeChildren = { children ->
-                NativeTreeRemoval(processSupervisor).remove(
-                    children, targetDir, instanceId, operation,
-                    ensureActive = { operations.ensureCurrent(operation) },
-                    onProgress = { progress ->
-                        runtimeDiagnostic("removal $progress")
-                        pushLog("[cleanup] 已处理 ${progress.removedEntries} 项 · 耗时 ${progress.elapsedMillis / 1000} 秒",
-                            null, instanceId)
-                    }
-                )
-            },
-            commit = { action -> operations.commit(operation, action) },
-            unregister = { paths.installLocations.unregisterAfterDelete(instanceId, targetDir) }
-        )
+        val parent = requireNotNull(targetDir.parentFile)
+        paths.installLocations.allowedRootFor(targetDir)
+        // Committing the removal unregisters the instance; without storage
+        // access the physical delete would then fail and leave an orphaned
+        // directory the console no longer knows about. Refuse before that.
+        check(com.sillyclient.storage.InstanceStorageAccess.isGranted(this)) {
+            com.sillyclient.storage.InstanceStorageAccess.DENIED_MESSAGE
+        }
+        // Remnants of earlier interrupted removals in this root are reclaimed
+        // alongside; marked directories from any root are hidden by scanners.
+        sweepRemovalRemnants(parent, instanceId)
+        // The visible removal is one marker write plus one registry update: the
+        // instance disappears from the console immediately and the physical
+        // delete streams in the background. A directory rename is deliberately
+        // NOT used: on emulated storage it makes MediaProvider re-index every
+        // descendant, which is slower than the delete itself.
+        operations.commit(operation) {
+            val marker = File(targetDir, InstanceRemoval.REMOVAL_MARKER)
+            require(ManagedFiles.isWithin(marker, targetDir)) { "Invalid removal marker path" }
+            marker.writeText(InstanceRemoval.MARKER_CONTENT)
+            paths.installLocations.unregisterAfterDelete(instanceId, targetDir)
+        }
+        runtimeDiagnostic("removal.disappeared")
+        KeepAlive.acquire(this)
+        Thread {
+            try {
+                NativeTreeRemoval(processSupervisor).remove(listOf(targetDir), parent, instanceId)
+                runtimeDiagnostic("removal.purged")
+            } catch (error: Exception) {
+                runtimeDiagnostic("removal.purge_failed type=${error.javaClass.simpleName} msg=${error.message?.take(160)}")
+            } finally {
+                runOnUiThread { KeepAlive.release(applicationContext) }
+            }
+        }.apply {
+            name = "SC-removal-purge"
+            isDaemon = true
+        }.start()
         instanceRepository.invalidate(targetDir)
         val safeId = instanceId.replace(Regex("[^a-zA-Z0-9._-]"), "_")
         val coverFile = File(paths.bootstrapDir, "covers/$safeId.png")
@@ -2602,6 +2676,36 @@ class MainActivity : BridgeActivity() {
         runtimeDiagnostic("removal.complete")
         // Unknown byte count avoids a second full traversal of the dependency tree.
         return 0L
+    }
+
+    /**
+     * Background-reclaim deletion remnants under [parent]: directories marked
+     * with [InstanceRemoval.REMOVAL_MARKER] (interrupted background purge) and
+     * `.name.sillyclient-removing-<uuid>` renames left by older builds.
+     */
+    fun sweepRemovalRemnants(parent: File, instanceId: String) {
+        val remnants = parent.listFiles { file ->
+            file.isDirectory && (InstanceRemoval.RENAME_PATTERN.matches(file.name) ||
+                File(file, InstanceRemoval.REMOVAL_MARKER).isFile)
+        }?.takeIf { it.isNotEmpty() } ?: return
+        KeepAlive.acquire(this)
+        Thread {
+            try {
+                for (remnant in remnants) {
+                    try {
+                        NativeTreeRemoval(processSupervisor).remove(listOf(remnant), parent, instanceId)
+                        runtimeDiagnostic("removal.stale_purged")
+                    } catch (error: Exception) {
+                        runtimeDiagnostic("removal.stale_purge_failed type=${error.javaClass.simpleName} msg=${error.message?.take(160)}")
+                    }
+                }
+            } finally {
+                runOnUiThread { KeepAlive.release(applicationContext) }
+            }
+        }.apply {
+            name = "SC-removal-stale-purge"
+            isDaemon = true
+        }.start()
     }
 
     /** Plan only disposable, inactive files; instance directories are never garbage. */
@@ -2665,10 +2769,12 @@ class MainActivity : BridgeActivity() {
             check(!operations.hasPendingWork()) { "实例「${pending.instanceId}」仍有任务进行中，请等待完成或取消后再试" }
         }
         val operation = operations.begin(id, operationId?.takeIf { it.isNotBlank() })
+        KeepAlive.acquire(this)
         return try {
             operations.run(operation) { action(id) }
         } finally {
             operations.finish(operation)
+            KeepAlive.release(this)
         }
     }
 
@@ -2834,7 +2940,10 @@ class MainActivity : BridgeActivity() {
 
     private fun setStatus(t: String) { pushLog(t) }
     private fun updateProgress(pct: Int, text: String? = null) { pushProgress(pct.toFloat(), text) }
-    private fun appendLog(line: String) { pushLog(line) }
+    private fun appendLog(line: String) {
+        com.sillyclient.runtime.Diag.append(RuntimePaths.from(this).tarvenHome, line)
+        pushLog(line)
+    }
 
     private fun runtimeEventContext(): OperationCoordinator.Operation? =
         operations.context() ?: operations.current()?.takeIf { it.instanceId == currentTavernInstanceId }
@@ -3015,10 +3124,6 @@ class MainActivity : BridgeActivity() {
                         } ?: throw IOException("无法打开所选文件的输入流")
                         val extracted = com.sillyclient.runtime.SourceArchive.extract(
                             archive, targetServerDir, ::ensureOperationActive,
-                            // Skip the archive's node_modules only when the shared tree
-                            // can rebuild them; a tree with user-installed extras must
-                            // be extracted in full or those packages would be lost.
-                            skipTopLevel = if (zipModulesCovered(archive)) setOf("node_modules") else emptySet(),
                             onProgress = { count ->
                                 if (count % 100 == 0) {
                                     updateProgress(25 + (count / 60).coerceAtMost(55), "Extracting data ($count files)")
@@ -3047,10 +3152,6 @@ class MainActivity : BridgeActivity() {
                 updateProgress(30, "Extracting backup archive")
                 val extracted = com.sillyclient.runtime.SourceArchive.extract(
                     sourceFile, targetServerDir, ::ensureOperationActive,
-                    // Skip the archive's node_modules only when the shared tree can
-                    // rebuild them; uncovered archives extract in full and runNpmInstall
-                    // then keeps their locally complete dependencies as-is.
-                    skipTopLevel = if (zipModulesCovered(sourceFile)) setOf("node_modules") else emptySet(),
                     onProgress = { count ->
                         if (count % 100 == 0) {
                             updateProgress(30 + (count / 60).coerceAtMost(45), "Extracting data ($count files)")

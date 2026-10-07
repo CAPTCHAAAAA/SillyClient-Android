@@ -238,6 +238,8 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
 
   const launchRef = useRef<HTMLDivElement>(null);
   const storageRef = useRef<HTMLDivElement>(null);
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [importStatus, setImportStatus] = useState<string | null>(null);
   const terminalRef = useRef<HTMLDivElement>(null);
   const aboutRef = useRef<HTMLDivElement>(null);
   const [manageTabHeight, setManageTabHeight] = useState<number | null>(null);
@@ -875,11 +877,11 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                               placeholder={hasPassword ? "新访问密码" : "设置访问密码"}
                               autoComplete="new-password"
                               className={cn(
-                                  "w-full h-8 px-3 rounded-xl border text-xs focus:outline-none focus:ring-0 transition-colors",
-                                  isLight
-                                    ? "bg-black/[0.04] border-black/[0.08] text-[#1a1625] placeholder:text-[#1a1625]/25"
-                                    : "bg-white/[0.04] border-white/[0.08] text-white placeholder:text-white/25"
-                                )}
+                                "w-full h-8 px-3 rounded-xl border text-xs focus:outline-none focus:ring-0 transition-colors",
+                                isLight
+                                  ? "bg-black/[0.04] border-black/[0.08] text-[#1a1625] placeholder:text-[#1a1625]/25"
+                                  : "bg-white/[0.04] border-white/[0.08] text-white placeholder:text-white/25"
+                              )}
                             />
                             <input
                               type="password"
@@ -1039,6 +1041,17 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                 inert={manageTab !== "storage"}
               >
                 <div className="space-y-4">
+                  {mp.type === "local" && (
+                    <p
+                      className={cn(
+                        "text-[11px] leading-relaxed",
+                        isLight ? "text-[#1a1625]/45" : "text-white/40"
+                      )}
+                    >
+                      实例文件位于应用管理区域，可在系统文件管理器中查看：
+                      浏览 → SillyClient（文档提供器）→ 对应实例；也可用下方「导出实例」随时打包。
+                    </p>
+                  )}
                   <div
                     className={cn(
                       "rounded-xl px-4",
@@ -1070,7 +1083,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                       isLight ? "bg-black/[0.025]" : "bg-white/[0.025]"
                     )}
                   >
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <div
                         className={cn(
                           "text-xs font-medium",
@@ -1092,7 +1105,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                       type="button"
                       onClick={() => onPickCover(mp)}
                       className={cn(
-                        "motion-control h-8 rounded-xl px-3 text-[11px] font-medium",
+                        "motion-control h-8 flex-shrink-0 whitespace-nowrap rounded-xl px-3 text-[11px] font-medium",
                         isLight
                           ? "bg-black/[0.06] text-[#1a1625]/60 hover:bg-black/[0.09]"
                           : "bg-white/[0.07] text-white/60 hover:bg-white/[0.11]"
@@ -1108,7 +1121,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                         isLight ? "bg-black/[0.025]" : "bg-white/[0.025]"
                       )}
                     >
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <div
                           className={cn(
                             "text-xs font-medium",
@@ -1130,7 +1143,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                         type="button"
                         onClick={() => onOpenRelocate(mp)}
                         className={cn(
-                          "motion-control h-8 rounded-xl px-3 text-[11px] font-medium",
+                          "motion-control h-8 flex-shrink-0 whitespace-nowrap rounded-xl px-3 text-[11px] font-medium",
                           isLight
                             ? "bg-black/[0.06] text-[#1a1625]/60 hover:bg-black/[0.09]"
                             : "bg-white/[0.07] text-white/60 hover:bg-white/[0.11]"
@@ -1144,14 +1157,14 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                     <ManageItem label="实例维护" isLight={isLight}>
                       <button type="button" onClick={() => onOpenMaintenance(mp)}
                         className={cn(
-                          "motion-control h-8 rounded-xl px-3 text-[11px] font-medium",
+                          "motion-control h-8 flex-shrink-0 whitespace-nowrap rounded-xl px-3 text-[11px] font-medium",
                           isLight
                             ? "bg-black/[0.06] text-[#1a1625]/60 hover:bg-black/[0.09]"
                             : "bg-white/[0.07] text-white/60 hover:bg-white/[0.11]"
                         )}>
                         扫描
                       </button>
-                      </ManageItem>
+                    </ManageItem>
                   )}
                   <div
                     className={cn(
@@ -1159,7 +1172,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                       isLight ? "bg-black/[0.025]" : "bg-white/[0.025]"
                     )}
                   >
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <div
                         className={cn(
                           "text-xs font-medium",
@@ -1184,7 +1197,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                         onTriggerRename(mp);
                       }}
                       className={cn(
-                        "motion-control h-8 rounded-xl px-3 text-[11px] font-medium",
+                        "motion-control h-8 flex-shrink-0 whitespace-nowrap rounded-xl px-3 text-[11px] font-medium",
                         isLight
                           ? "bg-black/[0.06] text-[#1a1625]/60 hover:bg-black/[0.09]"
                           : "bg-white/[0.07] text-white/60 hover:bg-white/[0.11]"
@@ -1193,13 +1206,128 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                       重命名
                     </button>
                   </div>
+                  {mp.type === "local" && (
+                    <div
+                      className={cn(
+                        "flex items-center justify-between gap-4 rounded-xl px-4 py-3",
+                        isLight ? "bg-black/[0.025]" : "bg-white/[0.025]"
+                      )}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div
+                          className={cn(
+                            "text-xs font-medium",
+                            isLight ? "text-[#1a1625]/70" : "text-white/70"
+                          )}
+                        >
+                          导出实例（ZIP）
+                        </div>
+                        <div
+                          className={cn(
+                            "mt-1 truncate text-[10px]",
+                            isLight ? "text-[#1a1625]/30" : "text-white/30"
+                          )}
+                        >
+                          {exportStatus || "打包到 下载/SillyClient-导出，随时可在文件管理器查看"}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={exportStatus === "正在打包…"}
+                        onClick={async () => {
+                          setExportStatus("正在打包…");
+                          try {
+                            const res = await TarvenEnv.exportInstance({
+                              instanceId: mp.installDir || mp.id,
+                              installPath: mp.installPath,
+                            });
+                            const name = res.path.split("/").pop() || res.path;
+                            setExportStatus(`已导出：${name}`);
+                          } catch (error) {
+                            setExportStatus(error instanceof Error ? error.message : "导出失败，请重试");
+                          }
+                        }}
+                        className={cn(
+                          "motion-control h-8 flex-shrink-0 whitespace-nowrap rounded-xl px-3 text-[11px] font-medium disabled:opacity-50",
+                          isLight
+                            ? "bg-black/[0.06] text-[#1a1625]/60 hover:bg-black/[0.09]"
+                            : "bg-white/[0.07] text-white/60 hover:bg-white/[0.11]"
+                        )}
+                      >
+                        导出
+                      </button>
+                    </div>
+                  )}
+                  {mp.type === "local" && (
+                    <div
+                      className={cn(
+                        "flex items-center justify-between gap-4 rounded-xl px-4 py-3",
+                        isLight ? "bg-black/[0.025]" : "bg-white/[0.025]"
+                      )}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div
+                          className={cn(
+                            "text-xs font-medium",
+                            isLight ? "text-[#1a1625]/70" : "text-white/70"
+                          )}
+                        >
+                          导入数据（ZIP）
+                        </div>
+                        <div
+                          className={cn(
+                            "mt-1 truncate text-[10px]",
+                            isLight ? "text-[#1a1625]/30" : "text-white/30"
+                          )}
+                        >
+                          {importStatus || "从旧酒馆备份导入聊天、角色与扩展（不导入依赖与程序文件，不含 secrets.json）"}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={importStatus === "正在导入…"}
+                        onClick={async () => {
+                          try {
+                            setImportStatus(null);
+                            const picked = await TarvenEnv.pickZipFile();
+                            if (!picked?.path) return;
+                            const summary = await TarvenEnv.inspectImportArchive({ archivePath: picked.path });
+                            if (!summary.importable) {
+                              setImportStatus("该压缩包里没有可导入的实例数据（需要 data/ 或第三方扩展）");
+                              return;
+                            }
+                            setImportStatus(
+                              `正在导入…（${summary.importEntries} 项 / ${(summary.importBytes / 1048576).toFixed(1)} MB，忽略 ${summary.skippedEntries} 项依赖与程序文件）`
+                            );
+                            const res = await TarvenEnv.importInstanceData({
+                              instanceId: mp.installDir || mp.id,
+                              installPath: mp.installPath,
+                              archivePath: picked.path,
+                              includeOptional: false,
+                            });
+                            setImportStatus(`已导入 ${res.imported} 项（忽略 ${res.skipped} 项依赖与程序文件）`);
+                          } catch (error) {
+                            setImportStatus(error instanceof Error ? error.message : "导入失败，请重试");
+                          }
+                        }}
+                        className={cn(
+                          "motion-control h-8 flex-shrink-0 whitespace-nowrap rounded-xl px-3 text-[11px] font-medium disabled:opacity-50",
+                          isLight
+                            ? "bg-black/[0.06] text-[#1a1625]/60 hover:bg-black/[0.09]"
+                            : "bg-white/[0.07] text-white/60 hover:bg-white/[0.11]"
+                        )}
+                      >
+                        导入
+                      </button>
+                    </div>
+                  )}
                   <div
                     className={cn(
                       "flex items-center justify-between gap-4 rounded-xl px-4 py-3",
                       isLight ? "bg-black/[0.025]" : "bg-white/[0.025]"
                     )}
                   >
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <div
                         className={cn(
                           "text-xs font-medium",
@@ -1224,7 +1352,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                         onTriggerDelete(mp);
                       }}
                       className={cn(
-                        "motion-control h-8 rounded-xl px-3 text-[11px] font-medium",
+                        "motion-control h-8 flex-shrink-0 whitespace-nowrap rounded-xl px-3 text-[11px] font-medium",
                         isLight
                           ? "bg-red-900/[0.07] text-red-900/60 hover:bg-red-900/[0.11]"
                           : "bg-red-400/[0.08] text-red-300/60 hover:bg-red-400/[0.13]"
@@ -1440,7 +1568,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
               disabled={isSavingManagePanel}
               onClick={onSaveManagedInstance}
               className={cn(
-                "motion-control h-8 rounded-xl px-3 text-[11px] font-medium disabled:pointer-events-none disabled:opacity-50",
+                "motion-control h-8 flex-shrink-0 whitespace-nowrap rounded-xl px-3 text-[11px] font-medium disabled:pointer-events-none disabled:opacity-50",
                 isLight
                   ? "bg-black/[0.05] text-[#1a1625]/55 hover:bg-black/[0.08]"
                   : "bg-white/[0.06] text-white/55 hover:bg-white/[0.10]"

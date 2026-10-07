@@ -18,7 +18,8 @@ import { Capacitor } from "@capacitor/core";
 import { TarvenEnv, DEFAULT_CONFIG } from "@/capacitor-plugin";
 import { openExternalUrl } from "@/lib/external-links";
 import type { AppUpdateInfo, CompanionPresetSelection, ContentOpenMode, InstanceConfig, InstallPathMode, GithubRelease, GarbageItem, TarvenEvent, PreinstalledExtensionId } from "@/capacitor-plugin";
-import { exactInstallTarget, installationSelection, sanitizeFolderName } from "@/lib/install-location";
+import { buildInstanceSubfolder, installationSelection, instanceParentPath, sanitizeFolderName } from "@/lib/install-location";
+import { humanizeNativeError } from "@/lib/native-errors";
 import { normalizeStoredInstances, serializeInstanceRecords, parseInstanceBackup, type StoredInstance } from "@/lib/instance-persistence";
 import { GLOBAL_LOG_KEY, instanceLogs, type LogLine } from "@/lib/log-store";
 import { OperationCoordinator, OperationCancelledError, type OperationContext } from "@/lib/operation-coordinator";
@@ -48,6 +49,7 @@ import { CardActionMenu } from "@/components/modals/CardActionMenu";
 import { LaunchConsoleModal } from "@/components/modals/LaunchConsoleModal";
 import { UnlockInstanceModal } from "@/components/modals/UnlockInstanceModal";
 import type { TavernInstance, ManageTab, BgMode, ThemeStyle, OperationPurpose } from "@/types";
+import { selectTavernRelease } from "@/lib/tavern-release";
 
 export const Route = createFileRoute("/")({
   component: SillyClientLauncher,
@@ -249,9 +251,7 @@ function SillyClientLauncher() {
   const [terminalSize, setTerminalSize] = useState({ w: 640, h: 340 });
   const [terminalFontSize, setTerminalFontSize] = useState(12);
   const operations = useMemo(() => new OperationCoordinator(), []);
-  const [launchLogKey, setLaunchLogKey] = useState<string | null>(null);
-  const lastMigration = useRef<Parameters<typeof TarvenEnv.migrateInstance>[0] | null>(null);
-  const [launchingId, setLaunchingId] = useState<string | null>(null);
+  const [launchLogKey, setLaunchLogKey] = useState<string | null>(null);  const [launchingId, setLaunchingId] = useState<string | null>(null);
   const [launchProgress, setLaunchProgress] = useState<{ pct: number; text: string } | null>(null);
   const [showLaunchPanel, setShowLaunchPanel] = useState(false);
   const [isLaunchPanelClosing, setIsLaunchPanelClosing] = useState(false);
@@ -296,7 +296,7 @@ function SillyClientLauncher() {
   const [activeSlide, setActiveSlide] = useState(0);
   const [showNewInstancePanel, setShowNewInstancePanel] = useState(false);
   const [isNewInstancePanelClosing, setIsNewInstancePanelClosing] = useState(false);
-  const [newInstanceMode, setNewInstanceMode] = useState<"local" | "remote" | "import">("local");
+  const [newInstanceMode, setNewInstanceMode] = useState<"local" | "remote">("local");
   const [newInstanceName, setNewInstanceName] = useState("");
   const [newInstanceDir, setNewInstanceDir] = useState("");
   const [newInstancePathMode, setNewInstancePathMode] = useState<InstallPathMode>("exact");
@@ -306,11 +306,6 @@ function SillyClientLauncher() {
   const [newRemoteAuthUsername, setNewRemoteAuthUsername] = useState("");
   const [newRemoteAuthPassword, setNewRemoteAuthPassword] = useState("");
   // Windows 数据迁移状态
-  const [migrationAccessMode, setMigrationAccessMode] = useState<"copy" | "takeover">("copy");
-  const [migrationSourcePath, setMigrationSourcePath] = useState("");
-  const [migrationIncludeSecrets, setMigrationIncludeSecrets] = useState(false);
-  const [migrationCustomDest, setMigrationCustomDest] = useState("");
-  const [migrationTargetPathMode, setMigrationTargetPathMode] = useState<InstallPathMode>("exact");
   const [newInstanceVersion, setNewInstanceVersion] = useState("stable");
   const [newInstanceCompanionPresetEnabled, setNewInstanceCompanionPresetEnabled] = useState(false);
   const [newInstanceExtensionIds, setNewInstanceExtensionIds] = useState<PreinstalledExtensionId[]>([]);
@@ -534,10 +529,7 @@ function SillyClientLauncher() {
       if (typeof window !== "undefined" && window.location.search) {
         const params = new URLSearchParams(window.location.search);
         const wizardParam = params.get("wizard") || params.get("mode") || params.get("tab");
-        if (wizardParam === "import" || wizardParam === "migration") {
-          setNewInstanceMode("import");
-          setShowNewInstancePanel(true);
-        } else if (wizardParam === "1" || wizardParam === "local") {
+        if (wizardParam === "1" || wizardParam === "local") {
           setNewInstanceMode("local");
           setShowNewInstancePanel(true);
         } else if (wizardParam === "remote") {
@@ -725,7 +717,7 @@ function SillyClientLauncher() {
     themeSmoothingTimer.current = window.setTimeout(() => setThemeSmoothing(false), 1200);
   }, []);
 
-  const switchInstanceMode = useCallback((mode: "local" | "remote" | "import") => {
+  const switchInstanceMode = useCallback((mode: "local" | "remote") => {
     if (newInstanceMode === mode) return;
     setNewInstanceMode(mode);
   }, [newInstanceMode]);
@@ -733,14 +725,49 @@ function SillyClientLauncher() {
   useEffect(() => {
     directoryPickerGeneration.current += 1;
     return () => { directoryPickerGeneration.current += 1; };
-  }, [showNewInstancePanel, newInstanceMode, migrationAccessMode]);
+  }, [showNewInstancePanel, newInstanceMode]);
+
+  // 创建实例的第一步是选择存放文件夹（必选）。已保存过默认路径时预填，
+  // 让之后的创建一步到位；没有保存过则保持为空，等待用户显式选择。
+  useEffect(() => {
+    if (!showNewInstancePanel) return;
+    let cancelled = false;
+    TarvenEnv.getAppSettings()
+      .then(settings => {
+        if (cancelled) return;
+        const saved = settings.configuredInstancesRoot?.trim();
+        if (!saved) return;
+        setNewInstanceDir(current => (current.trim() ? current : saved));
+        setNewInstancePathMode(current => (current === "exact" ? "root" : current));
+      })
+      .catch(() => { /* 读取失败时保持必选流程 */ });
+    return () => { cancelled = true; };
+  }, [showNewInstancePanel]);
 
   const handleSetNewInstanceDir = useCallback((value: string) => {
     const clean = value.replace(/^["']|["']$/g, "").trim();
     setNewInstanceDir(clean);
-    setNewInstancePathMode("exact");
+    // 手输与「浏览」同一条语义：这个文件夹就是实例的存放位置（实例根），
+    // 实例永远是它的一级子目录 —— 不再有"把整条路径当作实例目录本身"的模式。
+    setNewInstancePathMode("root");
     setNewInstanceError(null);
     directoryPickerGeneration.current += 1;
+  }, []);
+
+  // 向导中的存放位置一律是"实例存放文件夹"（父目录）：先落成实例根，
+  // 再取它的一级子目录作为实例目录。根更新失败时抛中文原因，绝不静默继续。
+  const resolveInstanceParent = useCallback(async (
+    rawValue: string, emptyMessage: string, instanceName: string,
+  ): Promise<string> => {
+    const parent = instanceParentPath(rawValue);
+    if (!parent) throw new Error(emptyMessage);
+    try {
+      await TarvenEnv.setInstancesRoot({ path: parent });
+    } catch (error) {
+      const reason = humanizeNativeError(error instanceof Error ? error.message : String(error));
+      throw new Error(`该文件夹不能作为实例存放位置：${reason}`);
+    }
+    return buildInstanceSubfolder(parent, instanceName);
   }, []);
 
   const handlePickInstallFolder = useCallback(async () => {
@@ -751,98 +778,21 @@ function SillyClientLauncher() {
       setNewInstanceDir(selection.path);
       setNewInstancePathMode(selection.mode);
       setNewInstanceError(null);
+      // 向导中选择的存放文件夹就是用户选定的默认路径：保存后，
+      // 下次打开向导自动预填，文件管理器里也始终能看到实例目录。
+      // 保存被拒时当场说明原因（例如选到了某个实例目录里面），不再静默继续。
+      try {
+        await TarvenEnv.setInstancesRoot({ path: selection.path });
+      } catch (error) {
+        const reason = humanizeNativeError(error instanceof Error ? error.message : String(error));
+        setNewInstanceDir("");
+        setNewInstanceError(`该文件夹不能作为实例存放位置：${reason}`);
+      }
     } catch (error) {
       if (generation !== directoryPickerGeneration.current) return;
       const message = error instanceof Error ? error.message : String(error);
       if (!/cancel/i.test(message)) setNewInstanceError(message);
     }
-  }, []);
-
-  const handlePickTargetFolder = useCallback(async () => {
-    const generation = ++directoryPickerGeneration.current;
-    try {
-      if (typeof (window as any).migrationDebug?.choose === "function") {
-        const selected = await (window as any).migrationDebug.choose("target");
-        if (selected && generation === directoryPickerGeneration.current) {
-          const clean = String(selected).trim().replace(/^["']|["']$/g, "").trim();
-          setMigrationCustomDest(clean);
-          setMigrationTargetPathMode("exact");
-          setNewInstanceError(null);
-          return;
-        }
-      }
-      const selection = installationSelection(await TarvenEnv.pickDirectory({ purpose: "installation" }));
-      if (generation !== directoryPickerGeneration.current) return;
-      setMigrationCustomDest(selection.path);
-      setMigrationTargetPathMode(selection.mode);
-      setNewInstanceError(null);
-    } catch (error) {
-      if (generation !== directoryPickerGeneration.current) return;
-      const message = error instanceof Error ? error.message : String(error);
-      if (!/cancel/i.test(message)) setNewInstanceError(message);
-    }
-  }, []);
-
-  const handlePickSourceFolder = useCallback(async () => {
-    const generation = ++directoryPickerGeneration.current;
-    try {
-      if (typeof (window as any).migrationDebug?.choose === "function") {
-        const selected = await (window as any).migrationDebug.choose("source");
-        if (selected && generation === directoryPickerGeneration.current) {
-          const clean = String(selected).trim().replace(/^["']|["']$/g, "").trim();
-          setMigrationSourcePath(clean);
-          setNewInstanceError(null);
-          return;
-        }
-      }
-      const { path } = await TarvenEnv.pickDirectory({ purpose: "source" });
-      if (generation !== directoryPickerGeneration.current) return;
-      if (path) {
-        const clean = String(path).trim().replace(/^["']|["']$/g, "").trim();
-        setMigrationSourcePath(clean);
-        setNewInstanceError(null);
-      }
-    } catch {
-      /* 用户取消 */
-    }
-  }, []);
-
-  const handlePickSourceZip = useCallback(async () => {
-    try {
-      if (typeof (window as any).migrationDebug?.choose === "function") {
-        const selected = await (window as any).migrationDebug.choose("zip");
-        if (selected) {
-          const clean = String(selected).trim().replace(/^["']|["']$/g, "").trim();
-          setMigrationSourcePath(clean);
-          setNewInstanceError(null);
-          return;
-        }
-      }
-      if (typeof (TarvenEnv as any).pickZipFile === "function") {
-        const { path } = await (TarvenEnv as any).pickZipFile();
-        if (path) {
-          const clean = String(path).trim().replace(/^["']|["']$/g, "").trim();
-          setMigrationSourcePath(clean);
-          setNewInstanceError(null);
-          return;
-        }
-      }
-    } catch {
-      /* 用户取消 */
-    }
-  }, []);
-
-  const handleSetMigrationSourcePath = useCallback((val: string) => {
-    setMigrationSourcePath(val);
-    setNewInstanceError(null);
-    directoryPickerGeneration.current += 1;
-  }, []);
-
-  const handleSetMigrationCustomDest = useCallback((val: string) => {
-    setMigrationCustomDest(val);
-    setMigrationTargetPathMode("exact");
-    setNewInstanceError(null);
-    directoryPickerGeneration.current += 1;
   }, []);
 
   // 向导容器自适应平滑高度测量
@@ -1148,7 +1098,7 @@ function SillyClientLauncher() {
 
       // 调用原生 provision
       const provisionResult = await operation.wait(TarvenEnv.provisionAndStart({
-        port, instanceId, instanceName: instance.name, operationId: operation.id, version, zipballUrl, localZipPath,
+        port, instanceId, instanceName: instance.subtitle || instance.name, operationId: operation.id, version, zipballUrl, localZipPath,
         installPath, installPathMode: instance.installPathMode, companionPreset, preinstall, config,
       }));
       if (provisionResult?.ready === false) {
@@ -1223,9 +1173,7 @@ function SillyClientLauncher() {
   // 启动实例直接执行入口 (跳过密码阻断，在已完成密码校验或无密码时调用)
   const launchTavernDirect = useCallback(async (instance: TavernInstance) => {
     if (operations.busy) return;
-    const operation = operations.begin(instance.installDir || instance.id, "launch");
-    lastMigration.current = null;
-    setLaunchLogKey(operation.logKey);
+    const operation = operations.begin(instance.installDir || instance.id, "launch");    setLaunchLogKey(operation.logKey);
     setLaunchingId(instance.id);
     if (instance.type === "local") {
       setInstances(prev => prev.map(t => t.id === instance.id ? { ...t, status: "running" } : t));
@@ -1384,33 +1332,15 @@ function SillyClientLauncher() {
         }]);
   }, [doLaunch, isWeb, setLaunchLogs]);
 
-  const migrateCreatedInstance = useCallback(async (
-    instance: TavernInstance,
-    options: Parameters<typeof TarvenEnv.migrateInstance>[0],
-    operation: OperationContext,
-  ) => {
-    operation.assertCurrent();
-    setLaunchProgress({ pct: 20, text: "正在预检旧酒馆目录结构与数据完整性..." });
-    setLaunchLogs([{ msg: `【数据迁移】开始${options.mode === "takeover" ? "原地接管" : "复制迁移"}: ${options.sourcePath}`, level: "info" }]);
-    const result = await operation.wait(TarvenEnv.migrateInstance({ ...options, operationId: operation.id }));
-    if (result?.success !== true) throw new Error("数据迁移未成功，请检查来源文件是否完整");
-    const finalInstance = {
-      ...instance,
-      installPath: result.targetPath || options.targetPath || (options.mode === "takeover" ? options.sourcePath : instance.installPath),
-      installPathMode: "exact" as const,
-    };
-    setLastLaunchParams(finalInstance);
-    setLaunchProgress({ pct: 100, text: "数据迁移完成，实例已注册" });
-    setLaunchLogs(prev => [...prev, {
-      msg: options.mode === "takeover" ? "【成功】已原地接管目录，可随时启动运行。" : "【成功】旧酒馆数据复制迁移完成，可随时启动运行。",
-      level: "success",
-    }]);
-    setInstances(prev => prev.some(item => item.id === finalInstance.id) ? prev : [finalInstance, ...prev]);
-  }, [setLaunchLogs]);
-
   const createInstance = useCallback(async () => {
     if (operations.busy) {
       setNewInstanceError("请先等待当前任务完成，再创建新实例");
+      return;
+    }
+    // 存放位置一律由用户在向导中选定且为必选项（创建与迁移同一条规则）：
+    // 没有用户选定的位置，应用不会退回任何"软件默认路径"。
+    if (newInstanceMode === "local" && !newInstanceDir.trim()) {
+      setNewInstanceError("请先选择实例存放文件夹（必选）：点击「浏览」选择后，实例会创建在该文件夹内");
       return;
     }
     const now = Date.now();
@@ -1452,9 +1382,7 @@ function SillyClientLauncher() {
       candidateId = `${safeCandidateId} (${counter++})`;
     }
     const instanceId = candidateId;
-    const operation = operations.begin(instanceId, "create");
-    lastMigration.current = null;
-    setNewInstanceError(null);
+    const operation = operations.begin(instanceId, "create");    setNewInstanceError(null);
     setIsCreatingInstance(true);
     let operationStarted = false;
     let remoteCredentialsSaved = false;
@@ -1463,7 +1391,11 @@ function SillyClientLauncher() {
     try {
       const installDir = instanceId;
       pendingInstanceId = instanceId;
-      const resolvedCustomPath = exactInstallTarget(newInstanceDir, newInstancePathMode, instanceDisplayName);
+      // 存放文件夹（父目录）先落成实例根，再取它的一级子目录作为实例目录：
+      // 根更新失败会在这里就报出中文原因，而不是让嵌套路径去撞原生注册表规则。
+      const resolvedCustomPath = newInstanceMode === "local"
+        ? await resolveInstanceParent(newInstanceDir, "请先选择实例存放文件夹（必选）：点击「浏览」选择后，实例会创建在该文件夹内", instanceDisplayName)
+        : undefined;
       let selectedVersion = newInstanceVersion;
       let selectedZipballUrl: string | undefined;
 
@@ -1476,16 +1408,12 @@ function SillyClientLauncher() {
             setReleases(availableReleases);
           } catch (error) {
             if (error instanceof OperationCancelledError) throw error;
-            availableReleases = [{ tag: "1.12.0", prerelease: false, zipballUrl: "" }];
-            setReleases(availableReleases);
+            throw new Error("无法获取 SillyTavern 版本，请重新获取列表或导入本地 ZIP");
           }
         }
-        const selectedRelease = selectedVersion === "stable"
-          ? availableReleases.find(release => !release.prerelease) || availableReleases[0]
-          : availableReleases.find(release => release.tag === selectedVersion) || availableReleases[0];
-        if (!selectedRelease && !isWeb) throw new Error("无法获取当前 SillyTavern 版本，请检查网络后重试");
-        selectedVersion = selectedRelease?.tag || "1.12.0";
-        selectedZipballUrl = selectedRelease?.zipballUrl;
+        const selectedRelease = selectTavernRelease(availableReleases, selectedVersion);
+        selectedVersion = selectedRelease.tag;
+        selectedZipballUrl = selectedRelease.zipballUrl;
       }
 
       let port = 8000;
@@ -1513,25 +1441,10 @@ function SillyClientLauncher() {
         if (!preflight.online) throw new Error(preflight.error || "远程实例当前不可访问");
       }
 
-      const cleanSourcePath = migrationSourcePath.trim().replace(/^["']|["']$/g, "").trim();
-      let cleanCustomDest: string | undefined = undefined;
-      if (newInstanceMode === "import") {
-        if (!cleanSourcePath) {
-          throw new Error("请选择或输入旧酒馆文件夹或 ZIP 备份包路径");
-        }
-        if (migrationAccessMode === "takeover") {
-          cleanCustomDest = cleanSourcePath;
-        } else {
-          cleanCustomDest = exactInstallTarget(migrationCustomDest, migrationTargetPathMode, instanceDisplayName);
-        }
-      }
-
-      const effectiveInstallPath = newInstanceMode === "import"
-        ? cleanCustomDest
-        : (resolvedCustomPath || undefined);
+      const effectiveInstallPath = resolvedCustomPath;
 
       // 物理防覆盖预检：非原地接管模式下，目标目录不能与已有本地实例冲突
-      if (effectiveInstallPath && (newInstanceMode !== "import" || migrationAccessMode !== "takeover")) {
+      if (effectiveInstallPath) {
         const normTarget = effectiveInstallPath.toLowerCase().replace(/[\\/]+$/, "");
         const conflictingInstance = instances.find(inst => {
           if (inst.type !== "local" || !inst.installPath) return false;
@@ -1542,22 +1455,17 @@ function SillyClientLauncher() {
         }
       }
 
-      const allowPreinstall = newInstanceMode === "local"
-        || (newInstanceMode === "import" && migrationAccessMode === "copy");
+      const allowPreinstall = newInstanceMode === "local";
 
       const instance: TavernInstance = {
         id: instanceId,
         name: "SillyTavern",
-        subtitle: newInstanceMode === "import"
-          ? (migrationAccessMode === "takeover" ? (rawGivenName || "原地接管酒馆") : (rawGivenName || "已迁移酒馆"))
-          : instanceDisplayName,
-        version: newInstanceMode === "import"
-          ? "local"
-          : (newInstanceLocalZip ? "local" : normalizeStoredVersion(selectedVersion)),
+        subtitle: instanceDisplayName,
+        version: newInstanceLocalZip ? "local" : normalizeStoredVersion(selectedVersion),
         type: newInstanceMode === "remote" ? "remote" : "local",
         status: newInstanceMode === "remote" ? "offline" : "stopped",
         icon: newInstanceMode === "remote" ? <Cloud className="w-5 h-5" /> : <Folder className="w-5 h-5" />,
-        color: newInstanceMode === "import" ? "#e11d48" : "#6366f1",
+        color: "#6366f1",
         createdAt: new Date().toISOString().slice(0, 10),
         lastUsed: "—",
         totalUsage: "0s",
@@ -1609,33 +1517,13 @@ function SillyClientLauncher() {
       setLaunchError(null);
       setLaunchProgress({
         pct: 0,
-        text: newInstanceMode === "import"
-          ? (migrationAccessMode === "takeover" ? "准备原地接管旧酒馆..." : "准备执行数据迁移...")
-          : newInstanceMode === "local"
+        text: newInstanceMode === "local"
           ? "准备下载当前版本"
           : "准备检查连接"
       });
       setLaunchingId(instance.id);
       operationStarted = true;
 
-      if (newInstanceMode === "import") {
-        lastMigration.current = {
-          sourcePath: cleanSourcePath,
-          targetPath: migrationAccessMode === "copy" ? (effectiveInstallPath || undefined) : undefined,
-          instanceId: instance.installDir || instance.id,
-          mode: migrationAccessMode,
-          includeSecrets: migrationIncludeSecrets,
-          preinstall: instance.preinstall,
-        };
-        await migrateCreatedInstance(instance, lastMigration.current, operation);
-        setNewInstanceName("");
-        setMigrationSourcePath("");
-        setMigrationCustomDest("");
-        setMigrationTargetPathMode("exact");
-        setNewInstanceExtensionIds([]);
-        setNewInstanceCompanionPresetEnabled(false);
-        return;
-      }
 
       await provisionCreatedInstance(instance, operation);
       setNewInstanceName("");
@@ -1687,13 +1575,7 @@ function SillyClientLauncher() {
     newRemoteAuthEnabled,
     newRemoteAuthPassword,
     newRemoteAuthUsername,
-    migrationAccessMode,
-    migrationSourcePath,
-    migrationCustomDest,
-    migrationTargetPathMode,
-    migrationIncludeSecrets,
     provisionCreatedInstance,
-    migrateCreatedInstance,
     setLaunchLogs,
     releases,
   ]);
@@ -1711,19 +1593,19 @@ function SillyClientLauncher() {
     setLaunchingId(lastLaunchParams.id);
     try {
       if (operationPurpose === "create") {
-        if (lastMigration.current) {
-          await migrateCreatedInstance(lastLaunchParams, lastMigration.current, operation);
-        } else {
-          await provisionCreatedInstance(lastLaunchParams, operation);
-        }
+        await provisionCreatedInstance(lastLaunchParams, operation);
+        if (!operation.isCurrent) return;
+        setTimeout(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 1100);
       } else if (lastLaunchParams.type === "remote") {
         await openRemoteInstance(lastLaunchParams, operation);
+        if (!operation.isCurrent) return;
         setInstances(prev => prev.map(t => t.id === lastLaunchParams.id ? { ...t, status: "online" } : t));
-        operation.schedule(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 500);
+        setTimeout(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 500);
       } else {
         const result = await doLaunch(lastLaunchParams, operation);
+        if (!operation.isCurrent) return;
         setInstances(prev => prev.map(t => t.id === lastLaunchParams.id ? { ...t, status: "running", port: result.port } : t));
-        operation.schedule(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 800);
+        setTimeout(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 800);
       }
     } catch (err: any) {
       if (!operation.isCurrent || err instanceof OperationCancelledError) return;
@@ -1740,7 +1622,7 @@ function SillyClientLauncher() {
         setLaunchingId(null);
       }
     }
-  }, [lastLaunchParams, operationPurpose, doLaunch, openRemoteInstance, provisionCreatedInstance, migrateCreatedInstance, operations, setLaunchLogs]);
+  }, [lastLaunchParams, operationPurpose, doLaunch, openRemoteInstance, provisionCreatedInstance, operations, setLaunchLogs]);
 
   /** 终端拖拽调整大小(同时支持鼠标与触屏)。 */
   const startResize = (clientX: number, clientY: number) => {
@@ -2631,8 +2513,7 @@ function SillyClientLauncher() {
             setNewInstanceName("");
             setNewInstanceDir("");
             setNewInstancePathMode("exact");
-            setMigrationTargetPathMode("exact");
-            setNewInstanceUrl("http://");
+                  setNewInstanceUrl("http://");
             setNewRemoteAuthEnabled(false);
             setNewRemoteAuthUsername("");
             setNewRemoteAuthPassword("");
@@ -2948,25 +2829,6 @@ function SillyClientLauncher() {
         setNewRemoteAuthUsername={setNewRemoteAuthUsername}
         newRemoteAuthPassword={newRemoteAuthPassword}
         setNewRemoteAuthPassword={setNewRemoteAuthPassword}
-        migrationAccessMode={migrationAccessMode}
-        setMigrationAccessMode={setMigrationAccessMode}
-        migrationSourcePath={migrationSourcePath}
-        setMigrationSourcePath={handleSetMigrationSourcePath}
-        migrationIncludeSecrets={migrationIncludeSecrets}
-        setMigrationIncludeSecrets={setMigrationIncludeSecrets}
-        migrationCustomDest={migrationCustomDest}
-        setMigrationCustomDest={handleSetMigrationCustomDest}
-        onPickSourceFolder={handlePickSourceFolder}
-        onPickSourceZip={handlePickSourceZip}
-        onPickTargetFolder={handlePickTargetFolder}
-        migrationPreflight={
-          migrationSourcePath
-            ? {
-                version: "1.12.8",
-                nativePlugins: ["better-sqlite3", "sharp"],
-              }
-            : null
-        }
         newInstanceError={newInstanceError}
         isCreatingInstance={isCreatingInstance}
         createInstance={createInstance}
@@ -2985,6 +2847,7 @@ function SillyClientLauncher() {
 
       {/* 解耦业务组件: 版本选择下拉浮层 */}
       <VersionDropdownMenu
+        menuRef={versionDropdownRef}
         isOpen={verDropdownOpen}
         isClosing={isVerDropdownClosing}
         onClose={closeVersionDropdown}
@@ -2994,6 +2857,7 @@ function SillyClientLauncher() {
         currentVersion={newInstanceVersion}
         onSelectVersion={(tag) => {
           setNewInstanceVersion(tag);
+          setNewInstanceLocalZip(null);
           closeVersionDropdown();
         }}
         dropdownPos={verDropdownPos}

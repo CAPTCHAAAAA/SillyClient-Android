@@ -53,6 +53,30 @@ class NativeInstanceTransferTest {
     }
 
     @Test
+    fun relocationKeepsLocalDependenciesEvenWhenAnOldSharedTreeExists() = fixture { _, paths, operations, processes ->
+        val source = File(paths.serversDir, "Original")
+        val manifest = """{"dependencies":{"dependency":"1.0.0"}}"""
+        write(source, "server.js", "source")
+        write(source, "package.json", manifest)
+        write(source, "node_modules/dependency/package.json", """{"name":"dependency","version":"1.0.0","main":"index.js"}""")
+        write(source, "node_modules/dependency/index.js", "module.exports = 'local dependency';")
+        val lock = write(source, "package-lock.json", """{"lockfileVersion":3,"packages":{}}""")
+        val key = requireNotNull(DependencyArchive(File(paths.tarvenHome, "dependency-archives")).lockKey(lock))
+        val shared = File(paths.tarvenHome, "dependency-trees/$key")
+        write(shared, "package.json", manifest)
+        write(shared, "node_modules/dependency/package.json", """{"name":"dependency","version":"1.0.0","main":"index.js"}""")
+        write(shared, "node_modules/dependency/index.js", "module.exports = 'shared dependency';")
+        paths.installLocations.registerCommitted("stable-id", source)
+        val target = File(paths.installationsDir, "Moved")
+        val result = InstanceRelocation(paths, operations, processes, sameFilesystem = { _, _ -> false })
+            .relocate("stable-id", target.path, operation = operations.begin("stable-id"))
+        assertTrue(result.success)
+        assertEquals("module.exports = 'local dependency';", File(target, "node_modules/dependency/index.js").readText())
+        assertEquals("module.exports = 'shared dependency';", File(shared, "node_modules/dependency/index.js").readText())
+        assertEquals(target, paths.serverDirFor("stable-id", create = false))
+    }
+
+    @Test
     fun nativeTransferRejectsCollisionsWithoutOverwritingTargetFiles() = fixture { root, paths, operations, processes ->
         val source = File(root, "source")
         write(source, "server.js", "source")
@@ -165,6 +189,21 @@ class NativeInstanceTransferTest {
         assertThrows(IllegalStateException::class.java) {
             transfer.validatePortableSource(source, operations.begin("stable-id"))
         }
+        assertFalse(processes.hasProcesses())
+    }
+
+    @Test
+    fun configurationValidationDoesNotBorrowYamlFromTheRuntimeDirectory() = fixture { root, paths, operations, processes ->
+        val source = File(root, "source")
+        val config = write(source, "config.yaml", "dataRoot: ./data\n")
+        write(paths.tarvenHome, "node_modules/yaml/index.js",
+            "exports.parseDocument = () => ({ errors: [], get: () => './data' });")
+        val failure = assertThrows(IllegalStateException::class.java) {
+            NativeInstanceTransfer(paths, operations, processes).validatePortableSource(source, operations.begin("stable-id"))
+        }
+        assertTrue(failure.message.orEmpty().contains("实例本地 YAML 依赖不可用"))
+        assertEquals("dataRoot: ./data\n", config.readText())
+        assertFalse(File(source, "node_modules").exists())
         assertFalse(processes.hasProcesses())
     }
 }

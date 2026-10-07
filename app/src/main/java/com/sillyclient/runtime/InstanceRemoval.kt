@@ -8,6 +8,19 @@ import java.nio.file.attribute.BasicFileAttributes
 
 /** Keep the registered identity available until every user-content deletion has succeeded. */
 object InstanceRemoval {
+    /**
+     * Marker written into an instance directory whose deletion has been
+     * committed: the console forgets the instance immediately and the physical
+     * delete streams in the background. Scanners must skip marked directories.
+     */
+    const val REMOVAL_MARKER = ".sillyclient-removing"
+    internal const val MARKER_CONTENT = "sillyclient-removal-v1\n"
+
+    /**
+     * Names of directory renames left by older builds (`.name.sillyclient-removing-<uuid>`).
+     * Current builds never rename; these remnants are swept and never scanned.
+     */
+    internal val RENAME_PATTERN = Regex("""\..+\.sillyclient-removing-[0-9a-fA-F-]{36}""")
     internal fun remove(
         target: File,
         root: File,
