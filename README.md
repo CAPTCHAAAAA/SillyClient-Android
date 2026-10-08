@@ -1,6 +1,6 @@
 # SillyClient Android
 
-SillyClient 的 Android 客户端，同时保存 Android 与 Windows 共用的 React 控制台源码。
+SillyClient 的 Android 客户端。
 
 应用自带 arm64 Bionic Node.js。用户创建实例后，平台层下载并安装指定的 SillyTavern 版本，完成端口检查后再把实例标记为可用。控制台运行在 Capacitor WebView 中，SillyTavern 由独立的原生 WebView 承载。
 
