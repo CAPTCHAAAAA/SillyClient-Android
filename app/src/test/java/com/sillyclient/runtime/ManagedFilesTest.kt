@@ -27,7 +27,7 @@ class ManagedFilesTest {
         File(directory, name).apply { requireNotNull(parentFile).mkdirs(); writeText(text) }
 
     private fun link(link: File, target: File) {
-        link.parentFile.mkdirs()
+        link.parentFile?.mkdirs()
         val created = runCatching { Files.createSymbolicLink(link.toPath(), target.toPath()) }.isSuccess
         assumeTrue("Host does not permit creating symbolic links", created)
     }
@@ -50,7 +50,7 @@ class ManagedFilesTest {
         val regularFile = write(target, "node_modules/tool/cli.js")
         link(File(target, "node_modules/.bin/tool"), regularFile)
         link(File(target, "node_modules/.bin/missing"), File(root, "missing-target"))
-        link(File(target, "node_modules/linked-directory"), externalFile.parentFile)
+        link(File(target, "node_modules/linked-directory"), requireNotNull(externalFile.parentFile))
         assertTrue(ManagedFiles.deleteDirectory(target, root))
         assertFalse(Files.exists(target.toPath(), LinkOption.NOFOLLOW_LINKS))
         assertEquals("keep", externalFile.readText())
@@ -60,7 +60,7 @@ class ManagedFilesTest {
     fun refusesLinkedDeletionRoots() = withRoot { root ->
         val externalFile = write(root, "outside/chat.jsonl", "keep")
         val target = File(root, "linked-instance")
-        link(target, externalFile.parentFile)
+        link(target, requireNotNull(externalFile.parentFile))
         assertThrows(IllegalArgumentException::class.java) { ManagedFiles.deleteDirectory(target, root) }
         assertEquals("keep", externalFile.readText())
         Files.delete(target.toPath())

@@ -35,6 +35,7 @@ class InstallLocationRegistry(
     ) {
         fun retainedCount(): Int = retiredSources.size + locations.values.sumOf { it.retainedDirectories.size }
     }
+    @ConsistentCopyVisibility
     data class RelocationPlan internal constructor(
         val instanceId: String, val source: File, val target: File,
         internal val expectedKey: String?, internal val createdAt: Long

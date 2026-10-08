@@ -71,7 +71,6 @@ import com.sillyclient.runtime.BundledDependencyArchives
 import com.sillyclient.runtime.BundledRuntime
 import com.sillyclient.runtime.BundledTavernSource
 import com.sillyclient.runtime.LogService
-import com.sillyclient.runtime.MigrationPolicy
 import com.sillyclient.runtime.ManagedFiles
 import com.sillyclient.runtime.OperationCoordinator
 import com.sillyclient.runtime.ProcessSupervisor
@@ -413,6 +412,7 @@ class MainActivity : BridgeActivity() {
                         method.invoke(lwv, maxDeviceRefreshRate, 0)
                     } catch (_: Throwable) {}
                 }
+                @Suppress("DEPRECATION")
                 lwv.settings.apply {
                     domStorageEnabled = true
                     databaseEnabled = true
@@ -429,6 +429,7 @@ class MainActivity : BridgeActivity() {
         statusBarFixedPx = readStatusBarFixedPx()
 
         // iOS 同款 Full Bleed 架构：开启沉浸式透明导航栏，消除死黑条，让毛玻璃背景 100% 满版贴底
+        @Suppress("DEPRECATION")
         window.navigationBarColor = Color.TRANSPARENT
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             window.isNavigationBarContrastEnforced = false
@@ -976,8 +977,8 @@ class MainActivity : BridgeActivity() {
                 previousStop.get(5, TimeUnit.SECONDS)
                 operations.ensureCurrent(operation)
                 paths.ensureDirs()
-                extractNativeLibs(paths)
-                    instanceInstaller(paths).prepare(
+                ensureRuntimeReady()
+                instanceInstaller(paths).prepare(
                         targetServerDir,
                         ensureActive = { operations.ensureCurrent(operation) },
                         extract = { directory ->
@@ -1887,7 +1888,7 @@ class MainActivity : BridgeActivity() {
     // SERVER PROVISIONING
     // ============================================
 
-    private fun extractNativeLibs(@Suppress("UNUSED_PARAMETER") paths: RuntimePaths) {
+    private fun ensureRuntimeReady() {
         bundledRuntime.awaitReady(::ensureOperationActive)
     }
 
@@ -2356,8 +2357,8 @@ class MainActivity : BridgeActivity() {
         }
     )
 
-    /** 扫描本地已存在的酒馆实例。返回五元组:instanceId, version, path, sizeBytes, hasServer。 */
-    fun scanInstances(): List<Quint<String, String, String, Long, Boolean>> {
+    /** 扫描本地已存在的酒馆实例。返回强类型实例摘要:instanceId, version, path, sizeBytes, hasServer。 */
+    fun scanInstances(): List<InstanceSummary> {
         // Console refreshes double as the retry point for interrupted removals:
         // marked or renamed remnants are hidden from the scan and reclaimed here.
         // Never start a purge while a user operation is running: both compete for
@@ -2367,16 +2368,16 @@ class MainActivity : BridgeActivity() {
             runCatching { sweepRemovalRemnants(RuntimePaths.from(this).serversDir, "maintenance") }
         }
         return instanceRepository.scan().map { info ->
-            Quint(info.instanceId, info.version, info.path, info.sizeBytes, info.hasServer)
+            InstanceSummary(info.instanceId, info.version, info.path, info.sizeBytes, info.hasServer)
         }
     }
 
     /** 实例详情:version, path, sizeBytes, createdAt, status。 */
-    fun getInstanceInfo(instanceId: String, port: Int, installPath: String? = null): Quint<String, String, Long, String, String> {
+    fun getInstanceInfo(instanceId: String, port: Int, installPath: String? = null): InstanceDetails {
         val paths = RuntimePaths.from(this)
         val dir = paths.serverDirFor(instanceId, installPath, create = false)
         val info = instanceRepository.info(dir)
-        return Quint(info.version, info.path, info.sizeBytes, info.createdAt, info.status)
+        return InstanceDetails(info.version, info.path, info.sizeBytes, info.createdAt, info.status)
     }
 
     fun checkLegacyInstances(): List<InstanceRelocation.LegacyInstance> =
@@ -2469,7 +2470,7 @@ class MainActivity : BridgeActivity() {
      *  top = 仅挖孔摄像头高度(非整个状态栏),前端顶栏用此值避让。
      *  若 cutout 尚未就绪(返回 0),fallback 到 statusBarFixedPx 的挖孔部分。
      */
-    fun getSafeInsets(): Quartet<Int, Int, Int, Int> {
+    fun getSafeInsets(): InsetsRect {
         var cutoutTop = 0
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             val cutout = window.decorView.rootWindowInsets?.displayCutout
@@ -2477,7 +2478,7 @@ class MainActivity : BridgeActivity() {
         }
         // Fallback: 若运行时 cutout 未就绪,用 onCreate 时测量的 statusBarFixedPx
         if (cutoutTop <= 0) cutoutTop = statusBarFixedPx
-        return Quartet(cutoutTop, 0, 0, 0)
+        return InsetsRect(cutoutTop, 0, 0, 0)
     }
 
     /** 启用/禁用酒馆 WebView 下拉刷新。 */
@@ -2778,9 +2779,27 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    /** 简单五元组(Kotlin 标准库无 Quintuple)。 */
-    data class Quint<A, B, C, D, E>(val first: A, val second: B, val third: C, val fourth: D, val fifth: E)
-    data class Quartet<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
+    /** 强类型实例及环境数据结构，取代历史未命名的通用元组。 */
+    data class InstanceSummary(
+        val instanceId: String,
+        val version: String,
+        val path: String,
+        val sizeBytes: Long,
+        val hasServer: Boolean
+    )
+    data class InstanceDetails(
+        val version: String,
+        val path: String,
+        val sizeBytes: Long,
+        val createdAt: String,
+        val status: String
+    )
+    data class InsetsRect(
+        val top: Int,
+        val bottom: Int,
+        val left: Int,
+        val right: Int
+    )
 
     private fun pollUntilReady(
         url: String,
@@ -3017,235 +3036,6 @@ class MainActivity : BridgeActivity() {
         return dp(24)
     }
 
-    /**
-     * 数据迁移：将旧酒馆目录或 ZIP 压缩包迁入新实例目录。
-     * 支持 SAF 目录树 (content://.../tree/...)、SAF 压缩包、本地文件路径及解压排除。
-     */
-    fun migrateInstance(
-        sourcePath: String,
-        instanceId: String,
-        mode: String,
-        includeSecrets: Boolean,
-        targetPath: String? = null,
-        operationId: String? = null,
-        preinstall: PreinstalledExtensionsRequest? = null
-    ): Boolean {
-        val paths = RuntimePaths.from(this)
-        val id = RuntimePaths.normalizeInstanceId(instanceId)
-        val managedTarget = paths.launchDirectoryFor(id, targetPath)
-        MigrationPolicy.validate(sourcePath, managedTarget, mode, targetPath)
-        check(!serverReady && !isWebViewVisible && !operations.hasPendingWork()) { "请先停止当前实例或等待当前任务结束后再迁移" }
-        val operation = operations.begin(id, operationId)
-        cleanupService.invalidate()
-        val stopped = processSupervisor.stopAllAsync()
-        val migrated = try {
-            operations.run(operation) {
-                stopped.get(15, TimeUnit.SECONDS)
-                operations.ensureCurrent(operation)
-                paths.ensureDirs()
-                instanceInstaller(paths).prepare(
-                    managedTarget,
-                    ensureActive = { operations.ensureCurrent(operation) },
-                    extract = { staging ->
-                        val verified = migrateInstanceInternal(sourcePath, id, mode, includeSecrets, staging.absolutePath)
-                        if (verified && preinstall?.extensionIds?.isNotEmpty() == true) {
-                            RuntimeConfiguration(paths, operations, processSupervisor).validateStandardDataRoot(staging, operation)
-                            val transaction = PreinstalledExtensionInstaller.install(
-                                this, staging, preinstall, operations, operation, ::appendLog
-                            )
-                            operations.ensureCurrent(operation)
-                            transaction.commit()
-                        }
-                        verified
-                    },
-                    installDependencies = { directory -> runNpmInstall(paths, directory) },
-                    commit = { action -> operations.commit(operation, action) },
-                    instanceId = id
-                )
-                instanceRepository.invalidate(managedTarget)
-                updateProgress(100, "Migration verified")
-                appendLog("【成功】数据迁移完成，实例 [$instanceId] 已就绪！")
-                true
-            }
-        } finally {
-            operations.finish(operation)
-        }
-        if (migrated) archiveDependenciesInBackground(paths, managedTarget)
-        return migrated
-    }
-
-    private fun migrateInstanceInternal(
-        sourcePath: String,
-        instanceId: String,
-        mode: String,
-        includeSecrets: Boolean,
-        targetPath: String? = null
-    ): Boolean {
-        val paths = RuntimePaths.from(this)
-        paths.ensureDirs()
-        val targetServerDir = if (!targetPath.isNullOrBlank()) File(targetPath) else paths.serverDirFor(instanceId, create = false)
-
-        val isContentUri = sourcePath.startsWith("content://")
-        val effectiveMode = mode
-
-        val modeText = if (effectiveMode == "takeover") "原地接管" else "复制迁移"
-        appendLog("【数据迁移】开始${modeText}: $sourcePath")
-        updateProgress(10, "Validating migration source")
-
-        // 复制迁移模式
-        targetServerDir.mkdirs()
-
-        if (isContentUri) {
-            val uri = Uri.parse(sourcePath)
-            val isTree = sourcePath.contains("/tree/")
-            if (isTree) {
-                appendLog("> 正在从系统选择的文件夹提取数据...")
-                updateProgress(25, "Accessing document tree")
-                val treeDoc = DocumentFile.fromTreeUri(this, uri)
-                if (treeDoc == null || !treeDoc.isDirectory) {
-                    appendLog("[ERR] 无法访问选中的目录树，可能缺乏访问权限: $sourcePath")
-                    return false
-                }
-                val copiedCount = copyDocumentTreeFiltered(treeDoc, targetServerDir, includeSecrets) { count ->
-                    if (count % 50 == 0) {
-                        updateProgress(25 + (count / 25).coerceAtMost(60), "Copying data ($count files)")
-                    }
-                }
-                appendLog("[OK] 目录数据提取完成，共复制 $copiedCount 个文件")
-            } else {
-                appendLog("> 正在解压备份文件流...")
-                updateProgress(25, "Extracting backup stream")
-                try {
-                    val archive = File.createTempFile("migration-", ".zip",
-                        paths.tmpDir.apply { check(isDirectory || mkdirs()) { "Cannot prepare the migration staging directory" } })
-                    try {
-                        contentResolver.openInputStream(uri)?.use { inStream ->
-                            FileOutputStream(archive).use { outStream -> copyWhileActive(inStream, outStream) }
-                        } ?: throw IOException("无法打开所选文件的输入流")
-                        val extracted = com.sillyclient.runtime.SourceArchive.extract(
-                            archive, targetServerDir, ::ensureOperationActive,
-                            onProgress = { count ->
-                                if (count % 100 == 0) {
-                                    updateProgress(25 + (count / 60).coerceAtMost(55), "Extracting data ($count files)")
-                                }
-                            })
-                        appendLog("[OK] 备份文件流解压完成，共迁移 $extracted 个文件")
-                    } finally {
-                        if (!archive.delete() && archive.exists()) appendLog("[WARN] 迁移缓存文件保留待后续清理")
-                    }
-                } catch (e: Exception) {
-                    appendLog("[ERR] 读取文件流失败: ${e.message}")
-                    return false
-                }
-            }
-        } else {
-            val sourceFile = File(sourcePath)
-            val isZip = sourcePath.endsWith(".zip", ignoreCase = true) ||
-                    (sourceFile.exists() && sourceFile.isFile && sourceFile.length() > 0)
-
-            if (isZip) {
-                if (!sourceFile.exists() || !sourceFile.isFile) {
-                    appendLog("[ERR] 来源 ZIP 文件不存在: $sourcePath")
-                    return false
-                }
-                appendLog("> 正在解压旧酒馆备份文件...")
-                updateProgress(30, "Extracting backup archive")
-                val extracted = com.sillyclient.runtime.SourceArchive.extract(
-                    sourceFile, targetServerDir, ::ensureOperationActive,
-                    onProgress = { count ->
-                        if (count % 100 == 0) {
-                            updateProgress(30 + (count / 60).coerceAtMost(45), "Extracting data ($count files)")
-                        }
-                    })
-                appendLog("[OK] 备份解压完成，共迁移 $extracted 个文件")
-            } else {
-                if (!sourceFile.exists() || !sourceFile.isDirectory) {
-                    appendLog("[ERR] 来源目录不存在: $sourcePath")
-                    return false
-                }
-
-                appendLog("> 正在复制目录数据...")
-                updateProgress(30, "Copying directory")
-                var copiedFiles = 0
-                copyDirectoryFiltered(sourceFile, targetServerDir, includeSecrets) { count ->
-                    copiedFiles = count
-                    if (copiedFiles % 50 == 0) {
-                        updateProgress(30 + (copiedFiles / 20).coerceAtMost(55), "Copying data ($copiedFiles files)")
-                    }
-                }
-                appendLog("[OK] 目录复制完成，共迁移 $copiedFiles 个文件")
-            }
-        }
-
-        // SourceArchive 无逐条过滤；解压后按用户选择移除密钥文件
-        if (!includeSecrets) {
-            File(targetServerDir, "secrets.json").delete()
-            File(targetServerDir, "secrets.json.enc").delete()
-        }
-
-        // 统一检测与补全运行底座 (server.js 及 node_modules)
-        val serverJs = File(targetServerDir, "server.js")
-        if (!serverJs.exists()) {
-            appendLog("> 纯数据备份，正在匹配运行底座...")
-            updateProgress(85, "Configuring base runtime")
-            val baseInstance = paths.serverDirFor("default", create = false)
-            if (baseInstance.exists() && File(baseInstance, "server.js").exists()) {
-                copyBaseRuntimeExcludingData(baseInstance, targetServerDir)
-                appendLog("[OK] 基础底座配置完成")
-            }
-        }
-
-        updateProgress(95, "Verifying runtime")
-        ensureOperationActive()
-        if (!File(targetServerDir, "server.js").isFile) {
-            appendLog("[ERR] 备份中未找到 server.js，且没有可用的基础运行底座")
-            return false
-        }
-        if (!File(paths.usrDir, "lib/node_modules/npm/bin/npm-cli.js").isFile) extractNativeLibs(paths)
-        if (!MigrationPolicy.verify(targetServerDir, { runNpmInstall(paths, targetServerDir) }, ::instanceDependenciesComplete)) {
-            appendLog("[ERR] 迁移依赖安装失败；源文件和迁入的数据均已保留")
-            return false
-        }
-        ensureOperationActive()
-        return true
-    }
-
-    private fun copyDocumentTreeFiltered(
-        treeDoc: DocumentFile,
-        targetDir: File,
-        includeSecrets: Boolean,
-        onProgress: (Int) -> Unit
-    ): Int {
-        var count = 0
-        fun traverse(dirDoc: DocumentFile, currentDest: File) {
-            currentDest.mkdirs()
-            val files = dirDoc.listFiles()
-            for (file in files) {
-                ensureOperationActive()
-                val name = file.name ?: continue
-                if (name == ".git" || name == ".cache" || name == "node_modules") continue
-                if (!includeSecrets && (name == "secrets.json" || name == "secrets.json.enc")) continue
-
-                if (file.isDirectory) {
-                    val nextDest = safeZipOutputFile(currentDest, name)
-                    traverse(file, nextDest)
-                } else if (file.isFile) {
-                    val outFile = safeZipOutputFile(currentDest, name)
-                    val inStream = contentResolver.openInputStream(file.uri)
-                        ?: throw IOException("无法读取所选文件: $name")
-                    inStream.use {
-                        FileOutputStream(outFile).use { outStream ->
-                            copyWhileActive(inStream, outStream)
-                        }
-                    }
-                    count++
-                    onProgress(count)
-                }
-            }
-        }
-        traverse(treeDoc, targetDir)
-        return count
-    }
 
     private fun copyBaseRuntimeExcludingData(srcDir: File, destDir: File) {
         val entries = srcDir.listFiles() ?: return
@@ -3281,35 +3071,6 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    private fun copyDirectoryFiltered(
-        srcDir: File,
-        destDir: File,
-        includeSecrets: Boolean,
-        onProgress: (Int) -> Unit
-    ) {
-        var count = 0
-        srcDir.walkTopDown()
-            .onEnter { it == srcDir || it.name !in setOf(".git", ".cache", "node_modules") }
-            .forEach { file ->
-            ensureOperationActive()
-            require(ManagedFiles.isUnlinked(file)) { "Linked migration files are not supported" }
-            val relPath = file.relativeTo(srcDir).path
-            if (relPath in setOf(".sc-identity", InstanceInstaller.DEPENDENCY_MARKER) ||
-                (!relPath.contains(File.separatorChar) && relPath.startsWith(InstanceInstaller.STAGING_PREFIX))) return@forEach
-            if (!includeSecrets && (file.name == "secrets.json" || file.name == "secrets.json.enc")) {
-                return@forEach
-            }
-            val target = File(destDir, relPath)
-            if (file.isDirectory) {
-                target.mkdirs()
-            } else {
-                target.parentFile?.mkdirs()
-                file.inputStream().use { input -> target.outputStream().use { copyWhileActive(input, it) } }
-                count++
-                onProgress(count)
-            }
-        }
-    }
 
     override fun onDestroy() {
         externalPopups.clear()

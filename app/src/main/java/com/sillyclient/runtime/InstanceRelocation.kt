@@ -60,8 +60,10 @@ class InstanceRelocation(
         require(operation.instanceId == id) { "Relocation operation belongs to another instance" }
         operations.ensureCurrent(operation)
         val plan = paths.installLocations.planRelocation(id, targetPath, installPath)
-        require(plan.source.parentFile != null && plan.target.parentFile != null &&
-            plan.source.parentFile.canonicalFile == plan.target.parentFile.canonicalFile) {
+        val sourceParent = plan.source.parentFile
+        val targetParent = plan.target.parentFile
+        require(sourceParent != null && targetParent != null &&
+            sourceParent.canonicalFile == targetParent.canonicalFile) {
             "重命名必须在同一父目录内进行"
         }
         val sourceIdentity = attributes(plan.source)
@@ -242,7 +244,8 @@ class InstanceRelocation(
          * the only reliable way to decide between moving and copying.
          */
         private fun onSameFilesystem(source: File, parent: File): Boolean = try {
-            val probe = Files.createTempFile(source.parentFile.toPath(), ".sc-fsprobe-", null)
+            val sourceParent = source.parentFile ?: return false
+            val probe = Files.createTempFile(sourceParent.toPath(), ".sc-fsprobe-", null)
             val target = File(parent, probe.fileName.toString() + ".probe")
             try {
                 Files.move(probe, target.toPath(), StandardCopyOption.ATOMIC_MOVE)

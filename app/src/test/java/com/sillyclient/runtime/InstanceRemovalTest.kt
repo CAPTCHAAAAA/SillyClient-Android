@@ -50,8 +50,8 @@ class InstanceRemovalTest {
             val target = File(instances, "named-directory").apply { mkdirs() }
             File(target, "server.js").writeText("server")
             File(target, "package.json").writeText("{}")
-            File(target, "node_modules/dependency").apply { parentFile.mkdirs(); writeText("dependency") }
-            File(target, "data/chat.jsonl").apply { parentFile.mkdirs(); writeText("history") }
+            File(target, "node_modules/dependency").apply { parentFile?.mkdirs(); writeText("dependency") }
+            File(target, "data/chat.jsonl").apply { parentFile?.mkdirs(); writeText("history") }
             val registry = InstallLocationRegistry(root, instances, File(root, "installations"), File(root, "state/locations.json"))
             registry.registerCommitted("instance-id", target)
             test(Fixture(root, instances, target, registry))
@@ -109,7 +109,7 @@ class InstanceRemovalTest {
         val marker = File(fixture.target, ".sc-identity")
         val identity = marker.readText()
         val remaining = File(fixture.target, "node_modules/remaining/index.js").apply {
-            parentFile.mkdirs()
+            parentFile?.mkdirs()
             writeText("partial dependency")
         }
         assertThrows(CancellationException::class.java) {

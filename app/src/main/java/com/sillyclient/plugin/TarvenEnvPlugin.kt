@@ -745,11 +745,11 @@ class TarvenEnvPlugin : Plugin() {
                 val arr = JSArray()
                 for (s in act.scanInstances()) {
                     arr.put(JSObject()
-                        .put("instanceId", s.first)
-                        .put("version", s.second)
-                        .put("path", s.third)
-                        .put("sizeBytes", s.fourth)
-                        .put("hasServer", s.fifth))
+                        .put("instanceId", s.instanceId)
+                        .put("version", s.version)
+                        .put("path", s.path)
+                        .put("sizeBytes", s.sizeBytes)
+                        .put("hasServer", s.hasServer))
                 }
                 call.resolve(JSObject().put("instances", arr))
             } catch (error: Exception) {
@@ -770,12 +770,12 @@ class TarvenEnvPlugin : Plugin() {
                 val info = act.getInstanceInfo(instanceId, port, installPath)
                 val ret = JSObject()
                 ret.put("instanceId", instanceId)
-                ret.put("version", info.first)
-                ret.put("path", info.second)
-                ret.put("sizeBytes", info.third)
-                ret.put("createdAt", info.fourth)
+                ret.put("version", info.version)
+                ret.put("path", info.path)
+                ret.put("sizeBytes", info.sizeBytes)
+                ret.put("createdAt", info.createdAt)
                 ret.put("port", port)
-                ret.put("status", info.fifth)
+                ret.put("status", info.status)
                 call.resolve(ret)
             } catch (error: Exception) {
                 Log.w(TAG, "reject: ${error.message}")
@@ -1357,39 +1357,10 @@ class TarvenEnvPlugin : Plugin() {
         }.start()
     }
 
-    /** Copy into a fresh managed instance; unsupported execution paths fail before writes. */
+    /** 数据迁移已于 1.12.0 正式下线，统一使用“创建实例 + 导入数据（ZIP）”模式。 */
     @PluginMethod
     fun migrateInstance(call: PluginCall) {
-        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
-        val sourcePath = call.getString("sourcePath") ?: run { call.reject("sourcePath required"); return }
-        val instanceId = call.getString("instanceId") ?: "migrated-${System.currentTimeMillis()}"
-        val mode = call.getString("mode", "copy") ?: "copy"
-        val includeSecrets = call.getBoolean("includeSecrets", false) ?: false
-        val targetPath = call.getString("targetPath")
-        val operationId = call.getString("operationId")
-        val preinstall = try { parsePreinstall(call) } catch (error: Exception) {
-            Log.w(TAG, "reject: ${error.message}")
-            call.reject(error.message ?: "Invalid preinstall request", error)
-            return
-        }
-
-        Thread {
-            try {
-                val ok = act.migrateInstance(sourcePath, instanceId, mode, includeSecrets, targetPath, operationId, preinstall)
-                if (ok) {
-                    val ret = JSObject()
-                    ret.put("success", true)
-                    ret.put("instanceId", instanceId)
-                    ret.put("targetPath", act.getInstanceInfo(instanceId, 8000).second)
-                    call.resolve(ret)
-                } else {
-                    call.reject("数据迁移失败，请检查来源文件是否完整")
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("SillyClient", "migrateInstance error", e)
-                call.reject("migrateInstance failed: ${e.message}")
-            }
-        }.start()
+        call.reject("旧版数据迁移已下线；请直接创建新实例，并在「实例管理 → 存储路径」中使用「导入数据（ZIP）」无损恢复用户数据。")
     }
 
     @PluginMethod

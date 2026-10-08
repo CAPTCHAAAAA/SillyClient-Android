@@ -72,7 +72,8 @@ class BundledRuntime(
         // atomically: extraction builds a fresh staging tree on the same volume
         // that is swapped in only after it verifies complete, so a partial wipe
         // or a leftover entry can never surface as a half-written runtime.
-        val staging = Files.createTempDirectory(paths.usrDir.parentFile.toPath(), ".usr-staging-").toFile()
+        val usrParent = paths.usrDir.parentFile ?: paths.tarvenHome
+        val staging = Files.createTempDirectory(usrParent.toPath(), ".usr-staging-").toFile()
         try {
             for (asset in listOf("bootstrap/rootfs/rootfs-libs.zip", "bootstrap/rootfs/rootfs-usr.zip")) {
                 openAsset(asset).use { RuntimeFileUtils.unzipStream(it, staging) {

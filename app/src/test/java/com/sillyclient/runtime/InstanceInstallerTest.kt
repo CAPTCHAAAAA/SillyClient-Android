@@ -59,7 +59,7 @@ class InstanceInstallerTest {
     @Test
     fun failedExtractionAndDependencyInstallationRemoveOnlyOwnedSibling() = withRoot { root ->
         val servers = File(root, "servers")
-        val neighbor = File(servers, "other/data.json").apply { parentFile.mkdirs(); writeText("keep") }
+        val neighbor = File(servers, "other/data.json").apply { parentFile?.mkdirs(); writeText("keep") }
         val target = File(servers, "new")
         for (extractSucceeds in listOf(false, true)) {
             assertThrows(IllegalStateException::class.java) {
@@ -96,7 +96,7 @@ class InstanceInstallerTest {
     fun failedNewInstallDelegatesOnlyItsOwnedStageWithTheOwnershipMarkerIntact() = withRoot { root ->
         val servers = File(root, "servers")
         val target = File(servers, "new")
-        val neighbor = File(servers, "keep/chat.jsonl").apply { parentFile.mkdirs(); writeText("keep") }
+        val neighbor = File(servers, "keep/chat.jsonl").apply { parentFile?.mkdirs(); writeText("keep") }
         var cleanupCalls = 0
         val installer = InstanceInstaller(servers, removeStaging = { directory, scope, marker, verify ->
             cleanupCalls++

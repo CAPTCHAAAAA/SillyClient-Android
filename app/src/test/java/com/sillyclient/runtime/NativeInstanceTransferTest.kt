@@ -20,7 +20,7 @@ class NativeInstanceTransferTest {
             else Files.createTempDirectory(parent.toPath(), "native-transfer-").toFile()
         val home = File(root, "tarven")
         val paths = RuntimePaths(root, home, File(home, "bootstrap"), File(home, "servers"), File(home, "usr"),
-            File(home, "usr/lib"), File(home, "tmp"), File(home, "logs"), node!!.parentFile, node)
+            File(home, "usr/lib"), File(home, "tmp"), File(home, "logs"), requireNotNull(node!!.parentFile), node)
         paths.ensureDirs()
         try {
             OperationCoordinator().use { operations ->
@@ -30,7 +30,7 @@ class NativeInstanceTransferTest {
     }
 
     private fun write(root: File, path: String, content: String = "fixture"): File = File(root, path).apply {
-        parentFile!!.mkdirs()
+        parentFile?.mkdirs()
         writeText(content)
     }
 
