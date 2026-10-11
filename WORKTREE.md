@@ -113,3 +113,4 @@ cd D:\BACKUP\Project\SillyClient\.worktrees\release-hardening-android
 | 2026-10-09 | Agent (9912e36) | 纯净后端骨架重构：强类型领域模型取代元组，死代码剥离，清零编译器告警并推送远端 | 已推送 |
 | 2026-10-09 | Agent | 实例导出（ZIP）纯净重构：彻底消灭硬编码路径，新增 `InstanceExport` 领域服务与 `InstanceExportTest`，接入 SAF 另存为选择器，全量单测通过 | 已入库 (a5b2043) |
 | 2026-10-11 | Agent (cac5971) | 前端同步：以 Main `580ab07` 视觉基准三方合并竖版管理菜单/3D 卡片/拖拽重排/按压效果，routes 50 处冲突逐一手裁，平台契约与设置精简全保留，SAF 导出/ZIP 导入嫁接新存储页签；typecheck 0 错误、24 项单测全绿、Release APK 重打包通过 | 已推送 |
+| 2026-10-11 | 用户 | `adb install -r` 装机（af72222f，dumpsys 确认 versionName 1.12.0 / versionCode 70），真机上手实测 | **验收通过** |
