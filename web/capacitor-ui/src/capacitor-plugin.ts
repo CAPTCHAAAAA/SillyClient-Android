@@ -359,8 +359,12 @@ export interface TarvenEnvPlugin {
     operationId?: string
   }): Promise<{ imported: number; bytes: number; skipped: number }>
 
-  /** 导出实例为 ZIP 到 Download/SillyClient-导出，返回保存路径与字节数。 */
-  exportInstance(options: { instanceId: string; installPath?: string }): Promise<{ path: string; bytes: number }>
+  /** 导出实例为 ZIP（支持可选 targetPath；未指定时调起系统文件保存器让用户选择保存位置，返回保存路径与字节数） */
+  exportInstance(options: {
+    instanceId: string
+    installPath?: string
+    targetPath?: string
+  }): Promise<{ path: string; bytes: number; uri?: string }>
 
   /** 设置或更新实例访问密码（本地安全开关） */
   setInstancePassword(options: {
