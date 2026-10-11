@@ -16,10 +16,16 @@
 
 ---
 
-## 二、 当前未提交现场明细 (Current Uncommitted WIP Inventory)
+## 二、 当前现场明细 (Current State)
 
-用户明确指令：**“前端的修改仍保留在工作树 并指明这是安卓前端的工作树”**。
-以下修改目前保留在工作树中（未执行 Git 提交），所有状态均通过全量编译与单测验证：
+**现场已全部提交并推送（2026-10-11，工作树干净）**：
+
+| 提交 | 内容 |
+| :--- | :--- |
+| `a5b2043` | 实例导出接入系统 SAF 另存为：`InstanceExport` 领域服务 + `TarvenEnvPlugin`/`MainActivity` 委托 + `InstanceExportTest`，拔除硬编码 `Download/SillyClient-导出` |
+| `cac5971` | 同步通用前端竖版管理菜单与 3D 物理卡片基线（1.12.0）：以 `SillyClient_Main` `580ab07` 为视觉基准三方合并，32 文件 +3674/−1359，含 `assets/public` 重打包产物与本中枢文档 |
+
+保留的核心改动语义（均已入库）：
 
 | 变更文件 | 职责模块 | 核心改动摘要 |
 | :--- | :--- | :--- |
@@ -28,9 +34,10 @@
 | `app/src/main/java/com/sillyclient/MainActivity.kt` | 原生宿主 (修改) | 将实例压缩打包逻辑委托给 `InstanceExport`，彻底消除所有私设导出路径硬编码 |
 | `app/src/main/java/com/sillyclient/plugin/TarvenEnvPlugin.kt` | Capacitor 插件 (修改) | `exportInstance`：未传 `targetPath` 时调起 Android 系统级 SAF 另存为选择器（`ACTION_CREATE_DOCUMENT`，类型 `application/zip`），让用户自主选择保存目录与文件名；流式写入所选 URI；取消时静默复位 |
 | `web/capacitor-ui/src/capacitor-plugin.ts` | 前端插件契约 (修改) | `exportInstance` 接口强类型扩展，接收可选 `targetPath`，回传 `{ path, bytes, uri? }` |
-| `web/capacitor-ui/src/components/modals/AppSettingsDrawer.tsx` | 设置面板 (修改) | 遵照用户要求纯净删除“选择默认实例存储路径”与“实例备份”等鸡肋功能；Tab 纯净收拢为【通用】与【维护】两项；将【浏览数据】迁入【维护】面板 |
-| `web/capacitor-ui/src/components/modals/ManageInstanceModal.tsx` | 实例管理 (修改) | 废除硬编码的“打包到 下载/SillyClient-导出”提示，更新为“选择保存位置并导出完整实例压缩包（ZIP）”，点击导出调起系统文件保存器，取消时优雅复位，完成展示体积 (MB) |
-| `web/capacitor-ui/src/dev/native-preview.ts` | 前端走查桩 (修改) | 剔除假数据中的硬编码路径，对齐真实运行时契约 |
+| `web/capacitor-ui/src/components/modals/AppSettingsDrawer.tsx` | 设置面板 (修改) | 彻底删除“选择默认实例存储路径”与“实例备份”等鸡肋功能；Tab 纯净收拢为【通用】与【维护】两项；将【浏览数据】迁入【维护】面板 |
+| `web/capacitor-ui/src/components/modals/ManageInstanceModal.tsx` | 实例管理 (修改) | 竖版管理菜单 687×843 重设计 + 导出/导入 ZIP 以 `ManageItem` 风格嫁接“存储路径”页签（导出走系统 SAF 保存器，取消优雅复位，完成展示体积 MB） |
+| `web/capacitor-ui/src/routes/index.tsx` | 首页路由 (修改) | 安装位置 root 语义（实例=所选文件夹一级子目录）与防覆盖预检保留；JSON 备份导入退役；拖拽重排与 isLocalPreview 同步自新前端 |
+| `web/capacitor-ui/src/components/common/FlipCard.tsx/.css` | 3D 卡片 (新增) | 同步自主仓 9cd200e 基线，InstanceCard 重构为 FlipCard 物理翻面 |
 | `app/src/main/assets/public/` | Android 资产 (同步) | 前端最新 Vite 生产打包产物，已通过官方同步脚本同步至原生资源目录 |
 
 ---
@@ -90,10 +97,10 @@ cd D:\BACKUP\Project\SillyClient\.worktrees\release-hardening-android
 .\gradlew.bat :app:assembleRelease --no-daemon
 ```
 
-### 4. 当前最新构建产物指纹
-- **APK 路径**: `app/build/outputs/apk/release/app-release.apk`
-- **文件体积**: `198,155,160` 字节（约 188.97 MB）
-- **SHA-256 校验**: `037348D74AD496FE6EE093799857EBD7BF0DA9F589EDF873BF843E48CF31DAFF`
+### 4. 当前最新构建产物指纹（2026-10-11 前端同步版）
+- **APK 路径**: `app/build/outputs/apk/release/app-release.apk`（已归档 `Local/artifacts/v1.12.0/SillyClient-Android-v1.12.0.apk`）
+- **文件体积**: `198,162,740` 字节（约 188.97 MB）
+- **SHA-256 校验**: `cc330ac7448a10495910c1976d0b3b93ca0f53af3cb6aff74c6706b7fcc451a9`
 - **版本号**: `versionCode = 70` / `versionName = "1.12.0"`
 
 ---
@@ -104,5 +111,5 @@ cd D:\BACKUP\Project\SillyClient\.worktrees\release-hardening-android
 | :--- | :--- | :--- | :---: |
 | 2026-10-08 | Agent (77d088b) | Android 1.12.0：压缩包数据无损导入 + 迁移链路下线，436 项单测全绿，产出 APK a9e27af9 | 已交付 |
 | 2026-10-09 | Agent (9912e36) | 纯净后端骨架重构：强类型领域模型取代元组，死代码剥离，清零编译器告警并推送远端 | 已推送 |
-| 2026-10-09 | Agent | 设置面板纯净精简：删除“默认实例存储路径”与“实例备份”，将“浏览数据”迁入“维护”面板 | 工作树 WIP |
-| 2026-10-09 | Agent | 实例导出（ZIP）纯净重构：彻底消灭硬编码路径，新增 `InstanceExport` 领域服务与 `InstanceExportTest`，接入 SAF 另存为选择器，全量单测通过，产出最新 Release APK (SHA-256: `037348D7...`) | 工作树 WIP |
+| 2026-10-09 | Agent | 实例导出（ZIP）纯净重构：彻底消灭硬编码路径，新增 `InstanceExport` 领域服务与 `InstanceExportTest`，接入 SAF 另存为选择器，全量单测通过 | 已入库 (a5b2043) |
+| 2026-10-11 | Agent (cac5971) | 前端同步：以 Main `580ab07` 视觉基准三方合并竖版管理菜单/3D 卡片/拖拽重排/按压效果，routes 50 处冲突逐一手裁，平台契约与设置精简全保留，SAF 导出/ZIP 导入嫁接新存储页签；typecheck 0 错误、24 项单测全绿、Release APK 重打包通过 | 已推送 |
