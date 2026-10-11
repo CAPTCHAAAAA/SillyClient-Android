@@ -1053,28 +1053,110 @@ class TarvenEnvPlugin : Plugin() {
                 result.retainedSourcePath?.let { path -> it.put("retainedSourcePath", path) }
             }
 
-    /** 导出实例:打包为 ZIP 保存到 Download/SillyClient-导出（用户可在文件管理器中查看）。 */
+    /** 导出实例：打包为 ZIP。未指定 targetPath 时调起 SAF 另存为选择器，让用户自选保存位置与文件名。 */
     @PluginMethod
     fun exportInstance(call: PluginCall) {
         val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
         val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
+        val installPath = call.getString("installPath")
+        val targetPath = call.getString("targetPath") ?: call.getString("targetDirectory")
+
+        val paths = act.runtimePaths
+        val id = RuntimePaths.normalizeInstanceId(instanceId)
+        val directory = paths.serverDirFor(id, installPath, create = false)
+        if (!directory.isDirectory || !File(directory, "server.js").isFile) {
+            call.reject("实例目录不存在或尚未安装")
+            return
+        }
+
         act.runOnUiThread {
             if (!InstanceStorageAccess.isGranted(context) && !requestStorageAccess(call)) return@runOnUiThread
-            Thread {
-                try {
-                    com.sillyclient.runtime.KeepAlive.acquire(act)
+
+            if (!targetPath.isNullOrBlank()) {
+                Thread {
                     try {
-                        val (path, bytes) = act.exportInstance(instanceId, call.getString("installPath"))
-                        call.resolve(JSObject().put("path", path).put("bytes", bytes))
-                    } finally {
-                        act.runOnUiThread { com.sillyclient.runtime.KeepAlive.release(act.applicationContext) }
+                        com.sillyclient.runtime.KeepAlive.acquire(act)
+                        try {
+                            val (path, bytes) = act.exportInstanceToFile(instanceId, installPath, File(targetPath))
+                            call.resolve(JSObject().put("path", path).put("bytes", bytes))
+                        } finally {
+                            act.runOnUiThread { com.sillyclient.runtime.KeepAlive.release(act.applicationContext) }
+                        }
+                    } catch (error: Exception) {
+                        Log.w(TAG, "export reject: ${error.javaClass.simpleName}: ${error.message}")
+                        call.reject(error.message ?: "导出失败，请重试", error)
                     }
-                } catch (error: Exception) {
-                    Log.w(TAG, "export reject: ${error.javaClass.simpleName}: ${error.message}")
-                    call.reject(error.message ?: "导出失败，请重试", error)
-                }
-            }.start()
+                }.start()
+                return@runOnUiThread
+            }
+
+            val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
+            val suggestedName = "${directory.name}-$stamp.zip"
+            val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "application/zip"
+                putExtra(Intent.EXTRA_TITLE, suggestedName)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            }
+            startActivityForResult(call, intent, "exportInstanceResult")
         }
+    }
+
+    @ActivityCallback
+    private fun exportInstanceResult(call: PluginCall?, result: androidx.activity.result.ActivityResult) {
+        if (call == null) {
+            Log.e(TAG, "exportInstanceResult: call is null")
+            return
+        }
+        val destinationUri = result.data?.data
+        if (result.resultCode != android.app.Activity.RESULT_OK || destinationUri == null) {
+            call.reject("cancelled")
+            return
+        }
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
+        val installPath = call.getString("installPath")
+
+        val paths = act.runtimePaths
+        val id = RuntimePaths.normalizeInstanceId(instanceId)
+        val directory = paths.serverDirFor(id, installPath, create = false)
+        if (!directory.isDirectory || !File(directory, "server.js").isFile) {
+            call.reject("实例目录不存在或尚未安装")
+            return
+        }
+
+        Thread {
+            try {
+                com.sillyclient.runtime.KeepAlive.acquire(act)
+                try {
+                    val outputStream = context.contentResolver.openOutputStream(destinationUri, "w")
+                        ?: throw java.io.IOException("无法打开目标文件写入流")
+                    val (_, bytes) = outputStream.use { stream ->
+                        act.exportInstanceToStream(instanceId, installPath, stream)
+                    }
+
+                    var displayName: String? = null
+                    try {
+                        context.contentResolver.query(destinationUri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                            if (cursor.moveToFirst()) {
+                                val nameIdx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                                if (nameIdx >= 0) {
+                                    displayName = cursor.getString(nameIdx)
+                                }
+                            }
+                        }
+                    } catch (_: Exception) {}
+
+                    val finalName = displayName ?: destinationUri.lastPathSegment ?: "${directory.name}.zip"
+                    call.resolve(JSObject().put("path", finalName).put("uri", destinationUri.toString()).put("bytes", bytes))
+                } finally {
+                    act.runOnUiThread { com.sillyclient.runtime.KeepAlive.release(act.applicationContext) }
+                }
+            } catch (error: Exception) {
+                Log.w(TAG, "exportInstanceResult error: ${error.message}", error)
+                call.reject(error.message ?: "导出失败，请重试", error)
+            }
+        }.start()
     }
 
     /** 只读预检：压缩包里有多少用户数据会被导入、多少依赖/程序文件会被忽略。 */

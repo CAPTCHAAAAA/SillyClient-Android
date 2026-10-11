@@ -2550,11 +2550,6 @@ class MainActivity : BridgeActivity() {
     }
 
     /**
-     * Package an instance directory into a ZIP under Download/SillyClient-导出
-     * so the user always has a file-manager-visible copy on demand, whether the
-     * instance itself lives in the managed area or a custom directory.
-     */
-    /**
      * 把完整压缩包里的用户数据无损导入到已有实例：只覆盖用户数据
      * （data/、第三方扩展、plugins/，可选的 secrets.json/config.yaml），
      * 依赖与程序文件（node_modules、package.json、其余 public/、构建缓存）永不写入。
@@ -2591,39 +2586,31 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    fun exportInstance(instanceId: String, installPath: String? = null): Pair<String, Long> {
+    fun exportInstanceToStream(instanceId: String, installPath: String?, outputStream: java.io.OutputStream): Pair<Int, Long> {
         val paths = RuntimePaths.from(this)
         val id = RuntimePaths.normalizeInstanceId(instanceId)
         val directory = paths.serverDirFor(id, installPath, create = false)
-        require(directory.isDirectory && File(directory, "server.js").isFile) { "实例目录不存在或尚未安装" }
-        val targetDir = File(android.os.Environment.getExternalStorageDirectory(), "Download/SillyClient-导出").apply { mkdirs() }
-        require(targetDir.isDirectory) { "无法创建导出目录，请检查存储权限" }
-        val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
-        val zip = File(targetDir, "${directory.name}-$stamp.zip")
-        var entries = 0
-        var bytes = 0L
-        val rootPath = directory.toPath()
-        java.util.zip.ZipOutputStream(java.io.BufferedOutputStream(java.io.FileOutputStream(zip), 256 * 1024)).use { output ->
-            directory.walkTopDown().forEach { file ->
-                if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("export cancelled")
-                if (java.nio.file.Files.isSymbolicLink(file.toPath())) return@forEach
-                val relative = rootPath.relativize(file.toPath()).toString().replace(File.separatorChar, '/')
-                if (relative.isEmpty()) return@forEach
-                if (file.isDirectory) {
-                    output.putNextEntry(java.util.zip.ZipEntry("$relative/"))
-                    output.closeEntry()
-                } else if (file.isFile) {
-                    output.putNextEntry(java.util.zip.ZipEntry(relative))
-                    file.inputStream().use { it.copyTo(output, 256 * 1024) }
-                    output.closeEntry()
-                    entries++
-                    bytes += file.length()
-                    if (entries % 200 == 0) pushLog("正在打包实例 · $entries 项")
-                }
-            }
+        val (entries, bytes) = com.sillyclient.runtime.InstanceExport.exportToStream(directory, outputStream) { count ->
+            pushLog("正在打包实例 · $count 项")
         }
-        runtimeDiagnostic("export.done entries=$entries bytes=$bytes path=${zip.name}")
-        return zip.absolutePath to bytes
+        runtimeDiagnostic("export.done entries=$entries bytes=$bytes")
+        return entries to bytes
+    }
+
+    fun exportInstanceToFile(instanceId: String, installPath: String?, targetFileOrDir: File): Pair<String, Long> {
+        val paths = RuntimePaths.from(this)
+        val id = RuntimePaths.normalizeInstanceId(instanceId)
+        val directory = paths.serverDirFor(id, installPath, create = false)
+        val result = com.sillyclient.runtime.InstanceExport.exportToFile(directory, targetFileOrDir) { count ->
+            pushLog("正在打包实例 · $count 项")
+        }
+        runtimeDiagnostic("export.done entries=${result.entryCount} bytes=${result.bytes} path=${result.destinationPath}")
+        return result.destinationPath to result.bytes
+    }
+
+    fun exportInstance(instanceId: String, installPath: String? = null, targetFileOrDir: File? = null): Pair<String, Long> {
+        requireNotNull(targetFileOrDir) { "必须指定导出目标位置" }
+        return exportInstanceToFile(instanceId, installPath, targetFileOrDir)
     }
 
     private fun uninstallInstanceFiles(instanceId: String, targetDir: File): Long {
