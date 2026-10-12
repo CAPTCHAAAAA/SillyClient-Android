@@ -201,8 +201,8 @@ class MainActivity : BridgeActivity() {
     // ---- State ----
     @Volatile private var serverReady = false
     @Volatile private var isWebViewVisible = false
-    /** 最近一次派发到前端的 IME 底距目标态（CSS px），-1 = 尚未派发。 */
-    private var lastImeNavBottomCssPx = -1
+    /** 最近一次派发到前端的 IME 派发键（底距目标态×2+动画中位），-1 = 尚未派发。 */
+    private var lastImeDispatchKey = -1
     private var statusBarFixedPx = 0  // fixed physical pixels, never changes
     // 启动器支持多实例:目标 URL 与端口由前端实例数据决定,不再硬编码 8000
     @Volatile private var tavernUrl = "http://127.0.0.1:8000/"
@@ -845,13 +845,15 @@ class MainActivity : BridgeActivity() {
         }
         chameleonController.setStatusHint(tavernStatusHint)
 
-        // IME 键盘避让 = 原生 translationY 平移（GPU 合成器直出，零重排、零 JS、零逐帧 IPC）：
-        // 动画回调拥有全部中间帧（DISPATCH_MODE_STOP），直接把 webViewScreen 按当前键盘
-        // 高度上移，输入栏逐帧贴合键盘顶缘；IME insets 不透传给 WebView，其视口保持
-        // 稳定尺寸，页面内容绝不因键盘出现而重排。--sc-nav-bottom 只负责键盘关闭时
-        // 为底栏留出导航条/曲面屏安全区。
-        fun applyImeTranslation(imeHeightPx: Int) {
-            webViewScreen.translationY = -imeHeightPx.toFloat()
+        // IME 键盘避让 = 原生逐帧底垫压缩（Telegram 同款内容压缩语义）：
+        // 动画回调拥有全部中间帧（DISPATCH_MODE_STOP），直接按当前键盘高度调整
+        // webViewScreen 底垫——WebView 高度逐帧收缩，页面内容就地压缩避让（顶部不动），
+        // 全程零 JS、零跨进程 IPC；IME insets 不透传给 WebView，杜绝双重避让。
+        // 键盘动画期间经 --sc-nav-bottom 管道顺带暂停 #chat 毛玻璃采样，消掉重排里贵的部分。
+        fun applyImePadding(imeHeightPx: Int) {
+            if (webViewScreen.paddingBottom != imeHeightPx) {
+                webViewScreen.setPadding(0, 0, 0, imeHeightPx)
+            }
         }
         ViewCompat.setWindowInsetsAnimationCallback(
             webViewScreen,
@@ -867,7 +869,7 @@ class MainActivity : BridgeActivity() {
                         val navHeight = rootInsets?.getInsets(WindowInsetsCompat.Type.navigationBars())?.bottom ?: 0
                         val targetHeight = bounds.upperBound.bottom
                         val imeVisible = rootInsets?.isVisible(WindowInsetsCompat.Type.ime()) ?: (targetHeight > 0)
-                        dispatchImeOffset(if (imeVisible) targetHeight else 0, navHeight)
+                        dispatchImeOffset(if (imeVisible) targetHeight else 0, navHeight, animating = true)
                     }
                     return super.onStart(animation, bounds)
                 }
@@ -876,8 +878,8 @@ class MainActivity : BridgeActivity() {
                     insets: WindowInsetsCompat,
                     runningAnimations: MutableList<WindowInsetsAnimationCompat>
                 ): WindowInsetsCompat {
-                    // 逐帧平移：View 属性动画由 GPU 合成，页面不重排。
-                    applyImeTranslation(insets.getInsets(WindowInsetsCompat.Type.ime()).bottom)
+                    // 逐帧压缩：只改容器底垫，零 JS 零 IPC；页面随之就地压缩避让。
+                    applyImePadding(insets.getInsets(WindowInsetsCompat.Type.ime()).bottom)
                     return insets
                 }
 
@@ -888,7 +890,7 @@ class MainActivity : BridgeActivity() {
                         val imeVisible = rootInsets?.isVisible(WindowInsetsCompat.Type.ime()) ?: false
                         val imeHeight = rootInsets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
                         dispatchImeOffset(if (imeVisible) imeHeight else 0, navHeight)
-                        applyImeTranslation(if (imeVisible) imeHeight else 0)
+                        applyImePadding(if (imeVisible) imeHeight else 0)
                     }
                 }
             }
@@ -899,10 +901,10 @@ class MainActivity : BridgeActivity() {
             val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
             val imeHeight = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
             dispatchImeOffset(if (imeVisible) imeHeight else 0, navHeight)
-            // 非动画路径（直接弹出/收起）也同步最终平移量。
-            applyImeTranslation(if (imeVisible) imeHeight else 0)
-            // IME inset 不透传给 WebView：键盘避让完全由 translationY 承担，
-            // WebView 视口保持稳定，杜绝 relayout 风暴与"动画结束才跳变"。
+            // 非动画路径（直接弹出/收起）也同步最终底垫。
+            applyImePadding(if (imeVisible) imeHeight else 0)
+            // IME inset 不透传给 WebView：键盘避让完全由容器底垫承担，
+            // 视口尺寸变化只来自受控的逐帧压缩，杜绝 Chromium 自发性双重避让。
             WindowInsetsCompat.Builder(insets)
                 .setInsets(WindowInsetsCompat.Type.ime(), Insets.NONE)
                 .setVisible(WindowInsetsCompat.Type.ime(), false)
@@ -1767,8 +1769,8 @@ class MainActivity : BridgeActivity() {
 
     private fun switchToHome(animate: Boolean, tavernRunning: Boolean = false) {
         isWebViewVisible = false
-        // 复位键盘避让平移：隐藏中的视图不参与 insets 分发，回到启动器时键盘必已收起。
-        webViewScreen.translationY = 0f
+        // 复位键盘避让底垫：隐藏中的视图不参与 insets 分发，回到启动器时键盘必已收起。
+        webViewScreen.setPadding(0, 0, 0, 0)
         // 唤醒底座 Capacitor 控制台
         bridge?.webView?.apply {
             visibility = View.VISIBLE
@@ -1977,6 +1979,11 @@ body:has(.popup[opening]) #chat {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }
+/* 键盘动画期间暂停聊天区毛玻璃采样：逐帧压缩不重算高斯卷积，结束即恢复 */
+html[data-sc-ime-anim] #chat {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
 `;
                     document.head.appendChild(style);
                 } catch(_) {}
@@ -1985,7 +1992,7 @@ body:has(.popup[opening]) #chat {
         webView.evaluateJavascript(script, null)
         // Re-apply the current insets so the fresh stylesheet starts from the
         // real keyboard/navigation state instead of the 18px default.
-        lastImeNavBottomCssPx = -1
+        lastImeDispatchKey = -1
         val insets = ViewCompat.getRootWindowInsets(webViewScreen)
         val imeVisible = insets?.isVisible(WindowInsetsCompat.Type.ime()) ?: false
         val imeHeight = insets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
@@ -1993,21 +2000,26 @@ body:has(.popup[opening]) #chat {
         dispatchImeOffset(if (imeVisible) imeHeight else 0, navHeight)
     }
 
-    private fun dispatchImeOffset(imeHeightPx: Int, navHeightPx: Int) {
+    private fun dispatchImeOffset(imeHeightPx: Int, navHeightPx: Int, animating: Boolean = false) {
         if (!::webView.isInitialized) return
         val density = resources.displayMetrics.density
         val navCssPx = if (density > 0) navHeightPx / density else navHeightPx.toFloat()
         // 去重：onStart/onEnd/InsetsListener 会对同一终态重复回调，只有目标态变化才过桥。
         val targetState = (if (imeHeightPx > 0) 0 else maxOf(kotlin.math.ceil(navCssPx.toDouble()).toInt(), 18))
-        if (targetState == lastImeNavBottomCssPx) return
-        lastImeNavBottomCssPx = targetState
+        val targetKey = targetState * 2 + (if (animating) 1 else 0)
+        if (targetKey == lastImeDispatchKey) return
+        lastImeDispatchKey = targetKey
         val script = """
             (function() {
                 try {
                     // 软键盘弹起时底栏无缝贴合键盘；收起时留出小黑条与曲面屏安全区（默认至少 18px）
                     const isIme = ${imeHeightPx} > 0;
                     const nav = isIme ? 0 : Math.max(${navCssPx}, 18);
-                    document.documentElement.style.setProperty('--sc-nav-bottom', nav + 'px');
+                    const root = document.documentElement;
+                    root.style.setProperty('--sc-nav-bottom', nav + 'px');
+                    // 键盘动画期间打标，CSS 暂停 #chat 毛玻璃采样，动画结束即恢复。
+                    if ($animating) root.setAttribute('data-sc-ime-anim', '1');
+                    else root.removeAttribute('data-sc-ime-anim');
                 } catch(_) {}
             })();
         """.trimIndent()
