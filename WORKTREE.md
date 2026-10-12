@@ -100,7 +100,7 @@ cd D:\BACKUP\Project\SillyClient\.worktrees\release-hardening-android
 ### 4. 当前最新构建产物指纹（2026-10-12，v1.13.0 待真机验收）
 - **APK 路径**: `app/build/outputs/apk/release/app-release.apk`（已归档 `Local/artifacts/v1.13.0/SillyClient-Android-v1.13.0.apk`）
 - **文件体积**: `198,586,636` 字节（约 189.37 MB）
-- **SHA-256 校验**: `370DA50304AA03ECDB491A3756F8C1F7E41CDC2221B114AFFB1BADDD17C3FD32`
+- **SHA-256 校验**: `DD9049D262A0F0DE11BF71ADED06F4BB2E69767669554867D3E20F43A9A4ED0F`
 - **版本号**: `versionCode = 72` / `versionName = "1.13.0"`
 
 ---
@@ -121,3 +121,4 @@ cd D:\BACKUP\Project\SillyClient\.worktrees\release-hardening-android
 | 2026-10-12 | Agent | v1.13.0 性能增补：IME 键盘动画零逐帧 JS（onProgress 不再跨进程派发，onStart/onEnd 双点派发 + 目标态去重 + 注入重放重置），清除 LayerType 矛盾残留，WebView 开启 offscreenPreRaster 平滑超长聊天滚动，修正 IME 注释与实现的一致性；447 项单测 0 失败，APK 重打包（归档指纹已更新为 AFB22DF5…） | 已推送 (e4cab61) |
 | 2026-10-13 | Agent | v1.13.0 第二轮：① 多开落地（实例会话表、同名重启他例保持、端口回环顺延/LAN 报错、进程就绪后脱离操作生命周期、实例级 exit 事件与前台切换）；② 删除竞态根治（closeTavern 二次停止/自我取消误杀后台清理线程 → 纯 UI 拆卸；NativeTreeRemoval 批间重捕 generation）；③ 依赖实例自持根除共享 node_modules 银行对用户所选文件夹的污染，旧库按银行标记安全清退；新增 1 项回归测试，全量 448 项 0 失败，APK 重打包（指纹 `9A013043…`） | 已推送 (0fa1b21) |
 | 2026-10-13 | Agent | v1.13.0 第三轮：键盘避让重构为原生 translationY 逐帧平移（修复 DISPATCH_MODE_STOP 阻断中间帧导致的输入栏不跟随/末端跳变，IME insets 不透传 WebView，视口恒尺寸零重排）；酒馆全局性能层从配套主题沉淀为默认能力（触控 0 延迟、去点击灰闪、滚动链隔离、聊天区重排隔离、列表视口虚拟化、合成层提升、抽屉弹窗 blur 短路）；447 项单测全绿，APK 重打包（指纹 `370DA503…`） | 已推送 (414afbd) |
+| 2026-10-13 | Agent | v1.13.0 第四轮：键盘避让按用户反馈从整页平移改为逐帧底垫压缩（Telegram 式内容就地避让、顶部不动），键盘动画期间暂停聊天区毛玻璃采样（data-sc-ime-anim 打标，结束即恢复），switchToHome 复位底垫；448 项单测全绿，APK 重打包（指纹 `DD9049D2…`） | 已推送 (03153fa) |
