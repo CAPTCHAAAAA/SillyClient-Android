@@ -991,7 +991,7 @@ function SillyClientLauncher() {
     if (isShowcase) return;
     let disposed = false;
     const handles: { remove: () => Promise<void> }[] = [];
-    const register = async (event: "log" | "progress" | "ready" | "mode", listener: (d: TarvenEvent) => void) => {
+    const register = async (event: "log" | "progress" | "ready" | "mode" | "exit", listener: (d: TarvenEvent) => void) => {
       const handle = await TarvenEnv.addListener(event, d => {
         if (!disposed) listener(d);
       });
@@ -1028,6 +1028,14 @@ function SillyClientLauncher() {
         await register("ready", d => {
           if (d.source === "command") return;
           if (d.ready !== false) append(d, { msg: `✓ 就绪${d.url ? " " + d.url : ""}`, level: "success" });
+        });
+        await register("exit", d => {
+          // 多开：原生主动广播（无 operationId），任一实例进程退出时按实例幂等置停，
+          // 不走 acceptsGlobal 门禁（legacySafe 在任意取消后永久为 false，会把事件饿死）。
+          if (!d.instanceId) return;
+          setInstances(prev => prev.map(t => (t.type === "local" && (t.installDir || t.id) === d.instanceId)
+            ? { ...t, status: "stopped" }
+            : t));
         });
         await register("mode", d => {
           if (d.source === "command") return;
@@ -1282,8 +1290,10 @@ function SillyClientLauncher() {
   const handleReturnToTavern = useCallback(async (instance: TavernInstance) => {
     const expected = operations.current;
     try {
-      if (expected) await expected.wait(TarvenEnv.returnToTavern());
-      else await TarvenEnv.returnToTavern();
+      // 多开：指定实例 ID 切前台，由原生侧接管该实例的存活会话与 URL。
+      const entering = TarvenEnv.enterImmersive({ instanceId: instance.installDir || instance.id, showGestureHint: false });
+      if (expected) await expected.wait(entering);
+      else await entering;
     } catch (error) {
       if (error instanceof OperationCancelledError || operations.current !== expected) return;
       // 容错或浏览器环境 fallback

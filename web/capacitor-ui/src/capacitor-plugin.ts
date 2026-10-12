@@ -188,7 +188,8 @@ export interface TarvenEnvPlugin {
   }): Promise<{ ready: boolean }>
 
   enterImmersive(options: {
-    url: string
+    /** 可选：缺省时按 instanceId 切换到该实例的存活会话（多开前台切换）。 */
+    url?: string
     instanceId?: string
     showGestureHint?: boolean
   }): Promise<void>
@@ -197,7 +198,18 @@ export interface TarvenEnvPlugin {
   exitImmersive(): Promise<void>
   returnToTavern(): Promise<void>
   closeTavern(options?: { instanceId?: string; operationId?: string }): Promise<void>
-  getStatus(): Promise<{ serverReady: boolean; mode: string; url?: string; instanceId?: string; operationId?: string }>
+  /** 多开：返回全部存活会话清单；携带 instanceId 时附带该实例的就绪态。 */
+  getStatus(options?: {
+    instanceId?: string
+  }): Promise<{
+    serverReady: boolean
+    mode: string
+    url?: string
+    instanceId?: string
+    operationId?: string
+    runningInstances?: string[]
+    instanceReady?: boolean
+  }>
 
   /** 拉取 GitHub SillyTavern releases 列表。 */
   fetchReleases(): Promise<{ releases: GithubRelease[]; warning?: string }>
@@ -408,7 +420,7 @@ export interface TarvenEnvPlugin {
   listInstancePasswordStatus(): Promise<Record<string, boolean>>
 
   addListener(
-    eventName: 'log' | 'progress' | 'ready' | 'mode' | 'error',
+    eventName: 'log' | 'progress' | 'ready' | 'mode' | 'error' | 'exit',
     listenerFunc: (data: TarvenEvent) => void,
   ): Promise<PluginListenerHandle>
 }
@@ -428,6 +440,8 @@ export interface TarvenEvent {
   port?: number
   mode?: string
   tavernRunning?: boolean
+  /** 多开：exit 事件的进程退出码。 */
+  code?: number
   lastUsedAt?: string
   totalUsageMs?: number
 }

@@ -53,15 +53,16 @@ class NativeTreeRemoval(
                 if (force || lastReport.compareAndSet(previous, now)) runCatching { onProgress(progress()) }
             }
         }
-        val generation = supervisor.generation()
         try {
             for (batch in batches(targets)) {
                 ensureActive()
                 requireSameDirectory(owner, canonicalOwner, original)
                 val diagnostics = linkedSetOf<String>()
+                // 每批重新捕获 generation：无关实例的 stopAll（如并行启动他实例）会递增
+                // generation，若沿用旧值会让删除在批间被误杀，留下"已删卡片但文件残留"。
                 val process = supervisor.launch(
                     ProcessBuilder(command + listOf("-rfv", "--") + batch.map { it.absolutePath }),
-                    instanceId, operation, generation
+                    instanceId, operation, supervisor.generation()
                 )
                 val result = supervisor.waitForIdle(process, idleTimeoutMillis, ensureActive,
                     onErrorLine = { line -> synchronized(diagnostics) {

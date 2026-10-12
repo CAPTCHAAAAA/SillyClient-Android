@@ -279,6 +279,11 @@ class TarvenEnvPlugin : Plugin() {
         ret.put("url", act.getTavernUrl())
         act.getRunningInstanceId()?.let { ret.put("instanceId", it) }
         act.getRunningOperationId()?.let { ret.put("operationId", it) }
+        // 多开：全部存活会话清单 + 可选的指定实例就绪态。
+        ret.put("runningInstances", JSArray(act.getRunningInstanceIds()))
+        call.getString("instanceId")?.takeIf { it.isNotBlank() }?.let {
+            ret.put("instanceReady", act.isInstanceRunning(it))
+        }
         call.resolve(ret)
     }
 

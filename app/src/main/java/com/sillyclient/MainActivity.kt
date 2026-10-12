@@ -214,6 +214,26 @@ class MainActivity : BridgeActivity() {
                 chameleonController.setInstanceId(value)
             }
         }
+
+    /** 并行运行的本地实例会话（多开）。前台 WebView 目标仍是 currentTavernInstanceId；
+     *  serverReady/serverProcess/tavernUrl/tavernPort 作为前台会话的缓存视图，
+     *  任何后台会话的状态变化只允许落在本表，绝不允许污染前台缓存。 */
+    private data class ServerSession(
+        val instanceId: String,
+        var process: Process?,
+        var port: Int,
+        var url: String,
+        var ready: Boolean
+    )
+    private val serverSessions = java.util.concurrent.ConcurrentHashMap<String, ServerSession>()
+
+    /** 回环端口探测：仅校验 127.0.0.1 绑定（服务以 HOST=127.0.0.1 启动）。 */
+    private fun isLoopbackPortFree(port: Int): Boolean = runCatching {
+        java.net.ServerSocket().use { socket ->
+            socket.reuseAddress = false
+            socket.bind(java.net.InetSocketAddress("127.0.0.1", port))
+        }
+    }.isSuccess
     private var tavernAuthHost: String? = null
     private var tavernAuthUsername: String? = null
     private var tavernAuthPassword: String? = null
@@ -334,6 +354,17 @@ class MainActivity : BridgeActivity() {
                 InstanceRelocation(RuntimePaths.from(this), operations, processSupervisor)
                     .sweepRetainedSources { runtimeDiagnostic(it) }
             }.onFailure { runtimeDiagnostic("relocat.sweep_failed ${it.message?.take(160)}") }
+            // 旧版共享依赖库（<根>/node_modules）退役清退：仅动带银行标记且不再被需要的目录。
+            runCatching {
+                val paths = RuntimePaths.from(this)
+                val roots = buildList {
+                    paths.installLocations.entries().values.forEach { add(it.parentFile) }
+                    add(paths.serversDir)
+                    add(paths.legacyServersDir)
+                    add(paths.legacyExternalServersDir)
+                }.filterNotNull().distinctBy { runCatching { it.canonicalFile }.getOrNull() ?: it }
+                roots.forEach { sweepObsoleteDependencyBank(paths, it) }
+            }.onFailure { runtimeDiagnostic("bank.sweep_failed ${it.message?.take(160)}") }
         }.apply {
             name = "SC-relocation-sweep"
             isDaemon = true
@@ -927,6 +958,16 @@ class MainActivity : BridgeActivity() {
     fun isTavernVisible(): Boolean = isWebViewVisible
     fun getTavernUrl(): String = tavernUrl
     fun getRunningInstanceId(): String? = currentTavernInstanceId.takeIf { serverReady }
+
+    /** 当前仍在运行的本地实例 ID 列表（多开）。 */
+    fun getRunningInstanceIds(): List<String> =
+        serverSessions.values.filter { it.ready && it.process?.isAlive == true }.map { it.instanceId }
+
+    /** 指定实例是否正在运行（多开）。 */
+    fun isInstanceRunning(instanceId: String): Boolean {
+        val session = serverSessions[RuntimePaths.normalizeInstanceId(instanceId)] ?: return false
+        return session.ready && session.process?.isAlive == true
+    }
     fun getRunningOperationId(): String? = operations.current()?.takeIf {
         serverReady && it.instanceId == currentTavernInstanceId && serverProcess?.isAlive == true
     }?.operationId
@@ -955,12 +996,28 @@ class MainActivity : BridgeActivity() {
         // 拒绝分身创建；无创建意图的启动在目标缺失/损坏时拒绝静默全新安装顶替。
         val targetServerDir = paths.launchDirectoryFor(id, installPath, installPathMode, instanceName, forCreation = createIntent)
         val operation = operations.begin(id, operationId)
-        val previousStop = processSupervisor.stopAllAsync()
+        // 多开：只停止同名实例的旧会话（重启语义），其余实例保持运行。
+        val previousStop = processSupervisor.stopAllAsync(id)
+        serverSessions.remove(id)?.process = null
+        // 端口消解：回环监听时静默顺延到空闲端口；LAN 共享（listen=true）必须报错，
+        // 否则用户对外公布的端口会被静默替换。
+        var effectivePort = port
+        while (effectivePort <= port + 100) {
+            val heldByPeer = serverSessions.values.any { it.port == effectivePort && it.process?.isAlive == true }
+            if (!heldByPeer && isLoopbackPortFree(effectivePort)) break
+            if (config.listen) throw IllegalStateException(
+                "端口 $effectivePort 已被占用；请先停止占用该端口的实例，或为本实例更换端口后再启动"
+            )
+            effectivePort++
+        }
+        require(effectivePort <= port + 100 && effectivePort <= 65535) {
+            "端口 $port 起的 100 个端口均被占用，请停止部分实例或更换端口后再启动"
+        }
         cleanupService.invalidate()
         serverProcess = null
         serverReady = false
-        tavernPort = port
-        tavernUrl = "http://${if (config.ipv4) "127.0.0.1" else "[::1]"}:$port/"
+        tavernPort = effectivePort
+        tavernUrl = "http://${if (config.ipv4) "127.0.0.1" else "[::1]"}:$effectivePort/"
         currentTavernInstanceId = id
         clearTavernBasicAuth()
         KeepAlive.acquire(this)
@@ -1003,19 +1060,11 @@ class MainActivity : BridgeActivity() {
                             }
                         },
                         installDependencies = { directory ->
-                            if (localZipPath == null &&
-                                bundledTavernSource.matchesRequestedVersion(version, zipballUrl)) {
-                                // Bundled source: one shared tree serves every instance
-                                // from <root>/node_modules via standard Node resolution.
-                                updateProgress(85, "正在准备共享依赖组件（仅首次）")
-                                ensureDependencyBank(paths, { operations.ensureCurrent(operation) },
-                                    manifestDirectory = directory)
-                                true
-                            } else {
-                                updateProgress(85, "正在准备实例依赖")
-                                runNpmInstall(paths, directory) { restored ->
-                                    updateProgress(85, "正在恢复依赖组件 · $restored")
-                                }
+                            // 实例自持：依赖一律落进实例目录自身，绝不向用户选择的存放文件夹
+                            // 写入共享 node_modules（杜绝污染相册/文档等日常路径）。
+                            updateProgress(85, "正在准备实例依赖")
+                            runNpmInstall(paths, directory) { restored ->
+                                updateProgress(85, "正在恢复依赖组件 · $restored")
                             }
                         },
                         commit = { action -> operations.commit(operation, action) },
@@ -1041,13 +1090,13 @@ class MainActivity : BridgeActivity() {
                     appendLog("[OK] SC Bordeaux 主题预设已就绪")
                 }
                 updateProgress(97, "Starting server")
-                ensureBankForLaunch(paths, targetServerDir, operation)
+                ensureDependenciesForLaunch(paths, targetServerDir, operation)
                 bundledDependencyArchive(paths) { operations.ensureCurrent(operation) }?.let { (key, _) ->
                     if (webpackCacheSeed(paths).seedInstance(targetServerDir, key) { operations.ensureCurrent(operation) }) {
                         runtimeDiagnostic("webpack.seeded key=${key.take(12)}")
                     }
                 }
-                launched = startServer(paths, targetServerDir, port, config, operation)
+                launched = startServer(paths, targetServerDir, effectivePort, config, operation)
                 check(launched != null) { "Node.js 服务启动失败，请检查实例完整性" }
                 appendLog("[OK] Node.js process launched")
                 updateProgress(99, "Waiting for server")
@@ -1060,6 +1109,11 @@ class MainActivity : BridgeActivity() {
                     operations.commit(operation) {
                         presetTransaction?.commit()
                         extensionsTransaction?.commit()
+                        // 多开：服务进程在就绪后脱离启动操作的生命周期——
+                        // 此后任何新操作（如下一次启动/维护）的取消都不会杀死本实例。
+                        processSupervisor.forget(launched)
+                        processSupervisor.track(launched, id)
+                        serverSessions[id] = ServerSession(id, launched, effectivePort, tavernUrl, ready = true)
                     }
                     // Archive after the server is ready so the heavy tree copy cannot
                     // compete with Node's cold-start dependency reads.
@@ -1438,15 +1492,25 @@ class MainActivity : BridgeActivity() {
         if (isWebViewVisible) return false
         val requestedInstanceId = instanceId?.trim()?.takeIf { it.isNotEmpty() } ?: currentTavernInstanceId
         val operation = operations.current()
+        // 多开：目标是存活的运行中会话时允许直接切换前台。
+        val targetSession = requestedInstanceId?.let { serverSessions[it] }
         val changesTarget = (requestedInstanceId != null && requestedInstanceId != currentTavernInstanceId) ||
             (targetUrl != null && targetUrl != tavernUrl)
-        if (changesTarget && (operations.hasPendingWork() || serverProcess?.isAlive == true)) {
+        if (changesTarget && targetSession?.process?.isAlive != true &&
+            (operations.hasPendingWork() || serverProcess?.isAlive == true)) {
             throw IllegalStateException("请先停止当前实例或等待当前任务结束后再切换")
         }
-        val willBeReady = serverReady || (targetUrl != null && !isLocalUrl(targetUrl))
+        val willBeReady = serverReady || targetSession?.ready == true || (targetUrl != null && !isLocalUrl(targetUrl))
         if (!willBeReady) return false
         if (changesTarget && operation != null) operations.cancel(operation.instanceId, operation.operationId)
         currentTavernInstanceId = requestedInstanceId
+        // 前台缓存与目标会话对齐（切换对象 = 运行中的其他实例时接管其进程视图）。
+        if (targetSession != null) {
+            tavernPort = targetSession.port
+            tavernUrl = targetSession.url
+            serverProcess = targetSession.process
+            serverReady = targetSession.ready
+        }
         // 远程实例:直接进入(无需 serverReady);本地实例:需 serverReady
         if (targetUrl != null) {
             tavernUrl = targetUrl
@@ -1533,14 +1597,35 @@ class MainActivity : BridgeActivity() {
      * 由前端"停止"按钮调用。
      */
     fun closeTavern(instanceId: String? = null, operationId: String? = null) {
+        val targetId = instanceId?.takeIf { it.isNotBlank() }?.let { RuntimePaths.normalizeInstanceId(it) }
+            ?: currentTavernInstanceId
         val operation = operations.current()
         if (operation == null) {
-            if (operationId != null || (instanceId != null && instanceId != currentTavernInstanceId)) return
+            // 无活动操作时允许停止任意正在运行的会话（多开），不再局限于前台实例。
+            if (operationId != null) return
         } else if (!operations.cancel(instanceId, operationId)) {
             return
         }
         cleanupService.invalidate()
-        processSupervisor.stopAllAsync()
+        if (targetId != null) {
+            processSupervisor.stopAllAsync(targetId)
+            serverSessions.remove(targetId)?.process = null
+        } else {
+            processSupervisor.stopAllAsync()
+            serverSessions.clear()
+        }
+        if (targetId != null && targetId != currentTavernInstanceId) {
+            // 后台会话关停：前台视图不受影响，仅广播实例级停止事件。
+            notifyRuntime("exit", JSObject().put("instanceId", targetId), null, allowCancelled = true)
+            return
+        }
+        closeTavernUi(operation)
+    }
+
+    /** 酒馆前台视图的纯 UI 拆卸：不取消操作、不停止进程（调用方必须已自行处理进程）。
+     *  删除流程专用——经完整 closeTavern 二次停止会递增监管 generation，
+     *  误杀后台物理清理线程，导致"卡片消失但文件残留"。 */
+    private fun closeTavernUi(operation: OperationCoordinator.Operation? = null) {
         chameleonController.reset()
         tavernStatusHint.dismiss()
         tavernDownloadBridge.invalidateSession()
@@ -1945,18 +2030,7 @@ class MainActivity : BridgeActivity() {
                             pushLog(line, operation)
                         }
                     }, onExit = { code ->
-                        if (operations.isCurrent(operation) && serverProcess === process && serverReady) {
-                            runCatching {
-                                operations.commit(operation) {
-                                    if (serverProcess === process) {
-                                        serverProcess = null
-                                        serverReady = false
-                                        pushReady(false, operation)
-                                        notifyRuntime("error", JSObject().put("message", "Node.js 进程已退出 (code $code)"), operation)
-                                    }
-                                }
-                            }
-                        }
+                        runCatching { onServerProcessExit(operation.instanceId, process, code) }
                     })
                 }
             }
@@ -1967,6 +2041,31 @@ class MainActivity : BridgeActivity() {
         } catch (error: Exception) {
             runtimeDiagnostic("server.launch_failed ${error.javaClass.simpleName} ${error.message?.take(240)}")
             return null
+        }
+    }
+
+    /** 服务进程退出守望：无论死于启动期还是运行期、操作是否仍在世，都会话级清理并广播。 */
+    private fun onServerProcessExit(instanceId: String, process: Process, code: Int) {
+        val session = serverSessions[instanceId]
+        val wasReady = session?.ready == true && session.process === process
+        if (session?.process === process) {
+            serverSessions.remove(instanceId)
+            session.process = null
+        }
+        // 前台缓存同步：仅当死者是前台会话时回落视图状态。
+        if (currentTavernInstanceId == instanceId && serverProcess === process) {
+            serverProcess = null
+            serverReady = false
+        }
+        if (wasReady) {
+            // 运行期死亡：广播 exit（前端按实例置 stopped）；前台实例额外推就绪回落与错误提示。
+            notifyRuntime("exit", JSObject()
+                .put("instanceId", instanceId)
+                .put("code", code), null, allowCancelled = true)
+            if (currentTavernInstanceId == instanceId) {
+                pushReady(false, null, allowCancelled = true)
+                notifyRuntime("error", JSObject().put("message", "Node.js 进程已退出 (code $code)"), null, allowCancelled = true)
+            }
         }
     }
 
@@ -2137,103 +2236,52 @@ class MainActivity : BridgeActivity() {
             .install(targetServerDir, operation)
     }
 
-    /**
-     * Complete with the instance's own node_modules or with the shared bank at
-     * `<root>/node_modules` covering the instance's lock file.
-     */
-    private fun instanceDependenciesComplete(directory: File): Boolean =
-        DependencyInstaller.hasRequiredPackages(directory) || bankCovers(directory)
-
-    private fun bankCovers(instanceDirectory: File): Boolean {
-        val paths = RuntimePaths.from(this)
-        val lockKey = DependencyArchive(File(paths.tarvenHome, "dependency-archives"))
-            .lockKey(File(instanceDirectory, "package-lock.json"))
-        return DependencyBank.covers(instanceDirectory, lockKey)
-    }
-
-    /**
-     * Materialize/refresh the shared dependency bank at `<root>/node_modules`
-     * from the bundled archive. Extraction goes directly into the bank — a
-     * populated tree must never be renamed on shared storage (MediaProvider
-     * re-indexes every descendant), and a stale bank is cleared first so a
-     * half-swapped version can never survive.
-     */
-    private fun ensureDependencyBank(paths: RuntimePaths, ensureActive: () -> Unit,
-                                     manifestDirectory: File? = null) {
-        // Node resolves packages by walking up from the instance directory: from
-        // `<parent>/<name>` the first candidate is `<parent>/node_modules`, and
-        // during creation the staging directory shares that same parent. The
-        // bank must sit exactly there — bankDirectory(instanceOrStaging)
-        // answers `<parent>/node_modules` for both.
-        val bank = DependencyBank.bankDirectory(manifestDirectory ?: paths.serversDir)
-        // The earlier private layout (files/node_modules) is one level off and
-        // must not linger as dead weight.
-        val legacyBank = File(paths.appFilesDir, "node_modules")
-        if (legacyBank != bank && legacyBank.isDirectory) {
-            runCatching { ManagedFiles.deleteDirectory(legacyBank, paths.appFilesDir) }
-        }
-        val (key, archive) = bundledDependencyArchive(paths, ensureActive)
-            ?: error("缺少内置依赖归档，无法准备共享依赖，请检查安装包完整性")
-        val manifest = manifestDirectory
-        if (DependencyBank.read(bank)?.key == key &&
-            (manifest == null || DependencyInstaller.hasRequiredPackages(manifest, bank))) {
-            runtimeDiagnostic("bank.hit key=${key.take(12)}")
-            return
-        }
-        if (bank.exists()) {
-            // The bank sits one level above the instances root; its own parent
-            // is the managed scope, and deletion runs through the child rm so
-            // tens of thousands of files never serialize the app process.
-            runtimeDiagnostic("bank.reset")
-            val bankParent = requireNotNull(bank.parentFile)
-            NativeTreeRemoval(processSupervisor).remove(
-                listOf(bank), bankParent, "dependencies", operations.context(), ensureActive)
-            check(!bank.exists()) { "无法清理旧的共享依赖目录，请重试" }
-        }
-        val extractor = shardExtractor(paths)
-        val extractorProgress: (Int) -> Unit = { count ->
-            updateProgress(85, "正在准备共享依赖组件 · $count")
-        }
-        val extracted = extractor.available() && extractor.extract(archive, bank, ensureActive, extractorProgress)
-        if (!extracted) {
-            // No platform tar (or child extraction failed): fall back to the
-            // in-process transaction, which publishes through a same-parent
-            // rename. The completeness check needs the manifest that defines
-            // the dependency set — the instance being created or launched.
-            // Without one (idle prewarm) the fallback is skipped and the work
-            // is retried on the next opportunity.
-            check(manifestDirectory != null) { "共享依赖准备失败，请重试" }
-            bank.deleteRecursively()
-            check(dependencyArchive(paths).restore(key,
-                manifestDirectory?.parentFile ?: paths.serversDir, replaceIncomplete = true,
-                skipExecutableLinks = true,
-                validateModules = { modules -> DependencyInstaller.hasRequiredPackages(manifest, modules) },
-                ensureActive = ensureActive)) { "共享依赖准备失败，请重试" }
-        }
-        // The bank holds node_modules only; verify against the instance manifest
-        // when one is available (prewarm has none — the tar path already
-        // verified every top-level package exists).
-        check(manifest == null || DependencyInstaller.hasRequiredPackages(manifest, bank)) {
-            "共享依赖校验失败，请重试"
-        }
-        DependencyBank.write(bank, key)
-        runtimeDiagnostic("bank.ready key=${key.take(12)}")
-    }
-
-    /** Self-heal hook: a launch that needs the bank rebuilds it before the server starts. */
-    private fun ensureBankForLaunch(paths: RuntimePaths, target: File, operation: OperationCoordinator.Operation) {
+    /** 启动自愈：实例缺失依赖时就地补齐自己的 node_modules（实例自持，绝不写共享目录）。 */
+    private fun ensureDependenciesForLaunch(paths: RuntimePaths, target: File, operation: OperationCoordinator.Operation) {
         if (DependencyInstaller.hasRequiredPackages(target)) return
         if (File(target, InstanceInstaller.DEPENDENCY_MARKER).exists()) return
-        val extract = { operations.ensureCurrent(operation) }
-        val lockKey = DependencyArchive(File(paths.tarvenHome, "dependency-archives"))
-            .lockKey(File(target, "package-lock.json")) ?: return
-        if (DependencyBank.covers(target, lockKey)) return
-        // The bank can only serve the lock the bundled archive was built from;
-        // anything else keeps the npm flow as its owner.
-        val bundled = bundledDependencyArchive(paths, extract) ?: return
-        if (bundled.first != lockKey) return
-        updateProgress(96, "正在准备共享依赖组件（仅首次）")
-        ensureDependencyBank(paths, extract, manifestDirectory = target)
+        operations.ensureCurrent(operation)
+        appendLog("> 正在补齐实例依赖组件…")
+        updateProgress(96, "正在准备实例依赖组件")
+        check(runNpmInstall(paths, target)) { "实例依赖准备失败，请重试" }
+        // 旧版共享依赖库（<根>/node_modules）可能因此实例不再被需要，顺手清退。
+        sweepObsoleteDependencyBank(paths, target.parentFile)
+    }
+
+    /**
+     * 旧版共享依赖库（<根>/node_modules）清退：仅处理带 SillyClient 银行标记的目录
+     * （用户自己的 node_modules 绝不动），且仅当该根下已登记实例全部自持依赖后
+     * 才在后台移除；公共存储无授权时留待下次。
+     */
+    private fun sweepObsoleteDependencyBank(paths: RuntimePaths, root: File?) {
+        if (root == null) return
+        val bank = File(root, DependencyBank.DIR_NAME)
+        val state = DependencyBank.read(bank) ?: return
+        val canonicalRoot = runCatching { root.canonicalFile }.getOrNull() ?: return
+        val archive = DependencyArchive(File(paths.tarvenHome, "dependency-archives"))
+        val stillNeeded = paths.installLocations.entries().any { (_, directory) ->
+            runCatching { directory.parentFile?.canonicalFile }.getOrNull() == canonicalRoot &&
+                !DependencyInstaller.hasRequiredPackages(directory) &&
+                archive.lockKey(File(directory, "package-lock.json")) == state.key
+        }
+        if (stillNeeded) return
+        val isPrivate = runCatching { canonicalRoot.toPath().startsWith(paths.appFilesDir.canonicalFile.toPath()) }
+            .getOrDefault(false)
+        if (!isPrivate && !com.sillyclient.storage.InstanceStorageAccess.isGranted(this)) return
+        KeepAlive.acquire(this)
+        Thread {
+            try {
+                NativeTreeRemoval(processSupervisor).remove(listOf(bank), root, "dependencies")
+                runtimeDiagnostic("bank.swept root=${root.name}")
+            } catch (error: Exception) {
+                runtimeDiagnostic("bank.sweep_failed type=${error.javaClass.simpleName}")
+            } finally {
+                runOnUiThread { KeepAlive.release(applicationContext) }
+            }
+        }.apply {
+            name = "SC-bank-sweep"
+            isDaemon = true
+        }.start()
     }
 
     /** (lockKey, archiveFile) of the bundled dependency archive, materialized on demand. */
@@ -2336,6 +2384,10 @@ class MainActivity : BridgeActivity() {
         android.util.Log.i(TAG, "runtime ${message.take(512)}")
         com.sillyclient.runtime.Diag.append(RuntimePaths.from(this).tarvenHome, "runtime ${message.take(512)}")
     }
+
+    /** 实例依赖完整 = 实例目录内自带可解析的 node_modules（实例自持，无共享库兜底）。 */
+    private fun instanceDependenciesComplete(directory: File): Boolean =
+        DependencyInstaller.hasRequiredPackages(directory)
 
     private fun instanceInstaller(paths: RuntimePaths) = InstanceInstaller(
         paths.serversDir, paths.installLocations, ::instanceDependenciesComplete,
@@ -2520,7 +2572,8 @@ class MainActivity : BridgeActivity() {
         val paths = RuntimePaths.from(this)
         val id = RuntimePaths.normalizeInstanceId(instanceId)
         val targetDir = paths.serverDirFor(id, installPath, create = false)
-        check(!serverReady || currentTavernInstanceId == id) { "请先停止正在运行的其他实例后再删除" }
+        // 多开：删除只与目标实例自身相关（下方 stopAllAsync(id) 兜底停止），
+        // 其他实例正在运行不再构成删除阻碍。
         check(!operations.hasPendingWork() || operations.current()?.instanceId == id) {
             "请先等待其他实例任务完成"
         }
@@ -2544,9 +2597,10 @@ class MainActivity : BridgeActivity() {
                 runtimeDiagnostic("removal.stopped")
                 operations.ensureCurrent(operation)
                 val freed = uninstallInstanceFiles(id, targetDir)
+                // 删除流程只拆卸前台视图：进程已被 stopAllAsync(id) 停止；绝不经
+                // closeTavern 二次停止/取消本操作，避免误杀后台物理清理线程。
                 runOnUiThread {
-                    if (operations.current() === operation) closeTavern(id, operation.operationId)
-                    else if (operations.current() == null && currentTavernInstanceId == id) closeTavern(id)
+                    if (currentTavernInstanceId == id) closeTavernUi(operation)
                 }
                 freed
             }

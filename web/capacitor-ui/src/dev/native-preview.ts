@@ -126,6 +126,12 @@ export const nativePreview: TarvenEnvPlugin = {
   },
   async enterImmersive(options) {
     record("enterImmersive", options);
+    if (!options.url) {
+      // 多开：仅按 instanceId 切换前台会话，无需 URL。
+      if (!options.instanceId?.trim()) throw new Error("enterImmersive requires url or instanceId");
+      status = { ...status, mode: "tavern", instanceId: options.instanceId };
+      return;
+    }
     const url = validateExternalUrl(options.url);
     if (!options.instanceId?.trim()) {
       await nativePreview.openExternalUrl({ url });

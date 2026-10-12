@@ -30,9 +30,8 @@ data class RuntimePaths(
             legacyServersDir,
             customRootsProvider,
             dependenciesComplete = { directory ->
-                DependencyInstaller.hasRequiredPackages(directory) ||
-                    DependencyBank.covers(directory, DependencyArchive(File(tarvenHome, "dependency-archives"))
-                        .lockKey(File(directory, "package-lock.json")))
+                // 实例自持：依赖完整性只看实例目录自身的 node_modules，不再有共享库兜底。
+                DependencyInstaller.hasRequiredPackages(directory)
             }
         )
     }
