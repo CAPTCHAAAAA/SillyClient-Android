@@ -99,8 +99,8 @@ cd D:\BACKUP\Project\SillyClient\.worktrees\release-hardening-android
 
 ### 4. 当前最新构建产物指纹（2026-10-12，v1.13.0 待真机验收）
 - **APK 路径**: `app/build/outputs/apk/release/app-release.apk`（已归档 `Local/artifacts/v1.13.0/SillyClient-Android-v1.13.0.apk`）
-- **文件体积**: `198,583,840` 字节（约 189.37 MB）
-- **SHA-256 校验**: `F8759EBA167FA0ADFD10D9F2E9DF3727837476B16361C27F7192259630456618`
+- **文件体积**: `198,583,728` 字节（约 189.37 MB）
+- **SHA-256 校验**: `AFB22DF578237D74EF7C1199F710E1848F260DFD80964F49F26AF1BFA4998837`
 - **版本号**: `versionCode = 72` / `versionName = "1.13.0"`
 
 ---
@@ -117,4 +117,5 @@ cd D:\BACKUP\Project\SillyClient\.worktrees\release-hardening-android
 | 2026-10-11 | Agent | v1.12.0 正式发布：main 仓提交 `1495221` + tag `v1.12.0` + GitHub Release（Latest，三资产 APK/EXE/IPA 与本地字节一致），发布正文按特性分组挂三仓提交短链 | **已发布** |
 | 2026-10-12 | Agent | v1.12.1：差量移植主仓 `3fbd81f`（透明封面垫主题色 + 管理卡圆角裁切修复，三方合并 0 冲突，平台嫁接完好），versionCode 70→71 / versionName 1.12.1，typecheck 0 错误 + 73 tasks 全绿，真机 af72222f 覆盖安装验证通过 | 已验证 |
 | 2026-10-12 | Agent | 接手移植主仓 `SillyClient_Android` 未入库 WIP（与 Windows 对齐）：① `RuntimeConfiguration` 写入链路 `enableServerPlugins` 缺失回填 `true`（修复 WIP 中 `changed` 先于 `let` 声明使用的 TDZ 崩溃，显式 `false` 保留）；② 预制扩展下载接入镜像回退链（codeload 直连 → ghfast.top → gh-proxy.com → ghproxy.net，跟随重定向，逐源失败兜底报错），抽出 `downloadFromMirrors` 内部接缝；新增 4 项单测（回填语义×2/零改写夹具修正 + 镜像回退×3），全量 444 项单测 0 失败 | 已推送 (3b13ec1) |
-| 2026-10-12 | Agent | 新旧版本过渡根因修复安卓平移 + 合并回归起底：① **合并回归修复**：`cac5971` 三方合并丢失的 `<LegacyMigrationModal>`/`<RelocateInstanceModal>` JSX 挂载重新接回（搬迁入口此前点了无反应，迁移向导永不可见且不可见层吞返回键），同时清除重复层注册与 `isWindows` 死分支检测；② **安装源=创建意图铁律**：前端新增 `createIntent` 契约（仅创建向导为 true），卡片创建成功与 localStorage 读取双端剥离 `zipballUrl/localZipPath/preinstall/companionPreset`，后端 `InstanceInstaller.prepare` 新增 `allowFreshInstall` 闸门——无创建意图时目录缺失/损坏拒绝静默全新安装顶替（中文引导报错），`InstallLocationRegistry.resolve` 新增 `forCreation` 分身拒创；③ **迁移链路对齐 Windows 终态**：`relocateLegacyItems` 逐项容错不再首败即中断，全部迁成才写版本标记，检测异常不写标记；新增 3 项单测，全量 447 项 0 失败，typecheck 0 错误，Release APK 重打包通过（versionCode 72，198,583,840 字节，SHA-256 `F8759EBA…`，归档 `Local/artifacts/v1.13.0/`），**待真机验收** | 已推送 (3b13ec1) |
+| 2026-10-12 | Agent | 新旧版本过渡根因修复安卓平移 + 合并回归起底：① **合并回归修复**：`cac5971` 三方合并丢失的 `<LegacyMigrationModal>`/`<RelocateInstanceModal>` JSX 挂载重新接回（搬迁入口此前点了无反应，迁移向导永不可见且不可见层吞返回键），同时清除重复层注册与 `isWindows` 死分支检测；② **安装源=创建意图铁律**：前端新增 `createIntent` 契约（仅创建向导为 true），卡片创建成功与 localStorage 读取双端剥离 `zipballUrl/localZipPath/preinstall/companionPreset`，后端 `InstanceInstaller.prepare` 新增 `allowFreshInstall` 闸门——无创建意图时目录缺失/损坏拒绝静默全新安装顶替（中文引导报错），`InstallLocationRegistry.resolve` 新增 `forCreation` 分身拒创；③ **迁移链路对齐 Windows 终态**：`relocateLegacyItems` 逐项容错不再首败即中断，全部迁成才写版本标记，检测异常不写标记；新增 3 项单测，全量 447 项 0 失败，typecheck 0 错误，Release APK 重打包通过（versionCode 72，198,583,728 字节，SHA-256 `AFB22DF5…`，归档 `Local/artifacts/v1.13.0/`），**待真机验收** | 已推送 (3b13ec1) |
+| 2026-10-12 | Agent | v1.13.0 性能增补：IME 键盘动画零逐帧 JS（onProgress 不再跨进程派发，onStart/onEnd 双点派发 + 目标态去重 + 注入重放重置），清除 LayerType 矛盾残留，WebView 开启 offscreenPreRaster 平滑超长聊天滚动，修正 IME 注释与实现的一致性；447 项单测 0 失败，APK 重打包（归档指纹已更新为 AFB22DF5…） | 已推送 (e4cab61) |
