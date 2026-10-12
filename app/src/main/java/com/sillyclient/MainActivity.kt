@@ -201,6 +201,8 @@ class MainActivity : BridgeActivity() {
     // ---- State ----
     @Volatile private var serverReady = false
     @Volatile private var isWebViewVisible = false
+    /** 最近一次派发到前端的 IME 底距目标态（CSS px），-1 = 尚未派发。 */
+    private var lastImeNavBottomCssPx = -1
     private var statusBarFixedPx = 0  // fixed physical pixels, never changes
     // 启动器支持多实例:目标 URL 与端口由前端实例数据决定,不再硬编码 8000
     @Volatile private var tavernUrl = "http://127.0.0.1:8000/"
@@ -604,7 +606,6 @@ class MainActivity : BridgeActivity() {
         cleanupStaleExportTempFiles()
 
         webView = WebView(this).apply {
-            setLayerType(View.LAYER_TYPE_NONE, null)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
             }
@@ -628,7 +629,8 @@ class MainActivity : BridgeActivity() {
             settings.layoutAlgorithm = android.webkit.WebSettings.LayoutAlgorithm.NORMAL
             settings.textZoom = 100
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                settings.offscreenPreRaster = false
+                // 酒馆聊天是超长滚动面：离屏预栅格化显著平滑滚动，代价是少量显存。
+                settings.offscreenPreRaster = true
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 @Suppress("DEPRECATION")
@@ -812,9 +814,10 @@ class MainActivity : BridgeActivity() {
         }
         chameleonController.setStatusHint(tavernStatusHint)
 
-        // IME 零重排零延迟适配（TT 同款架构）：
-        // 废除 webViewScreen.setPadding(...)，绝不改变 WebView 物理高宽，彻底消灭 Viewport Resize 全局重排！
-        // 原生直接将软键盘高度转换为 CSS 像素，驱动 GPU 硬件加速的局部 translate3d 位移。
+        // IME 低重排适配（TT 同款架构）：
+        // 废除 webViewScreen.setPadding(...)，绝不改变 WebView 物理高宽；
+        // 原生仅在动画起点/终点把软键盘状态换算为 CSS 像素写入 --sc-nav-bottom，
+        // 中间帧交由 Chromium 视口与 CSS transition 在合成器线程完成，零逐帧 JS。
         ViewCompat.setWindowInsetsAnimationCallback(
             webViewScreen,
             object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
@@ -838,11 +841,8 @@ class MainActivity : BridgeActivity() {
                     insets: WindowInsetsCompat,
                     runningAnimations: MutableList<WindowInsetsAnimationCompat>
                 ): WindowInsetsCompat {
-                    val imeType = WindowInsetsCompat.Type.ime()
-                    val navHeight = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
-                    val imeHeight = insets.getInsets(imeType).bottom
-                    val isImeVisible = insets.isVisible(imeType)
-                    dispatchImeOffset(if (isImeVisible) imeHeight else 0, navHeight)
+                    // 逐帧位移由 Chromium 视口与 CSS transition 承担（GPU 合成器）；
+                    // 这里绝不逐帧 evaluateJavascript，避免每帧 IPC + 全文档样式重算。
                     return insets
                 }
 
@@ -1855,6 +1855,7 @@ class MainActivity : BridgeActivity() {
         webView.evaluateJavascript(script, null)
         // Re-apply the current insets so the fresh stylesheet starts from the
         // real keyboard/navigation state instead of the 18px default.
+        lastImeNavBottomCssPx = -1
         val insets = ViewCompat.getRootWindowInsets(webViewScreen)
         val imeVisible = insets?.isVisible(WindowInsetsCompat.Type.ime()) ?: false
         val imeHeight = insets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
@@ -1866,6 +1867,10 @@ class MainActivity : BridgeActivity() {
         if (!::webView.isInitialized) return
         val density = resources.displayMetrics.density
         val navCssPx = if (density > 0) navHeightPx / density else navHeightPx.toFloat()
+        // 去重：onStart/onEnd/InsetsListener 会对同一终态重复回调，只有目标态变化才过桥。
+        val targetState = (if (imeHeightPx > 0) 0 else maxOf(kotlin.math.ceil(navCssPx.toDouble()).toInt(), 18))
+        if (targetState == lastImeNavBottomCssPx) return
+        lastImeNavBottomCssPx = targetState
         val script = """
             (function() {
                 try {
