@@ -99,8 +99,8 @@ cd D:\BACKUP\Project\SillyClient\.worktrees\release-hardening-android
 
 ### 4. 当前最新构建产物指纹（2026-10-12，v1.13.0 待真机验收）
 - **APK 路径**: `app/build/outputs/apk/release/app-release.apk`（已归档 `Local/artifacts/v1.13.0/SillyClient-Android-v1.13.0.apk`）
-- **文件体积**: `198,585,564` 字节（约 189.37 MB）
-- **SHA-256 校验**: `9A01304364F39DE726D75B273F1E4D4D5FBAA8D7083B4F513DED5D76F0314B93`
+- **文件体积**: `198,586,636` 字节（约 189.37 MB）
+- **SHA-256 校验**: `370DA50304AA03ECDB491A3756F8C1F7E41CDC2221B114AFFB1BADDD17C3FD32`
 - **版本号**: `versionCode = 72` / `versionName = "1.13.0"`
 
 ---
@@ -120,3 +120,4 @@ cd D:\BACKUP\Project\SillyClient\.worktrees\release-hardening-android
 | 2026-10-12 | Agent | 新旧版本过渡根因修复安卓平移 + 合并回归起底：① **合并回归修复**：`cac5971` 三方合并丢失的 `<LegacyMigrationModal>`/`<RelocateInstanceModal>` JSX 挂载重新接回（搬迁入口此前点了无反应，迁移向导永不可见且不可见层吞返回键），同时清除重复层注册与 `isWindows` 死分支检测；② **安装源=创建意图铁律**：前端新增 `createIntent` 契约（仅创建向导为 true），卡片创建成功与 localStorage 读取双端剥离 `zipballUrl/localZipPath/preinstall/companionPreset`，后端 `InstanceInstaller.prepare` 新增 `allowFreshInstall` 闸门——无创建意图时目录缺失/损坏拒绝静默全新安装顶替（中文引导报错），`InstallLocationRegistry.resolve` 新增 `forCreation` 分身拒创；③ **迁移链路对齐 Windows 终态**：`relocateLegacyItems` 逐项容错不再首败即中断，全部迁成才写版本标记，检测异常不写标记；新增 3 项单测，全量 447 项 0 失败，typecheck 0 错误，Release APK 重打包通过（versionCode 72，198,585,564 字节，SHA-256 `9A013043…`，归档 `Local/artifacts/v1.13.0/`），**待真机验收** | 已推送 (3b13ec1) |
 | 2026-10-12 | Agent | v1.13.0 性能增补：IME 键盘动画零逐帧 JS（onProgress 不再跨进程派发，onStart/onEnd 双点派发 + 目标态去重 + 注入重放重置），清除 LayerType 矛盾残留，WebView 开启 offscreenPreRaster 平滑超长聊天滚动，修正 IME 注释与实现的一致性；447 项单测 0 失败，APK 重打包（归档指纹已更新为 AFB22DF5…） | 已推送 (e4cab61) |
 | 2026-10-13 | Agent | v1.13.0 第二轮：① 多开落地（实例会话表、同名重启他例保持、端口回环顺延/LAN 报错、进程就绪后脱离操作生命周期、实例级 exit 事件与前台切换）；② 删除竞态根治（closeTavern 二次停止/自我取消误杀后台清理线程 → 纯 UI 拆卸；NativeTreeRemoval 批间重捕 generation）；③ 依赖实例自持根除共享 node_modules 银行对用户所选文件夹的污染，旧库按银行标记安全清退；新增 1 项回归测试，全量 448 项 0 失败，APK 重打包（指纹 `9A013043…`） | 已推送 (0fa1b21) |
+| 2026-10-13 | Agent | v1.13.0 第三轮：键盘避让重构为原生 translationY 逐帧平移（修复 DISPATCH_MODE_STOP 阻断中间帧导致的输入栏不跟随/末端跳变，IME insets 不透传 WebView，视口恒尺寸零重排）；酒馆全局性能层从配套主题沉淀为默认能力（触控 0 延迟、去点击灰闪、滚动链隔离、聊天区重排隔离、列表视口虚拟化、合成层提升、抽屉弹窗 blur 短路）；447 项单测全绿，APK 重打包（指纹 `370DA503…`） | 已推送 (414afbd) |
