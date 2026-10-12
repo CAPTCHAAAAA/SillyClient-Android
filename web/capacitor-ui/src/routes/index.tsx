@@ -94,12 +94,21 @@ function loadInstances(): TavernInstance[] {
   try {
     const raw = localStorage.getItem(INSTANCES_KEY);
     if (raw) {
-      return normalizeStoredInstances(JSON.parse(raw), { resetStatus: true }).map(hydrateInstance);
+      return normalizeStoredInstances(JSON.parse(raw), { resetStatus: true })
+        .map(hydrateInstance)
+        .map(stripOneShotCreationParams);
     }
   } catch {
     /* ignore */
   }
   return [];
+}
+
+/** 安装源与预装项是一次性创建参数：旧版本持久化的卡片可能残留，读取时统一剥离，
+ *  防止启动链路携带安装源、在数据丢失时被静默重装顶替。 */
+function stripOneShotCreationParams(instance: TavernInstance): TavernInstance {
+  const { zipballUrl: _zipballUrl, localZipPath: _localZipPath, preinstall: _preinstall, companionPreset: _companionPreset, ...rest } = instance;
+  return rest;
 }
 
 function normalizeStoredCover(cover?: string) {
@@ -1057,17 +1066,21 @@ function SillyClientLauncher() {
   useEffect(() => () => { operations.cancel(); }, [operations]);
 
   // 配置并启动本地实例。创建流程只在确认服务可访问后写入卡片。
-  const doLaunch = useCallback(async (instance: TavernInstance, operation: OperationContext, enterWhenReady = true) => {
+  // createIntent 仅创建向导为 true：安装源与预装项只随创建下发，启动既有实例绝不携带，
+  // 后端据此在目录丢失/损坏时拒绝静默重装顶替用户数据。
+  const lastLaunchCreateIntentRef = useRef(false);
+  const doLaunch = useCallback(async (instance: TavernInstance, operation: OperationContext, enterWhenReady = true, createIntent = false) => {
     operation.assertCurrent();
+    lastLaunchCreateIntentRef.current = createIntent;
     const port = instance.port ?? 8000;
     const instanceId = instance.installDir || instance.id;
     const version = instance.version || "stable";
     const config = instance.config ?? DEFAULT_CONFIG;
-    const zipballUrl = instance.zipballUrl;
-    const localZipPath = instance.localZipPath;
+    const zipballUrl = createIntent ? instance.zipballUrl : undefined;
+    const localZipPath = createIntent ? instance.localZipPath : undefined;
     const installPath = instance.installPath;
-    const companionPreset = instance.companionPreset;
-    const preinstall = instance.preinstall;
+    const companionPreset = createIntent ? instance.companionPreset : undefined;
+    const preinstall = createIntent ? instance.preinstall : undefined;
 
     setLaunchProgress({ pct: 0, text: "初始化" });
     setLaunchError(null);
@@ -1117,8 +1130,8 @@ function SillyClientLauncher() {
 
       // 调用原生 provision
       const provisionResult = await operation.wait(TarvenEnv.provisionAndStart({
-        port, instanceId, instanceName: instance.subtitle || instance.name, operationId: operation.id, version, zipballUrl, localZipPath,
-        installPath, installPathMode: instance.installPathMode, companionPreset, preinstall, config,
+        port, instanceId, instanceName: instance.subtitle || instance.name, operationId: operation.id, version, createIntent,
+        zipballUrl, localZipPath, installPath, installPathMode: instance.installPathMode, companionPreset, preinstall, config,
       }));
       if (provisionResult?.ready === false) {
         throw new Error(errorMsg || "实例未能启动，请检查安装日志");
@@ -1328,18 +1341,21 @@ function SillyClientLauncher() {
       return;
     }
 
-    const result = await doLaunch(instance, operation, false);
+    const result = await doLaunch(instance, operation, false, true);
     const info = await operation.wait(TarvenEnv.getInstanceInfo({
       instanceId: instance.installDir || instance.id,
       installPath: instance.installPathMode === "root" ? undefined : instance.installPath,
       port: result.port,
     }));
     if (!info.path) throw new Error("原生未确认实例的实际安装目录，创建未完成");
-    setLastLaunchParams({ ...instance, installPath: info.path, installPathMode: "exact", port: result.port });
+    // 安装源（zipballUrl/localZipPath）与预装项是一次性创建参数，绝不持久化到卡片：
+    // 后端以 createIntent 区分创建与启动意图，卡片残留安装源会导致数据丢失时被静默重装顶替。
+    const { zipballUrl: _zipballUrl, localZipPath: _localZipPath, preinstall: _preinstall, companionPreset: _companionPreset, ...persistedInstance } = instance;
+    setLastLaunchParams({ ...persistedInstance, installPath: info.path, installPathMode: "exact", port: result.port });
     setInstances(prev => prev.some(t => t.id === instance.id)
       ? prev
       : [...prev, {
-          ...instance,
+          ...persistedInstance,
           status: "running",
           port: result.port,
           version: info.version && info.version !== "unknown" ? normalizeStoredVersion(info.version) : instance.version,
@@ -1621,7 +1637,7 @@ function SillyClientLauncher() {
         setInstances(prev => prev.map(t => t.id === lastLaunchParams.id ? { ...t, status: "online" } : t));
         operation.schedule(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 500);
       } else {
-        const result = await doLaunch(lastLaunchParams, operation);
+        const result = await doLaunch(lastLaunchParams, operation, true, lastLaunchCreateIntentRef.current);
         if (!operation.isCurrent) return;
         setInstances(prev => prev.map(t => t.id === lastLaunchParams.id ? { ...t, status: "running", port: result.port } : t));
         operation.schedule(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 800);
@@ -2037,7 +2053,7 @@ function SillyClientLauncher() {
 
   const dismissLegacyMigration = useCallback(() => {
     if (isLegacyMigrationBusy || isLegacyMigrationClosing) return;
-    localStorage.setItem(LEGACY_MIGRATION_KEY, APP_VERSION);
+    // 「稍后处理」不写版本标记：只要旧版实例仍未迁完，下次启动会再次提醒。
     setIsLegacyMigrationClosing(true);
     if (legacyCloseTimerRef.current) clearTimeout(legacyCloseTimerRef.current);
     legacyCloseTimerRef.current = setTimeout(() => {
@@ -2050,20 +2066,27 @@ function SillyClientLauncher() {
   const checkLegacyMigration = useCallback(async () => {
     if ((isWeb && !isWindows) || isShowcase) return;
     const generation = ++legacyCheckRef.current;
-    const openWith = (instances: LegacyMigrationItem[]) => {
-      if (generation !== legacyCheckRef.current) return;
-      setLegacyMigrationList(instances);
-      setShowLegacyMigration(true);
-      setIsLegacyMigrationClosing(false);
-    };
     try {
       const result = await TarvenEnv.checkLegacyInstances();
-      // 无论是否存在旧版实例均弹出，无实例时展示优雅空态供审查
-      openWith(result.instances);
+      if (generation !== legacyCheckRef.current) return;
+      const found = result.instances || [];
+      if (found.length > 0) {
+        setLegacyMigrationList(found);
+        setShowLegacyMigration(true);
+        setIsLegacyMigrationClosing(false);
+      } else {
+        // 无待迁移实例：记录本版本标记长期静默，不再弹空窗打扰。
+        localStorage.setItem(LEGACY_MIGRATION_KEY, APP_VERSION);
+      }
     } catch {
-      openWith([]);
+      // 检测异常不写版本标记：下次启动重新检测，避免一次抖动永久跳过迁移。
     }
   }, [isWeb, isWindows, isShowcase]);
+
+  const handleLegacyMigrationComplete = useCallback(() => {
+    // 弹窗仅在全部迁移成功时回调（部分失败会保留列表供重试）：全部迁成才写版本标记长期静默。
+    localStorage.setItem(LEGACY_MIGRATION_KEY, APP_VERSION);
+  }, []);
 
   const dismissWhatsNew = useCallback(() => {
     localStorage.setItem(WHATS_NEW_KEY, WHATS_NEW_VERSION);
@@ -2154,34 +2177,6 @@ function SillyClientLauncher() {
     }
   }, [showManagePanel]);
 
-  // 本版本更新后开屏弹窗检测：若无引导与公告，且本版本尚未展示过旧版迁移弹窗，则自动弹出（无旧实例时展示优雅空态供审查）
-  useEffect(() => {
-    if (
-      !showOnboarding &&
-      !showWhatsNew &&
-      isWindows &&
-      localStorage.getItem(LEGACY_MIGRATION_KEY) !== APP_VERSION
-    ) {
-      if (TarvenEnv.checkLegacyInstances) {
-        TarvenEnv.checkLegacyInstances()
-          .then(({ instances }) => {
-            setLegacyMigrationList(instances || []);
-            setShowLegacyMigration(true);
-            setIsLegacyMigrationClosing(false);
-          })
-          .catch(() => {
-            setLegacyMigrationList([]);
-            setShowLegacyMigration(true);
-            setIsLegacyMigrationClosing(false);
-          });
-      } else {
-        setLegacyMigrationList([]);
-        setShowLegacyMigration(true);
-        setIsLegacyMigrationClosing(false);
-      }
-    }
-  }, [showOnboarding, showWhatsNew, isWindows]);
-
   const openVersionDropdown = useCallback((trigger: HTMLElement) => {
     const r = trigger.getBoundingClientRect();
     setVerDropdownPos({
@@ -2245,14 +2240,6 @@ function SillyClientLauncher() {
   useEffect(() => {
     if (renamingId) return registerLayer("rename_modal", closeRenameDialog);
   }, [renamingId, registerLayer, closeRenameDialog]);
-
-  useEffect(() => {
-    if (showLegacyMigration) return registerLayer("legacy_migration", dismissLegacyMigration);
-  }, [showLegacyMigration, registerLayer, dismissLegacyMigration]);
-
-  useEffect(() => {
-    if (showRelocateModal) return registerLayer("relocate_instance", closeRelocateModal);
-  }, [showRelocateModal, registerLayer, closeRelocateModal]);
 
   useEffect(() => {
     if (verDropdownOpen) return registerLayer("version_dropdown", closeVersionDropdown);
@@ -2968,6 +2955,33 @@ function SillyClientLauncher() {
         terminalDisplayPrompt={terminalDisplayPrompt}
         terminalPlaceholder={terminalPlaceholder}
         onUpdateInstancePasswordStatus={handleUpdateInstancePasswordStatus}
+      />
+
+      {/* 旧版路径实例一键迁移向导（检测结果非空时自动弹出） */}
+      <LegacyMigrationModal
+        isOpen={showLegacyMigration}
+        isClosing={isLegacyMigrationClosing}
+        onClose={dismissLegacyMigration}
+        isLight={isLight}
+        glassBg={glassBg}
+        legacyInstances={legacyMigrationList}
+        isWindows={isWindows}
+        onBusyChange={setIsLegacyMigrationBusy}
+        onInstanceRelocated={handleInstanceRelocated}
+        onMigrationComplete={handleLegacyMigrationComplete}
+      />
+
+      {/* 单实例存储路径无损重定位弹窗 */}
+      <RelocateInstanceModal
+        instance={relocatingInstance}
+        isOpen={showRelocateModal}
+        isClosing={isRelocateModalClosing}
+        onClose={closeRelocateModal}
+        isLight={isLight}
+        glassBg={glassBg}
+        isWindows={isWindows}
+        onBusyChange={setIsRelocationBusy}
+        onRelocated={handleInstanceRelocated}
       />
 
       <InstanceMaintenancePanel instance={maintenanceInstance} isOpen={!!maintenanceInstance}

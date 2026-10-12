@@ -110,10 +110,23 @@ class RuntimeConfigurationTest {
         assertFalse(parsed.getJSONObject("browserLaunch").getBoolean("enabled"))
         assertEquals("custom.example", parsed.getJSONObject("browserLaunch").getString("hostname"))
         assertTrue(parsed.getBoolean("enableKeepAlive"))
+        assertTrue(parsed.getBoolean("enableServerPlugins"))
         assertFalse(parsed.has("protocolIPv4"))
         assertFalse(parsed.has("enableHttpKeepAlive"))
         assertEquals(originalSettings, settings.readText())
         assertTrue(directory.listFiles().orEmpty().none { it.name.startsWith(".sillyclient-config-") })
+    }
+
+    @Test
+    fun preservesAnExplicitServerPluginsChoice() = withConfiguration { directory, configuration, operations, operation ->
+        val config = File(directory, "config.yaml").apply { writeText("port: 8000\nenableServerPlugins: false\n") }
+        operations.run(operation) {
+            configuration.write(directory, JSONObject().put("port", 8001), operation)
+        }
+        val parsed = readConfig(directory)
+        assertEquals(8001, parsed.getInt("port"))
+        assertFalse(parsed.getBoolean("enableServerPlugins"))
+        assertTrue(config.readText().contains("enableServerPlugins: false"))
     }
 
     @Test
@@ -134,8 +147,9 @@ class RuntimeConfigurationTest {
         assertEquals("::1", parsed.getJSONObject("listenAddress").getString("ipv6"))
         assertEquals(30, parsed.getInt("heartbeatInterval"))
         assertFalse(parsed.getBoolean("enableKeepAlive"))
+        assertTrue(parsed.getBoolean("enableServerPlugins"))
         assertFalse(File(directory, "data").exists())
-    }
+        }
 
     @Test
     fun rejectsConflictingNestedConfigurationTypesWithoutOverwritingUserData() = withConfiguration { directory, configuration, operations, operation ->
@@ -235,6 +249,7 @@ class RuntimeConfigurationTest {
             assertFalse(configured.getJSONObject("browserLaunch").getBoolean("enabled"))
             assertTrue(configured.getJSONObject("protocol").getBoolean("ipv4"))
             assertEquals("keep", configured.getString("unknownSetting"))
+            assertTrue(configured.getBoolean("enableServerPlugins"))
             assertTrue(File(directory, "config.yaml").readText().contains("# Keep my comment"))
         } finally { process.destroyForcibly() }
     }
@@ -244,7 +259,7 @@ class RuntimeConfigurationTest {
         File(directory, "package.json").writeText("""{"type":"module"}""")
         File(directory, "server.js").writeText("export const loaded = true;\n")
         val config = File(directory, "config.yaml")
-        val original = "# Preserve exact bytes\nport: 8123 # chosen port\nbrowserLaunch:\n  enabled: false\n"
+        val original = "# Preserve exact bytes\nport: 8123 # chosen port\nbrowserLaunch:\n  enabled: false\nenableServerPlugins: true\n"
         config.writeText(original)
         assertTrue(config.setLastModified(1_234_567_000L))
         val originalModified = config.lastModified()

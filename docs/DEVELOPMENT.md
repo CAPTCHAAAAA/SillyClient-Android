@@ -130,19 +130,21 @@ Windows 无创建符号链接权限时对应测试跳过，必须在允许该能
 不能把跳过宣称为已验证。
 
 `PreinstalledExtensionInstallerTest` 覆盖选择/来源白名单、归档完整性、编译入口、兼容性、
-已有文件与禁用设置保留、取消和仅删除未变化自有文件的回滚。设置
+已有文件与禁用设置保留、取消和仅删除未变化自有文件的回滚，并以回环 HTTP 服务器
+钉死下载镜像回退顺序、重定向跟随、钉定大小守卫与全源失败报错。设置
 `SILLYCLIENT_EXTENSION_AUDIT_DIR` 后还会使用目录内的四个固定版本 ZIP 完成离线安装验证；
 缓存是测试夹具，不得提交到 MIT 产品仓库。
 
 `RuntimeConfigurationTest` 使用固定运行时 Node 和离线 `yaml` 副本，在合成目录实际执行
-配置脚本，验证注释、未知键、安全配置和扩展设置保留，以及自定义数据根和非法 YAML 拒绝。
+配置脚本，验证注释、未知键、安全配置和扩展设置保留、`enableServerPlugins` 缺失回填
+与显式关闭保留，以及自定义数据根和非法 YAML 拒绝。
 未提供夹具时这些测试明确跳过。工作区可使用：
 
 ```powershell
 $env:SILLYCLIENT_TEST_TEMP_DIR = 'D:\BACKUP\Project\SillyClient\Local\临时\preinstalled-extension-tests'
 $env:SILLYCLIENT_EXTENSION_AUDIT_DIR = 'D:\BACKUP\Project\SillyClient\Local\cache\preinstalled-extension-audit'
 $env:SILLYCLIENT_CONFIGURATION_NODE = 'D:\BACKUP\Project\SillyClient\SillyClient_Windows\runtime\node\node.exe'
-$env:SILLYCLIENT_CONFIGURATION_YAML = 'D:\BACKUP\Project\SillyClient\Local\cache\windows-data-migration\runtime-deps\node_modules\yaml'
+$env:SILLYCLIENT_CONFIGURATION_YAML = 'D:\BACKUP\Project\SillyClient\Local\cache\upstream\SillyTavern-current-20260904\node_modules\yaml'
 .\gradlew.bat :app:testDebugUnitTest --offline --no-daemon
 ```
 

@@ -34,6 +34,34 @@ class InstanceInstallerTest {
         assertTrue(parent.listFiles().orEmpty().none { it.name.startsWith(InstanceInstaller.STAGING_PREFIX) })
 
     @Test
+    fun launchWithoutCreationIntentRefusesFreshInstallOverMissingDirectory() = withRoot { root ->
+        val servers = File(root, "servers").apply { mkdirs() }
+        val target = File(servers, "lost-instance")
+        val error = assertThrows(IllegalStateException::class.java) {
+            InstanceInstaller(servers).prepare(target, {}, { source(it) }, { dependencies(it) }, { it() },
+                allowFreshInstall = false)
+        }
+        assertTrue(error.message.orEmpty().contains("不存在"))
+        assertFalse(target.exists())
+        assertNoStaging(servers)
+    }
+
+    @Test
+    fun launchWithoutCreationIntentRefusesReinstallOverDamagedDirectory() = withRoot { root ->
+        val servers = File(root, "servers").apply { mkdirs() }
+        val target = File(servers, "damaged")
+        File(target, "data/default-user").apply { mkdirs() }
+        File(target, "data/default-user/user-data.json").writeText("keep me")
+        val error = assertThrows(IllegalStateException::class.java) {
+            InstanceInstaller(servers).prepare(target, {}, { source(it) }, { dependencies(it) }, { it() },
+                allowFreshInstall = false)
+        }
+        assertTrue(error.message.orEmpty().contains("损坏"))
+        assertEquals("keep me", File(target, "data/default-user/user-data.json").readText())
+        assertNoStaging(servers)
+    }
+
+    @Test
     fun newInstanceIsPreparedBesideItsFinalPathAndPublishedOnceComplete() = withRoot { root ->
         val servers = File(root, "servers")
         val target = File(servers, "readable name")

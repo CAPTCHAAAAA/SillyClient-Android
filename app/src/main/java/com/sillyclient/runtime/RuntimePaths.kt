@@ -132,6 +132,7 @@ data class RuntimePaths(
         return target
     }
 
-    fun launchDirectoryFor(instanceId: String, requestedPath: String?, installPathMode: String = "exact", displayName: String? = null): File =
-        installLocations.resolve(instanceId, requestedPath, installPathMode, displayName)
+    fun launchDirectoryFor(instanceId: String, requestedPath: String? = null, installPathMode: String = "exact", displayName: String? = null,
+        forCreation: Boolean = false): File =
+        installLocations.resolve(instanceId, requestedPath, installPathMode, displayName, forCreation)
 }

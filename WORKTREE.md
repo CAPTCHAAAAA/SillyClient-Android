@@ -18,7 +18,7 @@
 
 ## 二、 当前现场明细 (Current State)
 
-**现场已全部提交并推送（2026-10-11，工作树干净）**：
+**截至 v1.12.1 现场已全部提交并推送；2026-10-12 新增 Windows 对齐移植待提交（见台账末行）**：
 
 | 提交 | 内容 |
 | :--- | :--- |
@@ -116,3 +116,5 @@ cd D:\BACKUP\Project\SillyClient\.worktrees\release-hardening-android
 | 2026-10-11 | 用户 | `adb install -r` 装机（af72222f，dumpsys 确认 versionName 1.12.0 / versionCode 70），真机上手实测 | **验收通过** |
 | 2026-10-11 | Agent | v1.12.0 正式发布：main 仓提交 `1495221` + tag `v1.12.0` + GitHub Release（Latest，三资产 APK/EXE/IPA 与本地字节一致），发布正文按特性分组挂三仓提交短链 | **已发布** |
 | 2026-10-12 | Agent | v1.12.1：差量移植主仓 `3fbd81f`（透明封面垫主题色 + 管理卡圆角裁切修复，三方合并 0 冲突，平台嫁接完好），versionCode 70→71 / versionName 1.12.1，typecheck 0 错误 + 73 tasks 全绿，真机 af72222f 覆盖安装验证通过 | 已验证 |
+| 2026-10-12 | Agent | 接手移植主仓 `SillyClient_Android` 未入库 WIP（与 Windows 对齐）：① `RuntimeConfiguration` 写入链路 `enableServerPlugins` 缺失回填 `true`（修复 WIP 中 `changed` 先于 `let` 声明使用的 TDZ 崩溃，显式 `false` 保留）；② 预制扩展下载接入镜像回退链（codeload 直连 → ghfast.top → gh-proxy.com → ghproxy.net，跟随重定向，逐源失败兜底报错），抽出 `downloadFromMirrors` 内部接缝；新增 4 项单测（回填语义×2/零改写夹具修正 + 镜像回退×3），全量 444 项单测 0 失败 | 未提交 |
+| 2026-10-12 | Agent | 新旧版本过渡根因修复安卓平移 + 合并回归起底：① **合并回归修复**：`cac5971` 三方合并丢失的 `<LegacyMigrationModal>`/`<RelocateInstanceModal>` JSX 挂载重新接回（搬迁入口此前点了无反应，迁移向导永不可见且不可见层吞返回键），同时清除重复层注册与 `isWindows` 死分支检测；② **安装源=创建意图铁律**：前端新增 `createIntent` 契约（仅创建向导为 true），卡片创建成功与 localStorage 读取双端剥离 `zipballUrl/localZipPath/preinstall/companionPreset`，后端 `InstanceInstaller.prepare` 新增 `allowFreshInstall` 闸门——无创建意图时目录缺失/损坏拒绝静默全新安装顶替（中文引导报错），`InstallLocationRegistry.resolve` 新增 `forCreation` 分身拒创；③ **迁移链路对齐 Windows 终态**：`relocateLegacyItems` 逐项容错不再首败即中断，全部迁成才写版本标记，检测异常不写标记；新增 3 项单测，全量 447 项 0 失败，typecheck 0 错误，Release APK 重打包通过（198,583,832 字节，SHA-256 `0C8B03C7…`） | 未提交 |

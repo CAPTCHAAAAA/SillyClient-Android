@@ -24,7 +24,8 @@ class InstanceInstaller(
         extract: (File) -> Boolean,
         installDependencies: (File) -> Boolean,
         commit: (() -> Unit) -> Unit,
-        instanceId: String? = null
+        instanceId: String? = null,
+        allowFreshInstall: Boolean = true
     ) {
         ensureActive()
         val id = instanceId ?: target.name
@@ -42,6 +43,19 @@ class InstanceInstaller(
             ensureActive()
             commit { installLocations?.registerCommitted(id, target) }
             return
+        }
+        // 启动既有实例绝不携带创建意图：目标缺失/损坏时拒绝静默全新安装顶替用户数据，
+        // 只给出清晰中文引导（创建流程恒为 allowFreshInstall=true，不受此闸门影响）。
+        if (!allowFreshInstall) {
+            if (exists(target)) throw IllegalStateException(
+                "实例安装目录已损坏（缺少 server.js）：${target.absolutePath}。" +
+                    "为保护你的数据，本次启动未执行任何重装；请通过「导入数据（ZIP）」恢复，或卸载后重新创建实例"
+            )
+            throw IllegalStateException(
+                "实例安装目录不存在：${target.absolutePath}。" +
+                    "目录可能已被移动或删除，为防数据被静默顶替，本次启动已拒绝自动全新安装；" +
+                    "若确认数据已丢失，请卸载此实例后重新创建"
+            )
         }
         requireEmptyOrMissing(target)
         val originalTarget = if (exists(target)) attributes(target) else null

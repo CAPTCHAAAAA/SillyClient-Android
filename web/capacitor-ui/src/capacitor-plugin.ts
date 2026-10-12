@@ -172,6 +172,11 @@ export interface TarvenEnvPlugin {
     instanceName?: string
     operationId?: string
     version: string
+    /**
+     * 创建意图仅创建向导声明为 true，且安装源只允许在创建时携带。
+     * 启动既有实例绝不携带——后端据此在实例目录丢失/损坏时拒绝静默全新安装顶替用户数据。
+     */
+    createIntent?: boolean
     zipballUrl?: string
     localZipPath?: string
     /** Complete native installation path; unsupported locations fail without fallback. */

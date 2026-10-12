@@ -78,6 +78,7 @@ export const LegacyMigrationModal: React.FC<LegacyMigrationModalProps> = ({
     setMigrating(true);
     setErrorMsg(null);
 
+    const failures: string[] = [];
     try {
       await relocateLegacyItems(legacyInstances, completedRef.current, async (item) => {
         setCurrentMigratingId(item.instanceId);
@@ -94,9 +95,16 @@ export const LegacyMigrationModal: React.FC<LegacyMigrationModalProps> = ({
         setCompletedLocations(previous => ({ ...previous, [item.instanceId]: result }));
       }, () => {
         if (session !== sessionRef.current) throw new Error("迁移视图已关闭");
+      }, (item, message) => {
+        failures.push(`「${item.name}」：${message}`);
       });
-      setIsAllDone(true);
-      onMigrationComplete?.();
+      if (failures.length === 0) {
+        setIsAllDone(true);
+        onMigrationComplete?.();
+      } else if (session === sessionRef.current) {
+        // 部分失败：不写长期静默标记，失败项保留原状并明示原因，可直接再次重试。
+        setErrorMsg(`以下实例未能迁移，数据已保留原状，可点击再次重试：${failures.join("；")}`);
+      }
     } catch (err: any) {
       if (session === sessionRef.current) setErrorMsg(err?.message || "迁移过程中发生异常，未完成项保留原状");
     } finally {

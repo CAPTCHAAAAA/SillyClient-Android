@@ -194,7 +194,8 @@ class InstallLocationRegistry(
         }
     }
 
-    fun resolve(instanceId: String, requestedPath: String? = null, installPathMode: String = "exact", displayName: String? = null): File =
+    fun resolve(instanceId: String, requestedPath: String? = null, installPathMode: String = "exact", displayName: String? = null,
+        forCreation: Boolean = false): File =
         synchronized(lock) {
             val id = normalizeInstanceId(instanceId)
             require(installPathMode in setOf("exact", "root")) { "Unknown installation path mode" }
@@ -233,7 +234,17 @@ class InstallLocationRegistry(
                 // The registry wins over a stale remembered path: the frontend
                 // mirror may lag behind a rename, and the directory on disk is
                 // what the instance actually runs from.
-                if (requested != null) allowedRootFor(requested)
+                if (requested != null) {
+                    allowedRootFor(requested)
+                    // 创建意图防御：同名实例已登记在其他位置时，拒绝在新位置
+                    // 重复创建造成分身；目标与登记位置一致（如失败重试）则放行。
+                    if (forCreation && normalized(requested).canonicalFile != recorded.directory.canonicalFile) {
+                        throw IllegalArgumentException(
+                            "实例「$id」已安装在：${recorded.directory.absolutePath}。" +
+                                "如需更换位置，请先卸载原实例或使用「存储迁移」搬迁"
+                        )
+                    }
+                }
                 return@synchronized recorded.directory
             }
             val rawTarget = requested ?: run {

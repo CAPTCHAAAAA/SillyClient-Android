@@ -131,6 +131,22 @@ class InstallLocationRegistryTest {
     }
 
     @Test
+    fun creationIntentRefusesDuplicateCreationAtADifferentLocation() = withRoot { _, paths ->
+        val root = File(paths.installationsDir, "chosen-root")
+        val target = paths.launchDirectoryFor("stable-id", root.path, "root", "Readable Tavern")
+        complete(target)
+        paths.installLocations.registerCommitted("stable-id", target)
+        // 创建意图 + 已登记实例在其他位置：拒绝分身创建
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            paths.launchDirectoryFor("stable-id", File(paths.installationsDir, "another-root").path, "root", "Readable Tavern", forCreation = true)
+        }
+        assertTrue(error.message.orEmpty().contains("已安装"))
+        // 目标与登记位置一致（如创建失败重试）放行；无创建意图的启动保持注册表权威
+        assertEquals(target, paths.launchDirectoryFor("stable-id", target.path, "exact", forCreation = true))
+        assertEquals(target, paths.launchDirectoryFor("stable-id", File(paths.installationsDir, "another-root").path, "root", "Readable Tavern"))
+    }
+
+    @Test
     fun unregisteredNameCollisionNeverAdoptsExistingData() = withRoot { _, paths ->
         val existing = complete(File(paths.serversDir, "My Tavern"))
         write(existing, "data/chat.jsonl", "preserve")

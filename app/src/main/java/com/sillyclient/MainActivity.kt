@@ -943,14 +943,17 @@ class MainActivity : BridgeActivity() {
         preinstall: PreinstalledExtensionsRequest? = null,
         installPath: String? = null,
         installPathMode: String = "exact",
-        instanceName: String? = null
+        instanceName: String? = null,
+        createIntent: Boolean = false
     ) {
         require(port in 1..65535) { "Invalid instance port" }
         require(config.ipv4 || config.ipv6) { "请至少启用 IPv4 或 IPv6" }
         require(config.heartbeat >= 0) { "Invalid heartbeat interval" }
         val paths = RuntimePaths.from(this)
         val id = RuntimePaths.normalizeInstanceId(instanceId)
-        val targetServerDir = paths.launchDirectoryFor(id, installPath, installPathMode, instanceName)
+        // 创建意图仅来自前端创建向导（createIntent=true）：同名已登记实例在其他位置时
+        // 拒绝分身创建；无创建意图的启动在目标缺失/损坏时拒绝静默全新安装顶替。
+        val targetServerDir = paths.launchDirectoryFor(id, installPath, installPathMode, instanceName, forCreation = createIntent)
         val operation = operations.begin(id, operationId)
         val previousStop = processSupervisor.stopAllAsync()
         cleanupService.invalidate()
@@ -1016,7 +1019,8 @@ class MainActivity : BridgeActivity() {
                             }
                         },
                         commit = { action -> operations.commit(operation, action) },
-                        instanceId = id
+                        instanceId = id,
+                        allowFreshInstall = createIntent
                     )
                 instanceRepository.invalidate(targetServerDir)
                 val runtimeConfiguration = RuntimeConfiguration(paths, operations, processSupervisor)

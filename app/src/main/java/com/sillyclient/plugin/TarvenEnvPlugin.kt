@@ -138,6 +138,9 @@ class TarvenEnvPlugin : Plugin() {
             return
         }
         val operationId = call.getString("operationId")
+        // 安装源仅允许在创建实例时携带；启动既有实例绝不声明创建意图——
+        // 后端据此在实例目录丢失/损坏时拒绝静默下载全新实例顶替用户数据。
+        val createIntent = call.data.optBoolean("createIntent", false)
         val preinstall = try { parsePreinstall(call) } catch (error: Exception) {
             Log.w(TAG, "reject: ${error.message}")
             call.reject(error.message ?: "Invalid preinstall request", error)
@@ -146,11 +149,11 @@ class TarvenEnvPlugin : Plugin() {
         act.runOnUiThread {
             try {
                 val paths = act.runtimePaths
-                val destination = paths.launchDirectoryFor(instanceId, installPath, installPathMode, instanceName)
+                val destination = paths.launchDirectoryFor(instanceId, installPath, installPathMode, instanceName, forCreation = createIntent)
                 if (InstanceStorageAccess.requiresPublicAccess(paths, destination) && !requestStorageAccess(call)) {
                     return@runOnUiThread
                 }
-                act.provisionAndStart(port, instanceId, version, config, urlArg, localArg, companionPreset, operationId, preinstall, installPath, installPathMode, instanceName)
+                act.provisionAndStart(port, instanceId, version, config, urlArg, localArg, companionPreset, operationId, preinstall, installPath, installPathMode, instanceName, createIntent)
                 call.resolve()
             } catch (error: Exception) {
                 Log.w(TAG, "reject: ${error.message}")

@@ -86,6 +86,7 @@ class RuntimeConfiguration(
               const values = JSON.parse(process.env.SILLYCLIENT_CONFIG_VALUES);
               delete process.env.SILLYCLIENT_CONFIG_VALUES;
               let changed = !fs.existsSync('config.yaml');
+              if (!doc.has('enableServerPlugins')) { doc.set('enableServerPlugins', true); changed = true; }
               for (const [key, value] of Object.entries(values)) {
                 const path = key.split('.');
                 for (let i = 1; i < path.length; i++) {
