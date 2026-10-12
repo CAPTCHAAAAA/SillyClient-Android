@@ -845,10 +845,14 @@ class MainActivity : BridgeActivity() {
         }
         chameleonController.setStatusHint(tavernStatusHint)
 
-        // IME 低重排适配（TT 同款架构）：
-        // 废除 webViewScreen.setPadding(...)，绝不改变 WebView 物理高宽；
-        // 原生仅在动画起点/终点把软键盘状态换算为 CSS 像素写入 --sc-nav-bottom，
-        // 中间帧交由 Chromium 视口与 CSS transition 在合成器线程完成，零逐帧 JS。
+        // IME 键盘避让 = 原生 translationY 平移（GPU 合成器直出，零重排、零 JS、零逐帧 IPC）：
+        // 动画回调拥有全部中间帧（DISPATCH_MODE_STOP），直接把 webViewScreen 按当前键盘
+        // 高度上移，输入栏逐帧贴合键盘顶缘；IME insets 不透传给 WebView，其视口保持
+        // 稳定尺寸，页面内容绝不因键盘出现而重排。--sc-nav-bottom 只负责键盘关闭时
+        // 为底栏留出导航条/曲面屏安全区。
+        fun applyImeTranslation(imeHeightPx: Int) {
+            webViewScreen.translationY = -imeHeightPx.toFloat()
+        }
         ViewCompat.setWindowInsetsAnimationCallback(
             webViewScreen,
             object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
@@ -872,8 +876,8 @@ class MainActivity : BridgeActivity() {
                     insets: WindowInsetsCompat,
                     runningAnimations: MutableList<WindowInsetsAnimationCompat>
                 ): WindowInsetsCompat {
-                    // 逐帧位移由 Chromium 视口与 CSS transition 承担（GPU 合成器）；
-                    // 这里绝不逐帧 evaluateJavascript，避免每帧 IPC + 全文档样式重算。
+                    // 逐帧平移：View 属性动画由 GPU 合成，页面不重排。
+                    applyImeTranslation(insets.getInsets(WindowInsetsCompat.Type.ime()).bottom)
                     return insets
                 }
 
@@ -884,6 +888,7 @@ class MainActivity : BridgeActivity() {
                         val imeVisible = rootInsets?.isVisible(WindowInsetsCompat.Type.ime()) ?: false
                         val imeHeight = rootInsets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
                         dispatchImeOffset(if (imeVisible) imeHeight else 0, navHeight)
+                        applyImeTranslation(if (imeVisible) imeHeight else 0)
                     }
                 }
             }
@@ -894,7 +899,14 @@ class MainActivity : BridgeActivity() {
             val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
             val imeHeight = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
             dispatchImeOffset(if (imeVisible) imeHeight else 0, navHeight)
-            insets
+            // 非动画路径（直接弹出/收起）也同步最终平移量。
+            applyImeTranslation(if (imeVisible) imeHeight else 0)
+            // IME inset 不透传给 WebView：键盘避让完全由 translationY 承担，
+            // WebView 视口保持稳定，杜绝 relayout 风暴与"动画结束才跳变"。
+            WindowInsetsCompat.Builder(insets)
+                .setInsets(WindowInsetsCompat.Type.ime(), Insets.NONE)
+                .setVisible(WindowInsetsCompat.Type.ime(), false)
+                .build()
         }
 
         // ---- Hybrid UI host owns the web dashboard + console + bridge ----
@@ -1755,6 +1767,8 @@ class MainActivity : BridgeActivity() {
 
     private fun switchToHome(animate: Boolean, tavernRunning: Boolean = false) {
         isWebViewVisible = false
+        // 复位键盘避让平移：隐藏中的视图不参与 insets 分发，回到启动器时键盘必已收起。
+        webViewScreen.translationY = 0f
         // 唤醒底座 Capacitor 控制台
         bridge?.webView?.apply {
             visibility = View.VISIBLE
@@ -1927,12 +1941,43 @@ class MainActivity : BridgeActivity() {
                     if (document.getElementById('sc-mobile-layout')) return;
                     const style = document.createElement('style');
                     style.id = 'sc-mobile-layout';
-                    style.textContent = ':root { --sc-nav-bottom: 18px; }' +
-                        '#form_sheld { padding-bottom: 0 !important; }' +
-                        '#send_form { padding-bottom: max(12px, var(--sc-nav-bottom, 14px)) !important;' +
-                        ' box-sizing: border-box !important;' +
-                        ' transition: padding-bottom 120ms cubic-bezier(0.12, 0.98, 0.24, 1) !important; }' +
-                        '#chat { padding-bottom: calc(var(--bottomFormBlockSize, 60px) + var(--sc-nav-bottom, 14px) + 6px) !important; }';
+                    style.textContent = `
+/* ─── 布局层：键盘避让与底栏安全区（变量由原生按键盘状态驱动） ─── */
+:root { --sc-nav-bottom: 18px; }
+#form_sheld { padding-bottom: 0 !important; }
+#send_form { padding-bottom: max(12px, var(--sc-nav-bottom, 14px)) !important;
+  box-sizing: border-box !important;
+  transition: padding-bottom 120ms cubic-bezier(0.12, 0.98, 0.24, 1) !important; }
+#chat { padding-bottom: calc(var(--bottomFormBlockSize, 60px) + var(--sc-nav-bottom, 14px) + 6px) !important; }
+
+/* ─── 全局性能层（与主题无关，对所有实例生效） ─── */
+/* 触控 0 延迟：消除移动端 300ms 点击判定 */
+html, body { touch-action: manipulation; }
+button, .menu_button, .drawer-icon, .inline-drawer-header, .mes_button, .fa-solid.interactable {
+  touch-action: manipulation;
+}
+/* 消除 Android 点击灰闪（自有 :active 反馈接管，观感更干脆） */
+* { -webkit-tap-highlight-color: rgba(0, 0, 0, 0); }
+/* 聊天滚动到顶/底不再链式带动整页橡皮筋 */
+#chat { overscroll-behavior: contain; }
+/* 滚动与重排隔离：聊天区独立合成，滚动只 repaint 内部 */
+#chat { contain: layout style paint; isolation: isolate; }
+.mes { contain: layout style; }
+.mes_text { contain: content; }
+/* 视口虚拟化：抽屉里海量角色卡与最近聊天项按需渲染 */
+.character_select { content-visibility: auto; contain-intrinsic-size: auto 72px; }
+.recentChat { content-visibility: auto; contain-intrinsic-size: auto 58px; }
+/* 合成层提升：顶栏与输入栏 backdrop-filter 采样可缓存 */
+#top-bar, #send_form { will-change: transform; }
+/* 抽屉/弹窗打开时底层聊天 blur 短路卸载：杜绝双层全屏高斯卷积掉帧 */
+body:has(.drawer-content.openDrawer) #chat,
+body:has(.drawer-content[style*="display: block"]) #chat,
+body:has(.popup[open]) #chat,
+body:has(.popup[opening]) #chat {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+`;
                     document.head.appendChild(style);
                 } catch(_) {}
             })();
