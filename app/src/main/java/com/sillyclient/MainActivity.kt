@@ -2285,7 +2285,10 @@ body:has(.popup[opening]) #chat {
         // 归档仅作为安装加速缓存，缺失或损坏时回退 npm（同 Windows 语义）。
         val recoveryDirectory = File(targetServerDir, ".sillyclient-dependency-restore")
         if (!File(targetServerDir, InstanceInstaller.DEPENDENCY_MARKER).exists() && !recoveryDirectory.exists() &&
-            DependencyInstaller.hasRequiredPackages(targetServerDir)) return true
+            DependencyInstaller.hasRequiredPackages(targetServerDir)) {
+            runtimeDiagnostic("deps.fastpath instance_ready")
+            return true
+        }
         val archive = dependencyArchive(paths)
         val lockKey = archive.lockKey(File(targetServerDir, "package-lock.json"))
         val lockMismatch = DependencyInstaller.lockManifestMismatch(targetServerDir)
@@ -2297,8 +2300,15 @@ body:has(.popup[opening]) #chat {
         } else if (restoreDependencies(archive, lockKey, targetServerDir, onRestoreProgress)) return true
         runtimeDiagnostic("deps.archive.miss instance=${operation.instanceId} key=${lockKey?.take(12) ?: "none"}")
         updateProgress(85, "正在安装依赖，请查看控制台进度")
-        return DependencyInstaller(paths, operations, processSupervisor, ::appendLog, ::runtimeDiagnostic)
+        val installed = DependencyInstaller(paths, operations, processSupervisor, ::appendLog, ::runtimeDiagnostic)
             .install(targetServerDir, operation)
+        runtimeDiagnostic("deps.npm.done result=$installed dir=${targetServerDir.name}")
+        if (installed && !DependencyInstaller.hasRequiredPackages(targetServerDir)) {
+            // npm 自报成功但复核失败：安装与校验之间文件状态变了（并发清理/FUSE 竞态），现场必须留下。
+            runtimeDiagnostic("deps.npm.verify_drift " +
+                DependencyInstaller.diagnoseRequiredPackages(targetServerDir))
+        }
+        return installed
     }
 
     /** 启动自愈：实例缺失依赖时就地补齐自己的 node_modules（实例自持，绝不写共享目录）。 */
@@ -2459,6 +2469,7 @@ body:has(.popup[opening]) #chat {
 
     private fun instanceInstaller(paths: RuntimePaths) = InstanceInstaller(
         paths.serversDir, paths.installLocations, ::instanceDependenciesComplete,
+        dependenciesDiagnosis = { DependencyInstaller.diagnoseRequiredPackages(it) },
         removeStaging = { directory, root, marker, verifyIdentity ->
             val operation = operations.context() ?: error("Missing installation cleanup operation")
             val interrupted = Thread.interrupted()

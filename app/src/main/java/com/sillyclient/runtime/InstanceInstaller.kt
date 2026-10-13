@@ -13,6 +13,7 @@ class InstanceInstaller(
     private val serversRoot: File,
     private val installLocations: InstallLocationRegistry? = null,
     private val dependenciesComplete: (File) -> Boolean = { File(it, "node_modules").isDirectory },
+    private val dependenciesDiagnosis: (File) -> String = { "node_modules 缺失或依赖不完整" },
     private val removeStaging: (File, File, File, () -> Unit) -> Boolean = { directory, root, _, verify ->
         verify()
         ManagedFiles.deleteDirectory(directory, root)
@@ -177,8 +178,10 @@ class InstanceInstaller(
         val installed = installDependencies(directory)
         check(installed) { "依赖安装被拒绝；实例数据已保留" }
         check(ManagedFiles.isWithin(dependencies, directory)) { "依赖目录逃逸实例范围；实例数据已保留" }
-        check(dependenciesComplete(directory)) {
-            "依赖完整性校验未通过（未找到本实例可解析的依赖）；实例数据已保留"
+        if (!dependenciesComplete(directory)) {
+            throw IllegalStateException(
+                "依赖完整性校验未通过（${dependenciesDiagnosis(directory)}）；实例数据已保留"
+            )
         }
         ensureActive()
         commit {

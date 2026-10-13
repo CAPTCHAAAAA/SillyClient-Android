@@ -198,6 +198,34 @@ class DependencyInstaller(
                 ManagedFiles.isWithin(entry, modules) && entry.isFile
             }
         }.getOrDefault(false)
+
+        /** hasRequiredPackages 的诊断版：校验失败时说明具体缺口，不再让黑盒吞掉现场。 */
+        internal fun diagnoseRequiredPackages(directory: File,
+                                              modulesDirectory: File = File(directory, "node_modules")): String {
+            val manifest = File(directory, "package.json")
+            if (!manifest.isFile) return "package.json 不存在于 ${directory.name}/"
+            if (manifest.length() > 4 * 1024 * 1024) return "package.json 超出大小限制"
+            val document = try {
+                JSONObject(manifest.readText())
+            } catch (error: Exception) {
+                return "package.json 解析失败（${error.javaClass.simpleName}）"
+            }
+            val dependencies = if (document.has("dependencies")) document.getJSONObject("dependencies") else JSONObject()
+            if (!modulesDirectory.isDirectory) {
+                return "node_modules 目录不存在（${dependencies.length()} 个依赖待安装）"
+            }
+            val missing = dependencies.keys().asSequence().filter { name ->
+                runCatching {
+                    require(name.matches(Regex("(?:@[a-zA-Z0-9_.-]+/)?[a-zA-Z0-9_.-]+")) &&
+                        name.split('/').none { it in setOf(".", "..") })
+                    val entry = File(modulesDirectory, "$name/package.json")
+                    !(ManagedFiles.isWithin(entry, modulesDirectory) && entry.isFile)
+                }.getOrDefault(true)
+            }.toList()
+            return if (missing.isEmpty()) "依赖完整（校验通过应为 true，疑似读取竞态）"
+            else "缺失 ${missing.size}/${dependencies.length()} 个依赖：${missing.take(4).joinToString("、")}" +
+                if (missing.size > 4) " 等" else ""
+        }
     }
 }
 
