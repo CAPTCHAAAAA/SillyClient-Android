@@ -74,6 +74,10 @@ class InstanceInstaller(
                 StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS).use {
                 it.write(owner.toByteArray(Charsets.US_ASCII))
             }
+            // .nomedia 必须在批量写入前就位：实例整树退出 MediaStore 扫描。
+            // 2 万级依赖文件写共享存储会触发 MediaProvider 逐文件重索引（实测 111% CPU ×
+            // 120s、42°C），它是创建期发热与卡顿的主因；同时杜绝实例媒体混进系统相册。
+            File(staging, ".nomedia").writeBytes(ByteArray(0))
         } catch (error: Exception) {
             try {
                 if (sameDirectory(staging, identity)) Files.delete(staging.toPath())

@@ -845,18 +845,12 @@ class MainActivity : BridgeActivity() {
         }
         chameleonController.setStatusHint(tavernStatusHint)
 
-        // IME 键盘避让 = 动画期 GPU 平移 + 终态一次性落位（混合式）：
-        // 实测教训：逐帧改底垫会迫使 Chromium 整页重排，酒馆这种重页面上卡到不可用——
-        // 所以动画期间只做 translationY 平移（GPU 合成，零重排零 JS 零 IPC），
-        // 动画结束的一帧把底垫写成终态并归零平移（底缘位置连续，顶部内容恢复满版）。
+        // IME 键盘避让 = 纯原生 translationY 平移（GPU 合成器直出）：
+        // 实测教训：逐帧 resize/底垫压缩会迫使 Chromium 逐帧整页重排，酒馆重页面上卡到
+        // 不可用。平移全程零重排、零 JS、零 IPC、视口恒尺寸——流畅/快速/通用优先。
+        // IME insets 不透传给 WebView，杜绝 Chromium 自发 resize 的双重避让。
         fun applyImeTranslation(imeHeightPx: Int) {
             webViewScreen.translationY = -imeHeightPx.toFloat()
-        }
-        fun settleImePadding(imeHeightPx: Int) {
-            webViewScreen.translationY = 0f
-            if (webViewScreen.paddingBottom != imeHeightPx) {
-                webViewScreen.setPadding(0, 0, 0, imeHeightPx)
-            }
         }
         ViewCompat.setWindowInsetsAnimationCallback(
             webViewScreen,
@@ -868,13 +862,11 @@ class MainActivity : BridgeActivity() {
                     bounds: WindowInsetsAnimationCompat.BoundsCompat
                 ): WindowInsetsAnimationCompat.BoundsCompat {
                     if ((animation.typeMask and WindowInsetsCompat.Type.ime()) != 0) {
-                        // 动画期间归平移接管：底垫先清零，杜绝与终态底垫双重补偿。
-                        webViewScreen.setPadding(0, 0, 0, 0)
                         val rootInsets = ViewCompat.getRootWindowInsets(webViewScreen)
                         val navHeight = rootInsets?.getInsets(WindowInsetsCompat.Type.navigationBars())?.bottom ?: 0
                         val targetHeight = bounds.upperBound.bottom
                         val imeVisible = rootInsets?.isVisible(WindowInsetsCompat.Type.ime()) ?: (targetHeight > 0)
-                        dispatchImeOffset(if (imeVisible) targetHeight else 0, navHeight, animating = true)
+                        dispatchImeOffset(if (imeVisible) targetHeight else 0, navHeight)
                     }
                     return super.onStart(animation, bounds)
                 }
@@ -895,7 +887,7 @@ class MainActivity : BridgeActivity() {
                         val imeVisible = rootInsets?.isVisible(WindowInsetsCompat.Type.ime()) ?: false
                         val imeHeight = rootInsets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
                         dispatchImeOffset(if (imeVisible) imeHeight else 0, navHeight)
-                        settleImePadding(if (imeVisible) imeHeight else 0)
+                        applyImeTranslation(if (imeVisible) imeHeight else 0)
                     }
                 }
             }
@@ -906,9 +898,9 @@ class MainActivity : BridgeActivity() {
             val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
             val imeHeight = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
             dispatchImeOffset(if (imeVisible) imeHeight else 0, navHeight)
-            // 非动画路径（直接弹出/收起）直接落终态。
-            settleImePadding(if (imeVisible) imeHeight else 0)
-            // IME inset 不透传给 WebView：键盘避让完全由原生侧承担，
+            // 非动画路径（直接弹出/收起）同步最终平移量。
+            applyImeTranslation(if (imeVisible) imeHeight else 0)
+            // IME inset 不透传给 WebView：键盘避让完全由原生平移承担，
             // 杜绝 Chromium 自发 resize 造成双重避让。
             WindowInsetsCompat.Builder(insets)
                 .setInsets(WindowInsetsCompat.Type.ime(), Insets.NONE)
@@ -1090,6 +1082,11 @@ class MainActivity : BridgeActivity() {
                         instanceId = id,
                         allowFreshInstall = createIntent
                     )
+                // 存量实例回填 .nomedia：整树退出媒体扫描（创建期写入已于 InstanceInstaller 就位）。
+                runCatching {
+                    val noMedia = File(targetServerDir, ".nomedia")
+                    if (!noMedia.isFile) noMedia.writeBytes(ByteArray(0))
+                }
                 instanceRepository.invalidate(targetServerDir)
                 val runtimeConfiguration = RuntimeConfiguration(paths, operations, processSupervisor)
                 if (companionPreset != null || preinstall?.extensionIds?.isNotEmpty() == true) {
@@ -1774,9 +1771,8 @@ class MainActivity : BridgeActivity() {
 
     private fun switchToHome(animate: Boolean, tavernRunning: Boolean = false) {
         isWebViewVisible = false
-        // 复位键盘避让（平移+底垫）：隐藏中的视图不参与 insets 分发，回到启动器时键盘必已收起。
+        // 复位键盘避让平移：隐藏中的视图不参与 insets 分发，回到启动器时键盘必已收起。
         webViewScreen.translationY = 0f
-        webViewScreen.setPadding(0, 0, 0, 0)
         // 唤醒底座 Capacitor 控制台
         bridge?.webView?.apply {
             visibility = View.VISIBLE
@@ -1985,11 +1981,6 @@ body:has(.popup[opening]) #chat {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }
-/* 键盘动画期间暂停聊天区毛玻璃采样：逐帧压缩不重算高斯卷积，结束即恢复 */
-html[data-sc-ime-anim] #chat {
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
-}
 `;
                     document.head.appendChild(style);
                 } catch(_) {}
@@ -2006,26 +1997,21 @@ html[data-sc-ime-anim] #chat {
         dispatchImeOffset(if (imeVisible) imeHeight else 0, navHeight)
     }
 
-    private fun dispatchImeOffset(imeHeightPx: Int, navHeightPx: Int, animating: Boolean = false) {
+    private fun dispatchImeOffset(imeHeightPx: Int, navHeightPx: Int) {
         if (!::webView.isInitialized) return
         val density = resources.displayMetrics.density
         val navCssPx = if (density > 0) navHeightPx / density else navHeightPx.toFloat()
         // 去重：onStart/onEnd/InsetsListener 会对同一终态重复回调，只有目标态变化才过桥。
         val targetState = (if (imeHeightPx > 0) 0 else maxOf(kotlin.math.ceil(navCssPx.toDouble()).toInt(), 18))
-        val targetKey = targetState * 2 + (if (animating) 1 else 0)
-        if (targetKey == lastImeDispatchKey) return
-        lastImeDispatchKey = targetKey
+        if (targetState == lastImeDispatchKey) return
+        lastImeDispatchKey = targetState
         val script = """
             (function() {
                 try {
                     // 软键盘弹起时底栏无缝贴合键盘；收起时留出小黑条与曲面屏安全区（默认至少 18px）
                     const isIme = ${imeHeightPx} > 0;
                     const nav = isIme ? 0 : Math.max(${navCssPx}, 18);
-                    const root = document.documentElement;
-                    root.style.setProperty('--sc-nav-bottom', nav + 'px');
-                    // 键盘动画期间打标，CSS 暂停 #chat 毛玻璃采样，动画结束即恢复。
-                    if ($animating) root.setAttribute('data-sc-ime-anim', '1');
-                    else root.removeAttribute('data-sc-ime-anim');
+                    document.documentElement.style.setProperty('--sc-nav-bottom', nav + 'px');
                 } catch(_) {}
             })();
         """.trimIndent()
