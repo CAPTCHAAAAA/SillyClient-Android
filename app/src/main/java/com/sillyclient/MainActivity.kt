@@ -660,8 +660,8 @@ class MainActivity : BridgeActivity() {
             settings.layoutAlgorithm = android.webkit.WebSettings.LayoutAlgorithm.NORMAL
             settings.textZoom = 100
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                // 酒馆聊天是超长滚动面：离屏预栅格化显著平滑滚动，代价是少量显存。
-                settings.offscreenPreRaster = true
+                // 离屏预栅格化实测在酒馆重页面上抬高显存与光栅压力，保持默认关闭。
+                settings.offscreenPreRaster = false
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 @Suppress("DEPRECATION")
@@ -845,12 +845,15 @@ class MainActivity : BridgeActivity() {
         }
         chameleonController.setStatusHint(tavernStatusHint)
 
-        // IME 键盘避让 = 原生逐帧底垫压缩（Telegram 同款内容压缩语义）：
-        // 动画回调拥有全部中间帧（DISPATCH_MODE_STOP），直接按当前键盘高度调整
-        // webViewScreen 底垫——WebView 高度逐帧收缩，页面内容就地压缩避让（顶部不动），
-        // 全程零 JS、零跨进程 IPC；IME insets 不透传给 WebView，杜绝双重避让。
-        // 键盘动画期间经 --sc-nav-bottom 管道顺带暂停 #chat 毛玻璃采样，消掉重排里贵的部分。
-        fun applyImePadding(imeHeightPx: Int) {
+        // IME 键盘避让 = 动画期 GPU 平移 + 终态一次性落位（混合式）：
+        // 实测教训：逐帧改底垫会迫使 Chromium 整页重排，酒馆这种重页面上卡到不可用——
+        // 所以动画期间只做 translationY 平移（GPU 合成，零重排零 JS 零 IPC），
+        // 动画结束的一帧把底垫写成终态并归零平移（底缘位置连续，顶部内容恢复满版）。
+        fun applyImeTranslation(imeHeightPx: Int) {
+            webViewScreen.translationY = -imeHeightPx.toFloat()
+        }
+        fun settleImePadding(imeHeightPx: Int) {
+            webViewScreen.translationY = 0f
             if (webViewScreen.paddingBottom != imeHeightPx) {
                 webViewScreen.setPadding(0, 0, 0, imeHeightPx)
             }
@@ -865,6 +868,8 @@ class MainActivity : BridgeActivity() {
                     bounds: WindowInsetsAnimationCompat.BoundsCompat
                 ): WindowInsetsAnimationCompat.BoundsCompat {
                     if ((animation.typeMask and WindowInsetsCompat.Type.ime()) != 0) {
+                        // 动画期间归平移接管：底垫先清零，杜绝与终态底垫双重补偿。
+                        webViewScreen.setPadding(0, 0, 0, 0)
                         val rootInsets = ViewCompat.getRootWindowInsets(webViewScreen)
                         val navHeight = rootInsets?.getInsets(WindowInsetsCompat.Type.navigationBars())?.bottom ?: 0
                         val targetHeight = bounds.upperBound.bottom
@@ -878,8 +883,8 @@ class MainActivity : BridgeActivity() {
                     insets: WindowInsetsCompat,
                     runningAnimations: MutableList<WindowInsetsAnimationCompat>
                 ): WindowInsetsCompat {
-                    // 逐帧压缩：只改容器底垫，零 JS 零 IPC；页面随之就地压缩避让。
-                    applyImePadding(insets.getInsets(WindowInsetsCompat.Type.ime()).bottom)
+                    // 逐帧平移：GPU 合成，页面零重排。
+                    applyImeTranslation(insets.getInsets(WindowInsetsCompat.Type.ime()).bottom)
                     return insets
                 }
 
@@ -890,7 +895,7 @@ class MainActivity : BridgeActivity() {
                         val imeVisible = rootInsets?.isVisible(WindowInsetsCompat.Type.ime()) ?: false
                         val imeHeight = rootInsets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
                         dispatchImeOffset(if (imeVisible) imeHeight else 0, navHeight)
-                        applyImePadding(if (imeVisible) imeHeight else 0)
+                        settleImePadding(if (imeVisible) imeHeight else 0)
                     }
                 }
             }
@@ -901,10 +906,10 @@ class MainActivity : BridgeActivity() {
             val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
             val imeHeight = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
             dispatchImeOffset(if (imeVisible) imeHeight else 0, navHeight)
-            // 非动画路径（直接弹出/收起）也同步最终底垫。
-            applyImePadding(if (imeVisible) imeHeight else 0)
-            // IME inset 不透传给 WebView：键盘避让完全由容器底垫承担，
-            // 视口尺寸变化只来自受控的逐帧压缩，杜绝 Chromium 自发性双重避让。
+            // 非动画路径（直接弹出/收起）直接落终态。
+            settleImePadding(if (imeVisible) imeHeight else 0)
+            // IME inset 不透传给 WebView：键盘避让完全由原生侧承担，
+            // 杜绝 Chromium 自发 resize 造成双重避让。
             WindowInsetsCompat.Builder(insets)
                 .setInsets(WindowInsetsCompat.Type.ime(), Insets.NONE)
                 .setVisible(WindowInsetsCompat.Type.ime(), false)
@@ -1769,7 +1774,8 @@ class MainActivity : BridgeActivity() {
 
     private fun switchToHome(animate: Boolean, tavernRunning: Boolean = false) {
         isWebViewVisible = false
-        // 复位键盘避让底垫：隐藏中的视图不参与 insets 分发，回到启动器时键盘必已收起。
+        // 复位键盘避让（平移+底垫）：隐藏中的视图不参与 insets 分发，回到启动器时键盘必已收起。
+        webViewScreen.translationY = 0f
         webViewScreen.setPadding(0, 0, 0, 0)
         // 唤醒底座 Capacitor 控制台
         bridge?.webView?.apply {
@@ -2422,6 +2428,9 @@ html[data-sc-ime-anim] #chat {
         if (File(instanceDirectory, InstanceInstaller.DEPENDENCY_MARKER).exists() ||
             !DependencyInstaller.hasRequiredPackages(instanceDirectory)) return
         Thread {
+            // 实例自持后每个实例都有完整依赖树：归档是 2 万级文件的重活，
+            // 绝不与任何进行中的操作抢存储队列（防创建/启动期 IO 风暴发热）。
+            if (operations.hasPendingWork()) return@Thread
             val started = System.nanoTime()
             try {
                 if (archive.archive(instanceDirectory, lockKey)) {
@@ -2748,11 +2757,9 @@ html[data-sc-ime-anim] #chat {
         // Remnants of earlier interrupted removals in this root are reclaimed
         // alongside; marked directories from any root are hidden by scanners.
         sweepRemovalRemnants(parent, instanceId)
-        // The visible removal is one marker write plus one registry update: the
-        // instance disappears from the console immediately and the physical
-        // delete streams in the background. A directory rename is deliberately
-        // NOT used: on emulated storage it makes MediaProvider re-index every
-        // descendant, which is slower than the delete itself.
+        // 可见删除 = 一次标记写入 + 一次注册表注销：实例立即从控制台消失；
+        // 随后物理删除在本操作内同步完成（前台服务持有），完成才回报成功。
+        // 目录重命名刻意不用：模拟存储上会让 MediaProvider 重索引全部后代，比删除更慢。
         operations.commit(operation) {
             val marker = File(targetDir, InstanceRemoval.REMOVAL_MARKER)
             require(ManagedFiles.isWithin(marker, targetDir)) { "Invalid removal marker path" }
@@ -2761,19 +2768,18 @@ html[data-sc-ime-anim] #chat {
         }
         runtimeDiagnostic("removal.disappeared")
         KeepAlive.acquire(this)
-        Thread {
-            try {
-                NativeTreeRemoval(processSupervisor).remove(listOf(targetDir), parent, instanceId)
-                runtimeDiagnostic("removal.purged")
-            } catch (error: Exception) {
-                runtimeDiagnostic("removal.purge_failed type=${error.javaClass.simpleName} msg=${error.message?.take(160)}")
-            } finally {
-                runOnUiThread { KeepAlive.release(applicationContext) }
-            }
-        }.apply {
-            name = "SC-removal-purge"
-            isDaemon = true
-        }.start()
+        try {
+            // 物理删除随操作同步完成：前台服务+唤醒锁全程持有，进程被冻结/杀死也绝不留下
+            // "卡片已消失、文件仍在"的窗口（后台 daemon 线程会被 ROM 杀死，已实测翻车）。
+            NativeTreeRemoval(processSupervisor).remove(listOf(targetDir), parent, instanceId,
+                onProgress = { progress ->
+                    runtimeDiagnostic("removal.purge ${progress.removedEntries}")
+                    pushLog("正在删除实例文件 · ${progress.removedEntries} 项")
+                })
+            runtimeDiagnostic("removal.purged")
+        } finally {
+            KeepAlive.release(this)
+        }
         instanceRepository.invalidate(targetDir)
         val safeId = instanceId.replace(Regex("[^a-zA-Z0-9._-]"), "_")
         val coverFile = File(paths.bootstrapDir, "covers/$safeId.png")
