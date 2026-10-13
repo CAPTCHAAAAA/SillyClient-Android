@@ -100,7 +100,7 @@ cd D:\BACKUP\Project\SillyClient\.worktrees\release-hardening-android
 ### 4. 当前最新构建产物指纹（2026-10-12，v1.13.0 待真机验收）
 - **APK 路径**: `app/build/outputs/apk/release/app-release.apk`（已归档 `Local/artifacts/v1.13.0/SillyClient-Android-v1.13.0.apk`）
 - **文件体积**: `198,586,916` 字节（约 189.37 MB）
-- **SHA-256 校验**: `5BB06D1F11125547E8ADFB849FD7AF61D4A1410BFBC4F925B72BDB7D28B99C2D`
+- **SHA-256 校验**: `3954AADD970AC9286E96A3DB0B3E3763E7EEEC369FA32366AD42876B2DB6508B`
 - **版本号**: `versionCode = 72` / `versionName = "1.13.0"`
 
 ---
@@ -123,3 +123,4 @@ cd D:\BACKUP\Project\SillyClient\.worktrees\release-hardening-android
 | 2026-10-13 | Agent | v1.13.0 第三轮：键盘避让重构为原生 translationY 逐帧平移（修复 DISPATCH_MODE_STOP 阻断中间帧导致的输入栏不跟随/末端跳变，IME insets 不透传 WebView，视口恒尺寸零重排）；酒馆全局性能层从配套主题沉淀为默认能力（触控 0 延迟、去点击灰闪、滚动链隔离、聊天区重排隔离、列表视口虚拟化、合成层提升、抽屉弹窗 blur 短路）；447 项单测全绿，APK 重打包（指纹 `370DA503…`） | 已推送 (414afbd) |
 | 2026-10-13 | Agent | v1.13.0 第四轮：键盘避让按用户反馈从整页平移改为逐帧底垫压缩（Telegram 式内容就地避让、顶部不动），键盘动画期间暂停聊天区毛玻璃采样（data-sc-ime-anim 打标，结束即恢复），switchToHome 复位底垫；448 项单测全绿，APK 重打包（指纹 `DD9049D2…`） | 已推送 (03153fa) |
 | 2026-10-13 | Agent | v1.13.0 第五轮（真机反馈修复）：① 删除残留根治——logcat 实锤删除后进程被 ROM 冻结杀死、后台 daemon 清理线程夭折，改为物理删除随操作同步完成（KeepAlive 前台服务全程持有）；② 键盘避让按实测手感改混合式——逐帧底垫压缩在酒馆重页面上卡到不可用，改为动画期 GPU 平移 + 终态一帧落位；③ 发热治理——offscreenPreRaster 回撤关闭，后台依赖归档加在途节流；448 项单测全绿，APK 重打包（指纹 `5BB06D1F…`） | 已推送 (3e85866) |
+| 2026-10-13 | Agent | v1.13.0 第六轮（真机发热实锤修复）：① logcat 抓到 MediaProvider 创建期 111% CPU×120s/42°C——共享存储 2 万级文件逐文件媒体重索引是主因，实例目录在批量写入前落 `.nomedia` 整树免疫扫描，存量实例启动回填；② 键盘避让定稿纯原生平移（流畅/快速/通用优先，压缩语义放弃）；448 项单测全绿，APK 重打包（指纹 `3954AADD…`） | 已推送 (2d092f7) |
