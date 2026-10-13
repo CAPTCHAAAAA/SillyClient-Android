@@ -269,8 +269,6 @@ body::-webkit-scrollbar,
   position: fixed;
   pointer-events: none;
   z-index: 0;
-  filter: blur(40px);
-  mix-blend-mode: screen;
   will-change: transform;
   transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
@@ -283,14 +281,9 @@ body::-webkit-scrollbar,
   left: -15%;
   width: 65vw;
   height: 65vh;
-  border-radius: 50%;
-  background: radial-gradient(
-    ellipse at center,
-    rgba(106, 17, 46, 0.45) 0%,
-    rgba(139, 26, 58, 0.3) 30%,
-    rgba(106, 17, 46, 0.15) 55%,
-    transparent 75%
-  );
+  /* 柔雾观感由预烘焙位图承载（同引擎渲染 blur(40px) 原样式导出），
+     运行时零模糊计算、零离屏混合，动画只移动一张纹理。 */
+  background: url("./assets/glow-1.webp") center / 100% 100% no-repeat;
   animation: screensaver-drift-1 28s ease-in-out infinite;
 }
 
@@ -300,14 +293,7 @@ body::-webkit-scrollbar,
   right: -15%;
   width: 70vw;
   height: 70vh;
-  border-radius: 50%;
-  background: radial-gradient(
-    ellipse at center,
-    rgba(163, 40, 72, 0.35) 0%,
-    rgba(106, 17, 46, 0.25) 30%,
-    rgba(77, 12, 34, 0.12) 55%,
-    transparent 75%
-  );
+  background: url("./assets/glow-2.webp") center / 100% 100% no-repeat;
   animation: screensaver-drift-2 32s ease-in-out infinite;
 }
 
@@ -317,14 +303,7 @@ body::-webkit-scrollbar,
   left: 10%;
   width: 80vw;
   height: 40vh;
-  border-radius: 50%;
-  background: radial-gradient(
-    ellipse at center,
-    rgba(139, 26, 58, 0.3) 0%,
-    rgba(106, 17, 46, 0.2) 35%,
-    rgba(61, 10, 27, 0.1) 60%,
-    transparent 80%
-  );
+  background: url("./assets/glow-3.webp") center / 100% 100% no-repeat;
   animation: screensaver-drift-3 24s ease-in-out infinite;
 }
 
@@ -334,14 +313,7 @@ body::-webkit-scrollbar,
   left: -5%;
   width: 45vw;
   height: 80vh;
-  border-radius: 50%;
-  background: radial-gradient(
-    ellipse at center,
-    rgba(77, 12, 34, 0.4) 0%,
-    rgba(106, 17, 46, 0.25) 30%,
-    rgba(139, 26, 58, 0.12) 55%,
-    transparent 75%
-  );
+  background: url("./assets/glow-4.webp") center / 100% 100% no-repeat;
   animation: screensaver-drift-4 30s ease-in-out infinite;
 }
 
@@ -351,14 +323,7 @@ body::-webkit-scrollbar,
   right: 5%;
   width: 55vw;
   height: 55vh;
-  border-radius: 50%;
-  background: radial-gradient(
-    ellipse at center,
-    rgba(163, 40, 72, 0.28) 0%,
-    rgba(106, 17, 46, 0.18) 35%,
-    rgba(77, 12, 34, 0.08) 60%,
-    transparent 80%
-  );
+  background: url("./assets/glow-5.webp") center / 100% 100% no-repeat;
   animation: screensaver-drift-5 26s ease-in-out infinite;
 }
 
