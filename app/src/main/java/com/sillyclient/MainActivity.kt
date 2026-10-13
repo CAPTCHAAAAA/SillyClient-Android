@@ -350,6 +350,29 @@ class MainActivity : BridgeActivity() {
         // with the startup extraction or an instance launch already in flight.
         Thread {
             runCatching { Thread.sleep(45_000) }
+            // 媒体扫描免疫：给全部已登记实例与残留依赖银行补 .nomedia，
+            // 整树退出 MediaStore 重索引（公共存储上 2 万级文件的扫描风暴是发热主因）。
+            runCatching {
+                val paths = RuntimePaths.from(this)
+                paths.installLocations.entries().values.forEach { dir ->
+                    runCatching {
+                        val marker = File(dir, ".nomedia")
+                        if (dir.isDirectory && !marker.isFile) marker.writeBytes(ByteArray(0))
+                    }
+                }
+                val roots = buildList {
+                    paths.installLocations.entries().values.forEach { add(it.parentFile) }
+                    add(paths.serversDir)
+                    add(paths.legacyServersDir)
+                    add(paths.legacyExternalServersDir)
+                }.filterNotNull().distinctBy { runCatching { it.canonicalFile }.getOrNull() ?: it }
+                roots.forEach { root ->
+                    val bank = File(root, DependencyBank.DIR_NAME)
+                    if (DependencyBank.read(bank) != null) {
+                        runCatching { File(bank, ".nomedia").writeBytes(ByteArray(0)) }
+                    }
+                }
+            }.onFailure { runtimeDiagnostic("nomedia.immunize_failed ${it.message?.take(160)}") }
             runCatching {
                 InstanceRelocation(RuntimePaths.from(this), operations, processSupervisor)
                     .sweepRetainedSources { runtimeDiagnostic(it) }
@@ -857,19 +880,12 @@ class MainActivity : BridgeActivity() {
             object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
                 override fun onPrepare(animation: WindowInsetsAnimationCompat) {}
 
+                // 动画起点绝不派发 JS：底距变量的 120ms padding 过渡与平移叠加
+                // 就是实测"一两帧抽搐"的来源；终态由 onEnd/Insets 监听器统一落位。
                 override fun onStart(
                     animation: WindowInsetsAnimationCompat,
                     bounds: WindowInsetsAnimationCompat.BoundsCompat
-                ): WindowInsetsAnimationCompat.BoundsCompat {
-                    if ((animation.typeMask and WindowInsetsCompat.Type.ime()) != 0) {
-                        val rootInsets = ViewCompat.getRootWindowInsets(webViewScreen)
-                        val navHeight = rootInsets?.getInsets(WindowInsetsCompat.Type.navigationBars())?.bottom ?: 0
-                        val targetHeight = bounds.upperBound.bottom
-                        val imeVisible = rootInsets?.isVisible(WindowInsetsCompat.Type.ime()) ?: (targetHeight > 0)
-                        dispatchImeOffset(if (imeVisible) targetHeight else 0, navHeight)
-                    }
-                    return super.onStart(animation, bounds)
-                }
+                ): WindowInsetsAnimationCompat.BoundsCompat = super.onStart(animation, bounds)
 
                 override fun onProgress(
                     insets: WindowInsetsCompat,
