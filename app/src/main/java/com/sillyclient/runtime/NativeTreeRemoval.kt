@@ -57,11 +57,19 @@ class NativeTreeRemoval(
             for (batch in batches(targets)) {
                 ensureActive()
                 requireSameDirectory(owner, canonicalOwner, original)
+                
+                // 幂等性设计：先过滤已不存在的文件（可能被手动删除）
+                val existingFiles = batch.filter { Files.exists(it.toPath(), LinkOption.NOFOLLOW_LINKS) }
+                if (existingFiles.isEmpty()) {
+                    // 批次中所有文件已不存在，目标已达成，跳过 rm 命令
+                    continue
+                }
+                
                 val diagnostics = linkedSetOf<String>()
                 // 每批重新捕获 generation：无关实例的 stopAll（如并行启动他实例）会递增
                 // generation，若沿用旧值会让删除在批间被误杀，留下"已删卡片但文件残留"。
                 val process = supervisor.launch(
-                    ProcessBuilder(command + listOf("-rfv", "--") + batch.map { it.absolutePath }),
+                    ProcessBuilder(command + listOf("-rfv", "--") + existingFiles.map { it.absolutePath }),
                     instanceId, operation, supervisor.generation()
                 )
                 val result = supervisor.waitForIdle(process, idleTimeoutMillis, ensureActive,

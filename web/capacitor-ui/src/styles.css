@@ -2535,3 +2535,92 @@ select option {
 .manage-card-clip > .absolute {
   border-radius: 0;
 }
+
+
+/* ========================================
+   性能优化层 - GPU加速与渲染隔离
+   保持视觉效果，优化渲染性能
+   ======================================== */
+
+/* 1. 所有毛玻璃元素提升到独立合成层 */
+.glass-panel,
+.liquid-glass,
+[class*="glass-"] {
+  /* GPU加速：提升到独立合成层，避免软件光栅化 */
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  /* 渲染隔离：防止重绘扩散 */
+  contain: layout style paint;
+}
+
+/* 2. 卡片容器渲染隔离 */
+.flip-card-container,
+[class*="card-"] {
+  contain: layout style;
+  transform: translateZ(0);
+}
+
+/* 3. 模态框和抽屉完全隔离 */
+.app-settings-drawer,
+.modal,
+[role="dialog"] {
+  contain: layout style paint;
+  transform: translateZ(0);
+  will-change: transform, opacity;
+}
+
+/* 4. 动画元素优化 */
+.flip-card-inner,
+.animating,
+[data-animating],
+.transitioning {
+  will-change: transform;
+  transform: translateZ(0);
+}
+
+/* 5. 键盘输入区域隔离 */
+.chat-input-container,
+.input-wrapper,
+[class*="input-"] {
+  contain: layout;
+  transform: translateZ(0);
+}
+
+/* 6. 动画期间暂停非关键毛玻璃采样 */
+[data-sc-ime-anim] .glass-panel:not(.critical-glass),
+[data-animating] .glass-panel:not(.critical-glass) {
+  /* 动画时用高不透明度纯色替代毛玻璃，保持视觉但提升性能 */
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background: var(--glass-solid-fallback, rgba(var(--glass-rgb, 255, 255, 255), 0.95));
+}
+
+/* 7. 滚动容器优化 */
+.scroll-container,
+[class*="scroll-"] {
+  /* 隔离滚动链，防止传播 */
+  overscroll-behavior: contain;
+  /* 使用合成层加速滚动 */
+  will-change: scroll-position;
+  transform: translateZ(0);
+}
+
+/* 8. 列表项优化 */
+.list-item,
+[class*="item-"] {
+  contain: layout;
+}
+
+/* 9. 动画结束后移除 will-change */
+.flip-card-container:not(:hover):not(.flipping) .flip-card-inner {
+  will-change: auto;
+}
+
+/* 10. 强制硬件加速的关键元素 */
+.launcher-background,
+.hero-section,
+.full-bleed {
+  transform: translate3d(0, 0, 0);
+  will-change: transform;
+}
