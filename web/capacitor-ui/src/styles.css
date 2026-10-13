@@ -785,12 +785,26 @@ header span[class*="truncate"] {
   pointer-events: none;
 }
 
-/* 普通切换：仅在模式变化时临时给整棵树加缓动颜色过渡。 */
+/* 普通切换：仅在模式变化时临时给整棵树加缓动颜色过渡。
+   排除一切带自有 transform/位移动画的组件（3D 卡片、动态壁纸）：
+   transition-property 的 !important 覆盖会打断这些组件正在进行的动画，
+   使其 transform 过渡瞬间失效、1 秒后又恢复——这就是画面"抽搐"的机制。
+   box-shadow 不参与插值：毛玻璃下逐帧重算多层阴影 + 模糊重采样是全屏卡顿主开销。 */
 .theme-smoothing,
-.theme-smoothing *:not(.motion-panel-stack):not(.motion-panel-face):not(.carousel-pagination):not(.carousel-pagination *) {
-  transition-property: color, background-color, border-color, box-shadow, fill, stroke !important;
+.theme-smoothing *:not(.motion-panel-stack):not(.motion-panel-face):not(.carousel-pagination):not(.carousel-pagination *):not(.flip-card):not(.flip-card *):not(.motion-instance-card):not(.motion-instance-card *):not(.ambient-glow-container):not(.ambient-glow-container *) {
+  transition-property: color, background-color, border-color, fill, stroke !important;
   transition-duration: 1000ms !important;
   transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+
+/* 毛玻璃材质在主题切换时瞬切（iOS 深色模式同语义）：对 background 做 1s 渐变
+   会迫使 backdrop-filter 逐帧重采样整屏模糊；瞬切材质 + 内容文字渐变，
+   静止视觉完全一致，切换过程不再掉帧。 */
+.theme-smoothing .glass-panel,
+.theme-smoothing .liquid-glass,
+.theme-smoothing .ios-floating-menu,
+.theme-smoothing .overlay-backdrop {
+  transition: none !important;
 }
 
 /* 菜单弹出动画 */
@@ -2534,93 +2548,4 @@ select option {
 .manage-panel-surface aside .motion-instance-card > .absolute,
 .manage-card-clip > .absolute {
   border-radius: 0;
-}
-
-
-/* ========================================
-   性能优化层 - GPU加速与渲染隔离
-   保持视觉效果，优化渲染性能
-   ======================================== */
-
-/* 1. 所有毛玻璃元素提升到独立合成层 */
-.glass-panel,
-.liquid-glass,
-[class*="glass-"] {
-  /* GPU加速：提升到独立合成层，避免软件光栅化 */
-  transform: translateZ(0);
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
-  /* 渲染隔离：防止重绘扩散 */
-  contain: layout style paint;
-}
-
-/* 2. 卡片容器渲染隔离 */
-.flip-card-container,
-[class*="card-"] {
-  contain: layout style;
-  transform: translateZ(0);
-}
-
-/* 3. 模态框和抽屉完全隔离 */
-.app-settings-drawer,
-.modal,
-[role="dialog"] {
-  contain: layout style paint;
-  transform: translateZ(0);
-  will-change: transform, opacity;
-}
-
-/* 4. 动画元素优化 */
-.flip-card-inner,
-.animating,
-[data-animating],
-.transitioning {
-  will-change: transform;
-  transform: translateZ(0);
-}
-
-/* 5. 键盘输入区域隔离 */
-.chat-input-container,
-.input-wrapper,
-[class*="input-"] {
-  contain: layout;
-  transform: translateZ(0);
-}
-
-/* 6. 动画期间暂停非关键毛玻璃采样 */
-[data-sc-ime-anim] .glass-panel:not(.critical-glass),
-[data-animating] .glass-panel:not(.critical-glass) {
-  /* 动画时用高不透明度纯色替代毛玻璃，保持视觉但提升性能 */
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
-  background: var(--glass-solid-fallback, rgba(var(--glass-rgb, 255, 255, 255), 0.95));
-}
-
-/* 7. 滚动容器优化 */
-.scroll-container,
-[class*="scroll-"] {
-  /* 隔离滚动链，防止传播 */
-  overscroll-behavior: contain;
-  /* 使用合成层加速滚动 */
-  will-change: scroll-position;
-  transform: translateZ(0);
-}
-
-/* 8. 列表项优化 */
-.list-item,
-[class*="item-"] {
-  contain: layout;
-}
-
-/* 9. 动画结束后移除 will-change */
-.flip-card-container:not(:hover):not(.flipping) .flip-card-inner {
-  will-change: auto;
-}
-
-/* 10. 强制硬件加速的关键元素 */
-.launcher-background,
-.hero-section,
-.full-bleed {
-  transform: translate3d(0, 0, 0);
-  will-change: transform;
 }

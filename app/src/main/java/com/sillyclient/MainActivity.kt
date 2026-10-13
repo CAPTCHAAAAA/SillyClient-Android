@@ -2759,26 +2759,33 @@ body:has(.popup[opening]) #chat {
         // Remnants of earlier interrupted removals in this root are reclaimed
         // alongside; marked directories from any root are hidden by scanners.
         sweepRemovalRemnants(parent, instanceId)
-        // 可见删除 = 一次标记写入 + 一次注册表注销：实例立即从控制台消失；
-        // 随后物理删除在本操作内同步完成（前台服务持有），完成才回报成功。
-        // 目录重命名刻意不用：模拟存储上会让 MediaProvider 重索引全部后代，比删除更慢。
-        operations.commit(operation) {
-            val marker = File(targetDir, InstanceRemoval.REMOVAL_MARKER)
-            require(ManagedFiles.isWithin(marker, targetDir)) { "Invalid removal marker path" }
-            marker.writeText(InstanceRemoval.MARKER_CONTENT)
-            paths.installLocations.unregisterAfterDelete(instanceId, targetDir)
-        }
-        runtimeDiagnostic("removal.disappeared")
+        // 定版删除事务（验收契约：身份标记最后删、文件删完才解除登记）：
+        // 目录已被手动删除时直接解除登记；存在时先删内容、身份标记垫底、
+        // 空目录与注册注销在同一 commit 临界区完成，任何一步失败都保留注册信息可重试。
+        // 前台服务+唤醒锁全程持有：进程被 ROM 冻结/杀死也绝不留下半删状态。
         KeepAlive.acquire(this)
         try {
-            // 物理删除随操作同步完成：前台服务+唤醒锁全程持有，进程被冻结/杀死也绝不留下
-            // "卡片已消失、文件仍在"的窗口（后台 daemon 线程会被 ROM 杀死，已实测翻车）。
-            NativeTreeRemoval(processSupervisor).remove(listOf(targetDir), parent, instanceId,
-                onProgress = { progress ->
-                    runtimeDiagnostic("removal.purge ${progress.removedEntries}")
-                    pushLog("正在删除实例文件 · ${progress.removedEntries} 项")
-                })
-            runtimeDiagnostic("removal.purged")
+            com.sillyclient.runtime.InstanceRemoval.remove(
+                targetDir, paths.installLocations.allowedRootFor(targetDir),
+                verifyIdentity = {
+                    require(paths.installLocations.resolve(instanceId, targetDir.absolutePath).canonicalFile ==
+                        targetDir.canonicalFile)
+                },
+                ensureActive = { operations.ensureCurrent(operation) },
+                removeChildren = { children ->
+                    NativeTreeRemoval(processSupervisor).remove(
+                        children, targetDir, instanceId, operation,
+                        ensureActive = { operations.ensureCurrent(operation) },
+                        onProgress = { progress ->
+                            runtimeDiagnostic("removal.purge ${progress.removedEntries}")
+                            pushLog("正在删除实例文件 · ${progress.removedEntries} 项")
+                        }
+                    )
+                },
+                commit = { action -> operations.commit(operation, action) },
+                unregister = { paths.installLocations.unregisterAfterDelete(instanceId, targetDir) }
+            )
+            runtimeDiagnostic("removal.disappeared")
         } finally {
             KeepAlive.release(this)
         }
