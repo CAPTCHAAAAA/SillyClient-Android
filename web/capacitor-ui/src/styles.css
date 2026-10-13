@@ -269,6 +269,9 @@ body::-webkit-scrollbar,
   position: fixed;
   pointer-events: none;
   z-index: 0;
+  /* screen 混合保留：它是"发光感"的来源（增量提亮而非普通 alpha 覆盖）。
+     blur 不再运行时计算——柔雾已由预烘焙位图承载。 */
+  mix-blend-mode: screen;
   will-change: transform;
   transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
@@ -277,52 +280,52 @@ body::-webkit-scrollbar,
 
 /* 流光 1 - 左上区域大光斑 */
 .ambient-glow-1 {
-  top: -15%;
-  left: -15%;
-  width: 65vw;
-  height: 65vh;
-  /* 柔雾观感由预烘焙位图承载（同引擎渲染 blur(40px) 原样式导出），
-     运行时零模糊计算、零离屏混合，动画只移动一张纹理。 */
+  /* 元素框 = 原框外扩模糊溢出区（位图含溢出柔雾；CSS background 被框裁切，
+     框必须扩大到能容纳 blur 尾部）。位图 = 同引擎渲染 blur(40px) 原样式导出。 */
+  left: -27.5vw;
+  top: -20.62vh;
+  width: 90vw;
+  height: 76.24vh;
   background: url("./assets/glow-1.webp") center / 100% 100% no-repeat;
   animation: screensaver-drift-1 28s ease-in-out infinite;
 }
 
 /* 流光 2 - 右下区域大光斑 */
 .ambient-glow-2 {
-  bottom: -15%;
-  right: -15%;
-  width: 70vw;
-  height: 70vh;
+  left: 32.5vw;
+  top: 39.38vh;
+  width: 95vw;
+  height: 81.24vh;
   background: url("./assets/glow-2.webp") center / 100% 100% no-repeat;
   animation: screensaver-drift-2 32s ease-in-out infinite;
 }
 
 /* 流光 3 - 中心偏上横向光带 */
 .ambient-glow-3 {
-  top: 15%;
-  left: 10%;
-  width: 80vw;
-  height: 40vh;
+  left: -2.5vw;
+  top: 9.38vh;
+  width: 105vw;
+  height: 51.24vh;
   background: url("./assets/glow-3.webp") center / 100% 100% no-repeat;
   animation: screensaver-drift-3 24s ease-in-out infinite;
 }
 
 /* 流光 4 - 左侧纵向光带 */
 .ambient-glow-4 {
-  top: 10%;
-  left: -5%;
-  width: 45vw;
-  height: 80vh;
+  left: -17.5vw;
+  top: 4.38vh;
+  width: 70vw;
+  height: 91.24vh;
   background: url("./assets/glow-4.webp") center / 100% 100% no-repeat;
   animation: screensaver-drift-4 30s ease-in-out infinite;
 }
 
 /* 流光 5 - 右上方补充光斑 */
 .ambient-glow-5 {
-  top: -10%;
-  right: 5%;
-  width: 55vw;
-  height: 55vh;
+  left: 27.5vw;
+  top: -15.62vh;
+  width: 80vw;
+  height: 66.24vh;
   background: url("./assets/glow-5.webp") center / 100% 100% no-repeat;
   animation: screensaver-drift-5 26s ease-in-out infinite;
 }
