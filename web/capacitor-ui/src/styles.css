@@ -106,6 +106,13 @@ select:focus-visible {
   --motion-ease-release: cubic-bezier(0.16, 1, 0.3, 1);
   --motion-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --motion-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  /* 状态切换溶解。两端都减速，不能用 --motion-ease-out，那个前段就冲完了。 */
+  --motion-dissolve: 780ms;
+  --motion-dissolve-ease: cubic-bezier(0.5, 0, 0.2, 1);
+  /* 弹窗进出用同一条曲线，但更短。先显现，再把最后一点位移收回来。 */
+  --motion-present: 440ms;
+  --motion-dismiss: 280ms;
+  --motion-present-ease: var(--motion-dissolve-ease);
   --motion-ease-exit: cubic-bezier(0.4, 0, 1, 1);
   --transition-fast: var(--motion-fast) var(--motion-ease-out);
   --transition-normal: var(--motion-base) var(--motion-ease-out);
@@ -442,6 +449,10 @@ body::-webkit-scrollbar,
   animation-play-state: paused !important;
 }
 
+.ambient-glow-container.is-shedding {
+  display: none !important;
+}
+
 /* iOS 拨杆开关 - 动态壁纸控制 */
 .ios-toggle {
   background: none;
@@ -774,16 +785,25 @@ header span[class*="truncate"] {
   }
 }
 
-.overlay-backdrop {
-  animation: overlay-fade-in 0.25s cubic-bezier(0.32, 0.72, 0, 1) forwards;
-  transition: opacity 0.22s cubic-bezier(0.32, 0.72, 0, 1), backdrop-filter 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+@keyframes overlay-fade-out {
+  0% {
+    opacity: 1;
+    backdrop-filter: blur(var(--overlay-blur, 2px));
+    -webkit-backdrop-filter: blur(var(--overlay-blur, 2px));
+  }
+  100% {
+    opacity: 0;
+    backdrop-filter: blur(0px);
+    -webkit-backdrop-filter: blur(0px);
+  }
 }
 
-.overlay-backdrop-exit {
-  animation: none;
-  opacity: 0 !important;
-  backdrop-filter: blur(0px) !important;
-  -webkit-backdrop-filter: blur(0px) !important;
+.overlay-backdrop {
+  animation: overlay-fade-in 340ms var(--motion-present-ease) forwards;
+}
+
+.overlay-backdrop.overlay-backdrop-exit {
+  animation: overlay-fade-out var(--motion-dismiss) var(--motion-ease-out) forwards;
   pointer-events: none;
 }
 
@@ -1071,51 +1091,32 @@ header span[class*="truncate"] {
   pointer-events: none !important;
 }
 
-/* 管理菜单这块画布是定高的，没有页签那种高度跟随。
-   全局 ease-out 会在前 200ms 把 500ms 溶解做完，大面积设置页看起来像没动画。
-   时长、3px 模糊、6px 位移不动，只把曲线铺满这 500ms。 */
-.manage-panel-surface .motion-panel-face,
-.manage-panel-surface .motion-panel-face.is-active,
-.manage-panel-surface .manage-settings-outgoing {
+/* 管理页翻页停在同一个槽位里。不位移、不缩放、不越过落点。
+   旧页用较短的 ease-out 让开，避免两页叠在中间发糊。
+   新页透明度先到位，模糊再用同一条刹车曲线多停一会儿，收焦而不是弹回来。
+   透明度和模糊始终挂在过渡上，切换当帧不改 animation。 */
+.manage-panel-surface .motion-panel-face {
+  opacity: 0;
+  filter: blur(6px);
+  transform: none;
   transition:
-    opacity 500ms cubic-bezier(0.4, 0, 0.2, 1),
-    transform 500ms cubic-bezier(0.4, 0, 0.2, 1),
-    filter 500ms cubic-bezier(0.4, 0, 0.2, 1),
-    visibility 0s linear 500ms;
+    opacity 320ms cubic-bezier(0.23, 1, 0.32, 1),
+    filter 320ms cubic-bezier(0.23, 1, 0.32, 1),
+    visibility 0s linear 320ms;
 }
 
 .manage-panel-surface .motion-panel-face.is-active {
-  transition-delay: 0s;
+  opacity: 1;
+  filter: blur(0.01px);
+  transform: none;
+  transition:
+    opacity 380ms cubic-bezier(0.23, 1, 0.32, 1),
+    filter 560ms cubic-bezier(0.23, 1, 0.32, 1),
+    visibility 0s linear 0s;
 }
 
 .motion-instance-card:active:not([data-card-motion-managed]):not([data-card-motion-managed] .motion-instance-card) {
   transform: scale(0.985) translate3d(0, 0, 0);
-}
-
-.motion-panel-stack {
-  position: relative;
-  overflow: hidden;
-  transition: height 500ms var(--motion-ease-out);
-}
-
-.motion-panel-face {
-  opacity: 0;
-  transform: translate3d(0, 6px, 0);
-  filter: blur(3px);
-  visibility: hidden;
-  transition:
-    opacity 500ms var(--motion-ease-out),
-    transform 500ms var(--motion-ease-out),
-    filter 500ms var(--motion-ease-out),
-    visibility 0s linear 500ms;
-}
-
-.motion-panel-face.is-active {
-  opacity: 1;
-  transform: translate3d(0, 0, 0);
-  filter: blur(0);
-  visibility: visible;
-  transition-delay: 0s;
 }
 
 /* 高度未知的内容使用 grid 行连续展开，允许中途反向。 */
@@ -1416,11 +1417,15 @@ header span[class*="truncate"] {
     inset 0 1px 0 oklch(1 0 0 / 0.25),
     inset 0 -1px 0 oklch(0 0 0 / 0.08),
     0 0.5px 0 oklch(1 0 0 / 0.08);
-  transition: transform var(--motion-fast) var(--motion-ease-out), box-shadow var(--motion-fast) ease, background-color var(--motion-fast) ease;
+  transition:
+    color 500ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform var(--motion-fast) var(--motion-ease-out),
+    box-shadow var(--motion-fast) ease,
+    background-color var(--motion-fast) ease;
 }
 
 .ios-glass-btn:hover {
-  /* Keep background and border box calm on hover; font/icon handles highlight */
+  /* 底不动，只提亮字和图标。 */
 }
 
 .ios-glass-btn:active {
@@ -1463,6 +1468,10 @@ header span[class*="truncate"] {
   .theme-smoothing *:not(.motion-panel-stack):not(.motion-panel-face):not(.carousel-pagination):not(.carousel-pagination *),
   .overlay-backdrop {
     transition-duration: 1ms !important;
+  }
+
+  .overlay-backdrop {
+    animation-duration: 1ms !important;
   }
 
   .motion-panel-stack {
@@ -1568,6 +1577,28 @@ header span[class*="truncate"] {
 @keyframes shimmer {
   0% { transform: translateX(-100%); }
   100% { transform: translateX(100%); }
+}
+
+/* 删除没有逐项百分比，条只往前走，停在完成前，避免假装已经删完。 */
+@keyframes delete-progress-fill {
+  0% { width: 8%; }
+  100% { width: 92%; }
+}
+
+.delete-progress-fill {
+  width: 8%;
+  animation: delete-progress-fill 16s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .delete-progress-fill,
+  .delete-progress-fill > div {
+    animation: none;
+  }
+
+  .delete-progress-fill {
+    width: 46%;
+  }
 }
 
 /* 全局表单元素 — 去除浏览器默认样式 */
@@ -1981,7 +2012,7 @@ select option {
 }
 
 /* 状态切换：多个按钮接成一条。整条是浅沟槽，选中项沿用原来的内凹，只是更深。
-   选中材质用和面板一样的 500ms 溶解：模糊 3px 淡入淡出，文字保持清晰。
+   选中材质和面板溶解同一条曲线：780ms，两端减速，模糊 3px 淡入淡出，文字保持清晰。
    外圆角 = 内边距 3px + 内圆角 18px。 */
 .ios-choice-track {
   display: flex;
@@ -2041,10 +2072,17 @@ select option {
   filter: blur(3px);
   pointer-events: none;
   transition:
-    opacity 500ms var(--motion-ease-out),
-    filter 500ms var(--motion-ease-out),
-    background-color 500ms var(--motion-ease-out),
-    box-shadow 500ms var(--motion-ease-out);
+    opacity var(--motion-dissolve) var(--motion-dissolve-ease),
+    filter var(--motion-dissolve) var(--motion-dissolve-ease),
+    background-color var(--motion-dissolve) var(--motion-dissolve-ease),
+    box-shadow var(--motion-dissolve) var(--motion-dissolve-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ios-choice-track > .ios-choice-control::before {
+    filter: none;
+    transition-duration: 120ms;
+  }
 }
 
 .ios-task-surface .ios-choice-track > .ios-choice-control[aria-pressed="true"]::before,
@@ -2166,8 +2204,9 @@ select option {
 
 .app-settings-action {
   min-width: 55px;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.5);
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.62);
 }
 
 .ios-task-surface.is-light .app-settings-action {
@@ -2175,13 +2214,11 @@ select option {
 }
 
 .app-settings-action.is-warning {
-  background: rgba(255, 255, 255, 0.045);
-  color: rgba(235, 182, 108, 0.62);
+  color: rgba(235, 182, 108, 0.72);
 }
 
 .app-settings-action.is-danger {
-  background: rgba(255, 255, 255, 0.045);
-  color: rgba(238, 127, 151, 0.64);
+  color: rgba(238, 127, 151, 0.74);
 }
 
 .app-settings-row.is-pending {
@@ -2217,6 +2254,51 @@ select option {
   display: block;
 }
 
+.setting-label,
+.setting-desc,
+.setting-value {
+  transition: color 500ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .setting-row:hover .setting-label {
+    color: rgba(255, 255, 255, 0.96) !important;
+  }
+
+  .is-light .setting-row:hover .setting-label {
+    color: #1a1625 !important;
+  }
+
+  .setting-row:hover .setting-desc {
+    color: rgba(255, 255, 255, 0.68) !important;
+  }
+
+  .is-light .setting-row:hover .setting-desc {
+    color: rgba(26, 22, 37, 0.68) !important;
+  }
+
+  .setting-row:hover .setting-value {
+    color: rgba(255, 255, 255, 0.96) !important;
+  }
+
+  .is-light .setting-row:hover .setting-value {
+    color: #1a1625 !important;
+  }
+
+  .ios-choice-control[aria-pressed="true"]:hover {
+    color: #fff !important;
+  }
+
+  .is-light .ios-choice-control[aria-pressed="true"]:hover {
+    color: #1a1625 !important;
+  }
+
+  button[role="switch"]:hover,
+  .ios-toggle:hover .ios-toggle-track {
+    filter: brightness(1.08);
+  }
+}
+
 @media (hover: hover) and (pointer: fine) {
   .app-settings-link-row:hover .app-settings-label {
     color: rgba(255, 255, 255, 0.9);
@@ -2249,10 +2331,6 @@ select option {
   .app-settings-action.is-danger:hover {
     color: rgba(246, 145, 166, 0.98);
   }
-}
-
-.app-settings-action:active:not(:disabled) {
-  transform: scale(0.97);
 }
 
 @media (max-width: 420px) {
@@ -2405,19 +2483,154 @@ select option {
   content: none;
 }
 
-/* 搜索、页签、输入和次要按钮共用这一层浅内凹。 */
+/* 搜索和顶栏按钮用浅内凹。文字很多的设置项不走这里。 */
 .manage-recess {
-  background: rgba(255, 255, 255, 0.05);
-  box-shadow:
-    inset 0 1px 1.5px rgba(0, 0, 0, 0.22),
-    inset 0 -0.5px 0 rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.20);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.24);
 }
 
 .manage-panel-surface.is-light .manage-recess {
   background: rgba(26, 22, 37, 0.045);
-  box-shadow:
-    inset 0 1px 1.5px rgba(28, 18, 24, 0.08),
-    inset 0 -0.5px 0 rgba(255, 255, 255, 0.7);
+  box-shadow: inset 0 1px 2px rgba(28, 18, 24, 0.07);
+}
+
+.manage-recess input {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* 高阅读设置项保持扁平。边界只靠极轻的色差，不描实线，也不做内凹。 */
+.manage-panel-surface .manage-flat {
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.03) !important;
+  box-shadow: none !important;
+}
+
+.manage-panel-surface.is-light .manage-flat {
+  background: rgba(26, 22, 37, 0.04);
+  border-color: rgba(26, 22, 37, 0.04) !important;
+}
+
+/* 交互扁平胶囊：满圆，边缘只留控制岛那种 0.5px 发丝，不画实线。
+   悬停仍以提亮文字为主，底色只跟着同一条 500ms 曲线轻轻抬一点。按下不缩放。 */
+.manage-panel-surface button.manage-flat,
+.app-settings-action,
+button.flat-capsule {
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.15) !important;
+  border: 0 !important;
+  box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.07) !important;
+  transition-property: color, background-color, box-shadow;
+  transition-duration: 500ms;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.manage-panel-surface.is-light button.manage-flat,
+.ios-task-surface.is-light .app-settings-action,
+.is-light button.flat-capsule {
+  background: rgba(26, 22, 37, 0.07) !important;
+  box-shadow: 0 0 0 0.5px rgba(26, 22, 37, 0.08) !important;
+}
+
+button.flat-capsule[aria-pressed="true"] {
+  background: rgba(255, 255, 255, 0.24) !important;
+}
+
+.is-light button.flat-capsule[aria-pressed="true"] {
+  background: rgba(26, 22, 37, 0.12) !important;
+}
+
+.manage-panel-surface button.manage-flat:hover,
+.app-settings-action:hover,
+button.flat-capsule:hover,
+.manage-panel-surface button.manage-flat:active:not(:disabled),
+.app-settings-action:active:not(:disabled),
+button.flat-capsule:active:not(:disabled) {
+  transform: none;
+  filter: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .manage-panel-surface button.manage-flat:hover,
+  .app-settings-action:hover,
+  button.flat-capsule:hover {
+    background-color: rgba(255, 255, 255, 0.22) !important;
+    box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.12) !important;
+  }
+
+  .manage-panel-surface.is-light button.manage-flat:hover,
+  .ios-task-surface.is-light .app-settings-action:hover,
+  .is-light button.flat-capsule:hover {
+    background-color: rgba(26, 22, 37, 0.11) !important;
+    box-shadow: 0 0 0 0.5px rgba(26, 22, 37, 0.12) !important;
+  }
+}
+
+.manage-panel-surface button.manage-flat:active:not(:disabled),
+.app-settings-action:active:not(:disabled),
+button.flat-capsule:active:not(:disabled) {
+  background-color: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.05) !important;
+  transition-duration: 140ms;
+}
+
+.manage-panel-surface.is-light button.manage-flat:active:not(:disabled),
+.ios-task-surface.is-light .app-settings-action:active:not(:disabled),
+.is-light button.flat-capsule:active:not(:disabled) {
+  background-color: rgba(26, 22, 37, 0.14) !important;
+  box-shadow: 0 0 0 0.5px rgba(26, 22, 37, 0.1) !important;
+}
+
+.reading-flat-surface input,
+.reading-flat-surface textarea,
+.reading-flat-surface .ios-field-control,
+.reading-flat-surface button.border:not(.ios-choice-control):not(.rounded-full):not(.flat-capsule) {
+  background: rgba(255, 255, 255, 0.045) !important;
+  background-color: rgba(255, 255, 255, 0.045) !important;
+  border-style: solid !important;
+  border-width: 1px !important;
+  border-color: rgba(255, 255, 255, 0.03) !important;
+  box-shadow: none !important;
+}
+
+.reading-flat-surface.is-light input,
+.reading-flat-surface.is-light textarea,
+.reading-flat-surface.is-light .ios-field-control,
+.reading-flat-surface.is-light button.border:not(.ios-choice-control):not(.rounded-full):not(.flat-capsule) {
+  background: rgba(26, 22, 37, 0.04) !important;
+  background-color: rgba(26, 22, 37, 0.04) !important;
+  border-color: rgba(26, 22, 37, 0.04) !important;
+}
+
+/* 管理分类沿用控制岛 / App 设置的连体沟槽。高度跟顶栏走，所以做成满圆胶囊。 */
+.manage-panel-surface .manage-choice-track {
+  border-radius: 9999px;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+.manage-panel-surface.is-light .manage-choice-track {
+  box-shadow: inset 0 1px 2px rgba(28, 18, 24, 0.06);
+}
+
+.manage-panel-surface .ios-choice-track > .ios-choice-control[aria-pressed="true"]::before {
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.18);
+}
+
+.manage-panel-surface.is-light .ios-choice-track > .ios-choice-control[aria-pressed="true"]::before {
+  box-shadow: inset 0 1px 2px rgba(28, 18, 24, 0.1);
+}
+
+.manage-panel-surface .manage-choice-track > .ios-choice-control {
+  flex: 0 0 auto;
+  align-self: stretch;
+  border-radius: 9999px !important;
+}
+
+.manage-panel-surface .manage-choice-track.is-portrait > .ios-choice-control {
+  flex: 1 1 0;
 }
 
 .manage-thumb {
@@ -2430,7 +2643,7 @@ select option {
 }
 
 /* 管理菜单悬停跟控制岛、实例菜单一样：只走字色，500ms，不缩放、不改底。 */
-.manage-panel-surface button.motion-control {
+.manage-panel-surface button.motion-control:not(.flat-capsule):not(.manage-flat) {
   transition-property: color;
   transition-duration: 500ms;
   transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
@@ -2511,11 +2724,140 @@ select option {
     height 500ms cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
+.motion-slot {
+  --slot-gap: 0px;
+  display: grid;
+  grid-template-columns: 0fr;
+  min-width: 0;
+  transition:
+    grid-template-columns var(--motion-dissolve) var(--motion-dissolve-ease),
+    margin var(--motion-dissolve) var(--motion-dissolve-ease);
+}
+
+.motion-slot.is-before {
+  margin-right: calc(var(--slot-gap) * -1);
+}
+
+.motion-slot.is-after {
+  margin-left: calc(var(--slot-gap) * -1);
+}
+
+.motion-slot.is-open {
+  grid-template-columns: 1fr;
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.motion-slot:not(.is-open) {
+  pointer-events: none;
+}
+
+.motion-slot-clip {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.motion-slot-face {
+  width: max-content;
+  opacity: 0;
+  filter: blur(3px);
+  transform: translate3d(0, 6px, 0);
+  transition:
+    opacity var(--motion-dissolve) var(--motion-dissolve-ease),
+    filter var(--motion-dissolve) var(--motion-dissolve-ease),
+    transform var(--motion-dissolve) var(--motion-dissolve-ease);
+}
+
+.motion-slot.is-open .motion-slot-face {
+  opacity: 1;
+  filter: blur(0);
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .motion-slot,
+  .motion-slot-face,
+  .motion-slot.is-open .motion-slot-face,
+  .manage-panel-surface .motion-panel-face,
+  .manage-panel-surface .motion-panel-face.is-active {
+    filter: none;
+    transform: none;
+    animation: none;
+    transition:
+      opacity 120ms var(--motion-ease-out),
+      visibility 0s linear 120ms;
+  }
+
+  .manage-panel-surface .motion-panel-face.is-active {
+    transition-delay: 0s;
+  }
+}
+
 .manage-card-veil {
   position: absolute;
   inset: 0;
   pointer-events: none;
   transition: opacity 500ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 管理页未选中加重底边，名字压在更实的遮罩上。选中仍收短。 */
+.manage-card-scrim {
+  background: linear-gradient(
+    to top,
+    rgba(var(--sf-grad-rgb, 30 15 24) / max(0.9, var(--sf-grad-bc, 0.55))) 0%,
+    rgba(var(--sf-grad-rgb, 30 15 24) / calc(max(0.9, var(--sf-grad-bc, 0.55)) * 0.66)) calc(var(--sf-grad-hc, 40%) * 0.9),
+    rgba(var(--sf-grad-rgb, 30 15 24) / calc(max(0.9, var(--sf-grad-bc, 0.55)) * 0.26)) min(70%, calc(var(--sf-grad-hc, 40%) * 1.6)),
+    transparent min(78%, calc(var(--sf-grad-hc, 40%) * 2))
+  );
+}
+
+/* 选中收短，封面成为焦点。不用首页展开高度。 */
+.manage-card-scrim.is-focus {
+  background: linear-gradient(
+    to top,
+    rgba(var(--sf-grad-rgb, 30 15 24) / calc(var(--sf-grad-bc, 0.55) * 0.78)) 0%,
+    rgba(var(--sf-grad-rgb, 30 15 24) / calc(var(--sf-grad-bc, 0.55) * 0.28)) calc(var(--sf-grad-hc, 40%) * 0.36),
+    transparent calc(var(--sf-grad-hc, 40%) * 0.66)
+  );
+}
+
+.manage-panel-surface.is-light .manage-card-scrim {
+  background: linear-gradient(
+    to top,
+    rgba(var(--sf-lg-rgb, 244 240 237) / max(0.94, var(--sf-lg-bc, 0.86))) 0%,
+    rgba(var(--sf-lg-rgb, 244 240 237) / calc(max(0.94, var(--sf-lg-bc, 0.86)) * 0.7)) calc(var(--sf-lg-hc, 28%) * 1.15),
+    rgba(var(--sf-lg-rgb, 244 240 237) / calc(max(0.94, var(--sf-lg-bc, 0.86)) * 0.3)) min(56%, calc(var(--sf-lg-hc, 28%) * 2.15)),
+    transparent min(66%, calc(var(--sf-lg-hc, 28%) * 2.7))
+  );
+}
+
+.manage-panel-surface.is-light .manage-card-scrim.is-focus {
+  background: linear-gradient(
+    to top,
+    rgba(var(--sf-lg-rgb, 244 240 237) / calc(var(--sf-lg-bc, 0.86) * 0.78)) 0%,
+    rgba(var(--sf-lg-rgb, 244 240 237) / calc(var(--sf-lg-bc, 0.86) * 0.3)) calc(var(--sf-lg-hc, 28%) * 0.46),
+    transparent calc(var(--sf-lg-hc, 28%) * 0.92)
+  );
+}
+
+/* 动态模式管理卡底边仍是中性灰，只把这一层加实。菜单底色不动。 */
+body:has(.ambient-glow-container) .manage-panel-surface:not(.is-light) .manage-card-scrim {
+  background: linear-gradient(
+    to top,
+    rgba(78, 78, 84, 0.97) 0%,
+    rgba(78, 78, 84, 0.74) calc(var(--sf-grad-hc, 40%) * 0.9),
+    rgba(78, 78, 84, 0.32) min(70%, calc(var(--sf-grad-hc, 40%) * 1.6)),
+    transparent min(78%, calc(var(--sf-grad-hc, 40%) * 2))
+  );
+}
+
+body:has(.ambient-glow-container) .manage-panel-surface:not(.is-light) .manage-card-scrim.is-focus {
+  background: linear-gradient(
+    to top,
+    rgba(78, 78, 84, 0.86) 0%,
+    rgba(78, 78, 84, 0.34) calc(var(--sf-grad-hc, 40%) * 0.36),
+    transparent calc(var(--sf-grad-hc, 40%) * 0.66)
+  );
 }
 
 .manage-card-clip {

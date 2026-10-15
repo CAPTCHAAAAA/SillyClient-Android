@@ -2,11 +2,13 @@ import React, { useState, useRef, useEffect } from "react";
 import { Play, MoreVertical, Edit2, Loader2, Lock } from "lucide-react";
 import { cn, formatDisplayVersion } from "../../lib/utils";
 import type { TavernInstance } from "../../types";
+import { coverTone, coverWash } from "./coverTone";
 
 export interface InstanceStoppedCardProps {
   instance: TavernInstance;
   index: number;
   isLight: boolean;
+  isDynamic?: boolean;
   glassBg?: string;
   isExpanded: boolean;
   isMenuOpen: boolean;
@@ -42,6 +44,7 @@ export const InstanceStoppedCard: React.FC<InstanceStoppedCardProps> = ({
   instance,
   index,
   isLight,
+  isDynamic = false,
   isExpanded,
   isMenuOpen,
   launchingId,
@@ -117,6 +120,7 @@ export const InstanceStoppedCard: React.FC<InstanceStoppedCardProps> = ({
       data-card-index={String(index + 1)}
       className={cn(
         "motion-instance-card w-full h-full rounded-[26px] relative group cursor-pointer overflow-hidden",
+        isLight && "is-light",
         isExpanded && "is-expanded"
       )}
       onClick={(e) => {
@@ -135,9 +139,7 @@ export const InstanceStoppedCard: React.FC<InstanceStoppedCardProps> = ({
         <div
           className="absolute inset-0"
           style={{
-            background: isLight
-              ? "linear-gradient(135deg, oklch(1 0 0 / 0.40) 0%, oklch(1 0 0 / 0.25) 100%)"
-              : "oklch(0 0 0 / 0.5)",
+            background: coverWash(coverTone(isLight, isDynamic)),
           }}
         />
       </div>
@@ -348,10 +350,10 @@ export const InstanceStoppedCard: React.FC<InstanceStoppedCardProps> = ({
                   }}
                   disabled={isSavingInline || launchingId === instance.id}
                   className={cn(
-                    "motion-control h-7 px-4 rounded-full text-[11px] font-semibold flex items-center justify-center gap-1 transition-colors disabled:opacity-50",
+                    "flat-capsule motion-control h-7 px-4 rounded-full text-[11px] font-semibold flex items-center justify-center gap-1 border-0 disabled:opacity-50",
                     isLight
-                      ? "bg-black/[0.07] text-[#1a1625]/60 hover:text-[#1a1625]"
-                      : "bg-white/15 text-white/60 hover:text-white"
+                      ? "text-[#1a1625]/60 hover:text-[#1a1625]"
+                      : "text-white/60 hover:text-white"
                   )}
                 >
                   <Play className="w-2.5 h-2.5" />{" "}
@@ -368,10 +370,10 @@ export const InstanceStoppedCard: React.FC<InstanceStoppedCardProps> = ({
                   }}
                   disabled={isSavingInline}
                   className={cn(
-                    "motion-control w-7 h-7 rounded-full flex items-center justify-center transition-colors",
+                    "flat-capsule motion-control w-7 h-7 rounded-full flex items-center justify-center border-0",
                     isLight
-                      ? "bg-black/[0.07] text-[#1a1625]/50 hover:text-[#1a1625]"
-                      : "bg-white/15 text-white/50 hover:text-white"
+                      ? "text-[#1a1625]/55 hover:text-[#1a1625]"
+                      : "text-white/55 hover:text-white"
                   )}
                 >
                   <MoreVertical className="w-3 h-3 text-current transition-colors" />

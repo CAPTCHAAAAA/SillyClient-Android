@@ -5,17 +5,15 @@ import {
   Eraser,
   Play,
   Lock,
-  ChevronLeft,
-  ChevronRight,
 } from "lucide-react";
 import { TarvenEnv } from "../../capacitor-plugin";
 import type { InstanceConfig } from "../../capacitor-plugin";
 import { cn, formatDisplayVersion } from "../../lib/utils";
+import { coverPlate, coverTone } from "../instance/coverTone";
 import { LAYERS } from "../../constants/layers";
 import type { TavernInstance, ManageTab, BgMode, ThemeStyle } from "../../types";
 import { useInstanceLogs } from "../../hooks/useInstanceLogs";
 import { instanceLogs } from "../../lib/log-store";
-
 
 const MANAGE_IMAGE_W = 1254;
 const MANAGE_IMAGE_H = 687;
@@ -28,7 +26,7 @@ const MANAGE_LABEL_PX = 20;
 const MANAGE_TYPE_SCALE = 78 / 71;
 const MANAGE_FONT_PX = 16 * MANAGE_TYPE_SCALE;
 /** 示意图宽 1254。顶栏不再留弹性空隙，设置行中间空白随帧宽一起收掉。 */
-const MANAGE_FRAME_W = 1080;
+const MANAGE_FRAME_W = 940;
 const MANAGE_FRAME_H = MANAGE_IMAGE_H;
 /** 相对当前 CSS 帧的整帧显示比例。字号、间距、圆角一起走，不除 devicePixelRatio。 */
 const MANAGE_VISUAL_SCALE = 0.67;
@@ -63,37 +61,92 @@ function manageRecessedGlass(isLight: boolean): React.CSSProperties {
   };
 }
 
+/**
+ * 外圈已经是创建实例同款毛玻璃。嵌套区只罩一层更淡的白，
+ * 比大卡片浅一档，不另换色，也不把 blur 盖成实色底板。
+ */
+function manageReadingWell(isLight: boolean, isDynamic: boolean): React.CSSProperties {
+  return {
+    background: isLight
+      ? "rgba(255,255,255,0.46)"
+      : isDynamic
+        ? "rgba(255,255,255,0.12)"
+        : "rgba(255,255,255,0.10)",
+  };
+}
+
+const MANAGE_TABS = [
+  { id: "launch", label: "启动参数" },
+  { id: "storage", label: "存储路径" },
+  { id: "terminal", label: "实例终端" },
+  { id: "about", label: "关于实例" },
+] as const;
+
+function ManageTabTrack({
+
+  manageTab,
+  setManageTab,
+  isPortrait,
+}: {
+  manageTab: ManageTab;
+  setManageTab: (tab: ManageTab) => void;
+  isPortrait: boolean;
+}) {
+  return (
+    <div
+      className={cn("ios-choice-track manage-choice-track flex-shrink-0", isPortrait && "is-portrait")}
+      role="group"
+      aria-label="管理分类"
+      style={isPortrait ? { height: 44, width: "100%" } : { height: manageEm(49) }}
+    >
+      {MANAGE_TABS.map((tab) => {
+        const isTabActive = manageTab === tab.id;
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            aria-pressed={isTabActive}
+            onClick={() => {
+              if (tab.id === manageTab) return;
+              setManageTab(tab.id);
+            }}
+            className="ios-choice-control motion-control flex select-none items-center justify-center whitespace-nowrap border font-medium"
+            style={{
+              width: isPortrait ? undefined : manageEm(109),
+              fontSize: isPortrait ? 15 : manageFont(16),
+            }}
+          >
+            {tab.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 /** 右侧内容区外框圆角。内框圆角 = 外框圆角 - 边距。 */
 const MANAGE_PANE_RADIUS = 30;
 const MANAGE_NEST_INSET = 14;
 
 const MANAGE_VIEW_GUTTER = 32;
 /**
- * 竖版画板就是「竖向.png」的 687×843。
- * 宽和高锁死这个比例，放进视口时整帧 zoom，不再把宽拉满、高截成扁条。
- * 最大就是这张画板本身。
+ * 竖版不再把 687×843 画板 zoom 进手机，也不拉成整屏长条。
+ * 最大约 440×580，上下留出背景。字号仍是 1 倍，多出来的设置在卡片里滚。
  */
-const PORTRAIT_FRAME_W = 687;
-const PORTRAIT_FRAME_H = 843;
-const PORTRAIT_GUTTER = 16;
-const PORTRAIT_CTRL = 48;
-const PORTRAIT_CARD_W = 196;
-const PORTRAIT_CARD_ACTIVE_W = 214;
-const PORTRAIT_CARD_H = 196;
-const PORTRAIT_CARD_GAP = 14;
-const portraitFitFor = (viewportW: number, viewportH: number) => {
-  const availW = Math.max(1, viewportW - PORTRAIT_GUTTER * 2);
-  const availH = Math.max(1, viewportH - PORTRAIT_GUTTER * 2);
-  return {
-    zoom: Math.min(1, availW / PORTRAIT_FRAME_W, availH / PORTRAIT_FRAME_H),
-  };
-};
+const PORTRAIT_GUTTER = 14;
+const PORTRAIT_CTRL = 44;
+const PORTRAIT_CARD_W = 148;
+const PORTRAIT_CARD_ACTIVE_W = 168;
+const PORTRAIT_CARD_H = 120;
+const PORTRAIT_CARD_GAP = 12;
+const PORTRAIT_MAX_W = 440;
+const PORTRAIT_MAX_H = 580;
 
 /**
  * 设计帧高仍是 Figma「Movie workspace」的 687，宽从 1254 收到 MANAGE_FRAME_W。
  * 「启动端口」在未缩放的帧里是 20px。整帧再用 CSS zoom = MANAGE_VISUAL_SCALE 显示，
  * 大约是上一档 CSS 尺寸的 67%。比例不变。禁止再除 devicePixelRatio，也不要锁回物理像素。
- * 右下角曲线只能把它拖大，不能拖到比这张缩放后的帧更小。屏幕不够时只裁切，不把帧再缩小。
+ * 屏幕不够时只裁切，不把帧再缩小。
  *
  * 浏览器页面无法限制操作系统窗口的最小尺寸。
  * 构建桌面或移动宿主时必须把窗口最小值适配到 manageMenuMinWindowCss()，
@@ -162,26 +215,26 @@ function ManageItem({
   return (
     <div>
       <div
-        className="flex items-center justify-between gap-6"
+        className="setting-row flex items-center justify-between gap-6"
         style={{
-          minHeight: managePortrait ? 68 : 88,
-          marginInline: managePortrait ? 20 : 28,
+          minHeight: managePortrait ? 64 : 88,
+          marginInline: managePortrait ? 16 : 28,
         }}
       >
       <div className="min-w-0 flex-1 pr-4">
         <div
           className={cn(
-            "font-medium leading-tight",
+            "setting-label font-medium leading-tight",
             tone === "light" ? "text-[#1a1625]/85" : "text-white/88"
           )}
-          style={{ fontSize: MANAGE_LABEL_PX }}
+          style={{ fontSize: managePortrait ? 17 : MANAGE_LABEL_PX }}
         >
           {label}
         </div>
         {desc && (
           <div
             className={cn(
-              "leading-snug",
+              "setting-desc leading-snug",
               tone === "light" ? "text-[#1a1625]/45" : "text-white/48"
             )}
             style={{ marginTop: 4, fontSize: 13 }}
@@ -190,7 +243,7 @@ function ManageItem({
           </div>
         )}
       </div>
-      <div className={managePortrait ? "shrink-0" : "min-w-0 max-w-[46%]"}>{children}</div>
+      <div className={managePortrait ? "min-w-0 max-w-[58%]" : "min-w-0 max-w-[46%]"}>{children}</div>
       </div>
     </div>
   );
@@ -208,7 +261,7 @@ function ManageSettingValue({
   return (
     <div
       className={cn(
-        "text-right break-words",
+        "setting-value text-right break-words",
         mono && "font-mono",
         manageTheme === "light" ? "text-[#1a1625]/72" : "text-white/78"
       )}
@@ -222,7 +275,7 @@ function ManageSettingValue({
 function manageNumberFieldClass(isLight: boolean) {
   void isLight;
   return cn(
-    "manage-recess h-10 w-[112px] rounded-xl border-0 text-center outline-none",
+    "manage-flat h-10 w-[112px] rounded-xl border-0 text-center outline-none",
     manageTheme === "light" ? "text-[#1a1625]" : "text-white"
   );
 }
@@ -230,7 +283,7 @@ function manageNumberFieldClass(isLight: boolean) {
 function manageTextFieldClass(isLight: boolean) {
   void isLight;
   return cn(
-    "manage-recess h-10 w-full rounded-xl border-0 px-3.5 outline-none",
+    "manage-flat h-10 w-full rounded-xl border-0 px-3.5 outline-none",
     manageTheme === "light"
       ? "text-[#1a1625] placeholder:text-[#1a1625]/30"
       : "text-white placeholder:text-white/35"
@@ -297,10 +350,10 @@ function getStatusText(status: TavernInstance["status"]) {
 function manageCapsuleButtonClass(isLight: boolean) {
   void isLight;
   return cn(
-    "manage-recess motion-control flex h-10 flex-shrink-0 items-center rounded-xl border-0 px-4 font-medium",
+    "manage-flat flat-capsule motion-control flex h-10 flex-shrink-0 items-center rounded-full border-0 px-4 font-medium",
     manageTheme === "light"
-      ? "text-[#1a1625]/60 hover:text-[#1a1625]/85"
-      : "text-white/65 hover:text-white/85",
+      ? "text-[#1a1625]/60 hover:text-[#1a1625]"
+      : "text-white/60 hover:text-white",
   );
 }
 
@@ -325,52 +378,6 @@ function manageFaceScrollClassName(portrait: boolean) {
 let manageTheme: "light" | "dynamic" | "dark" = "dark";
 let managePortrait = false;
 
-const coverAlphaCache = new Map<string, boolean>();
-
-function coverHasTransparency(src: string) {
-  const known = coverAlphaCache.get(src);
-  if (known !== undefined) return Promise.resolve(known);
-  return new Promise<boolean>((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      let transparent = false;
-      try {
-        const size = 32;
-        const canvas = document.createElement("canvas");
-        canvas.width = size;
-        canvas.height = size;
-        const ctx = canvas.getContext("2d", { willReadFrequently: true });
-        if (ctx) {
-          ctx.clearRect(0, 0, size, size);
-          ctx.drawImage(img, 0, 0, size, size);
-          const data = ctx.getImageData(0, 0, size, size).data;
-          let clear = 0;
-          const pixels = size * size;
-          for (let i = 3; i < data.length; i += 4) {
-            if (data[i] < 240) clear += 1;
-          }
-          transparent = clear / pixels > 0.04;
-        }
-      } catch {
-        transparent = false;
-      }
-      coverAlphaCache.set(src, transparent);
-      resolve(transparent);
-    };
-    img.onerror = () => {
-      coverAlphaCache.set(src, false);
-      resolve(false);
-    };
-    img.src = src;
-  });
-}
-
-function manageCoverPlate(isLight: boolean, isDynamic: boolean) {
-  if (isLight) return "oklch(0.97 0.008 90 / 0.94)";
-  if (isDynamic) return "oklch(0.44 0.05 350 / 0.92)";
-  return "oklch(0.42 0.022 260 / 0.92)";
-}
-
 function ManageInstanceCard({
   item,
   selected,
@@ -387,31 +394,6 @@ function ManageInstanceCard({
   onSelect: (item: TavernInstance) => void;
 }) {
   const src = item.cover || "./tavern-logo.png";
-  const [clearCover, setClearCover] = useState(() => coverAlphaCache.get(src) ?? false);
-
-  useEffect(() => {
-    let dead = false;
-    const known = coverAlphaCache.get(src);
-    if (known !== undefined) {
-      setClearCover(known);
-      return;
-    }
-    void coverHasTransparency(src).then((value) => {
-      if (!dead) setClearCover(value);
-    });
-    return () => {
-      dead = true;
-    };
-  }, [src]);
-
-  const restingVeil = clearCover
-    ? isLight
-      ? "linear-gradient(to top, rgba(255,255,255,0.78) 0%, rgba(255,255,255,0.26) 34%, transparent 62%)"
-      : "linear-gradient(to top, oklch(0.16 0.02 260 / 0.58) 0%, oklch(0.16 0.02 260 / 0.14) 36%, transparent 62%)"
-    : undefined;
-  const activeVeil = clearCover
-    ? "linear-gradient(to top, oklch(0.14 0.02 260 / 0.7) 0%, oklch(0.14 0.02 260 / 0.22) 42%, transparent 68%)"
-    : undefined;
 
   return (
     <div
@@ -425,42 +407,26 @@ function ManageInstanceCard({
       style={{
         width: isPortrait ? (selected ? PORTRAIT_CARD_ACTIVE_W : PORTRAIT_CARD_W) : undefined,
         height: isPortrait ? PORTRAIT_CARD_H : selected ? manageEm(196) : manageEm(152),
-        borderRadius: manageEm(22),
+        borderRadius: isPortrait ? 18 : manageEm(22),
       }}
     >
       <div className="manage-card-clip">
-        <div
-          className="manage-card-plate"
-          style={{ background: manageCoverPlate(isLight, isDynamic) }}
-        />
+        {!isLight && (
+          <div
+            className="manage-card-veil"
+            style={{ background: coverPlate(coverTone(false, isDynamic)) }}
+          />
+        )}
         <img
           src={src}
           alt=""
-          className="manage-card-photo"
           draggable={false}
           onError={(e) => {
             (e.target as HTMLElement).style.display = "none";
           }}
         />
-        <div
-          className={cn(
-            "manage-card-veil",
-            !clearCover && "bg-gradient-to-t",
-            !clearCover && (isLight
-              ? "from-white/70 via-white/35 to-white/5"
-              : "from-black/75 via-black/40 to-black/10"),
-            selected ? "opacity-0" : "opacity-100"
-          )}
-          style={restingVeil ? { background: restingVeil } : undefined}
-        />
-        <div
-          className={cn(
-            "manage-card-veil",
-            !clearCover && "bg-gradient-to-t from-black/80 via-black/50 to-black/20",
-            selected ? "opacity-100" : "opacity-0"
-          )}
-          style={activeVeil ? { background: activeVeil } : undefined}
-        />
+        <div className={cn("manage-card-veil manage-card-scrim", selected && "opacity-0")} />
+        <div className={cn("manage-card-veil manage-card-scrim is-focus", selected ? "opacity-100" : "opacity-0")} />
         <div className="pointer-events-none absolute left-0 top-0 z-[2] flex items-center gap-1.5" style={{ padding: manageEm(14) }}>
           <span
             className={cn(
@@ -574,31 +540,18 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
   const terminalLogRef = useRef<HTMLDivElement>(null);
   const aboutFaceRef = useRef<HTMLDivElement>(null);
   const [rightFade, setRightFade] = useState({ top: false, bottom: false });
-  const [panelSize, setPanelSize] = useState({ w: MANAGE_FRAME_W, h: MANAGE_FRAME_H });
   const [isPortrait, setIsPortrait] = useState(() => (
     typeof window !== "undefined" && window.matchMedia("(max-width: 760px)").matches
   ));
-  const [viewportBox, setViewportBox] = useState(() => ({
-    w: typeof window !== "undefined" ? window.innerWidth : 390,
-    h: typeof window !== "undefined" ? window.innerHeight : 844,
-  }));
   const isPortraitRef = useRef(isPortrait);
   isPortraitRef.current = isPortrait;
   const portraitScrollMode = useRef<ScrollBehavior>("auto");
-  const resizeDrag = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   useEffect(() => {
     const query = window.matchMedia("(max-width: 760px)");
-    const sync = () => {
-      setIsPortrait(query.matches);
-      setViewportBox({ w: window.innerWidth, h: window.innerHeight });
-    };
+    const sync = () => setIsPortrait(query.matches);
     sync();
     query.addEventListener("change", sync);
-    window.addEventListener("resize", sync);
-    return () => {
-      query.removeEventListener("change", sync);
-      window.removeEventListener("resize", sync);
-    };
+    return () => query.removeEventListener("change", sync);
   }, []);
   const syncCardListFade = () => {
     const node = cardListRef.current;
@@ -620,39 +573,6 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
     observer.observe(node);
     return () => observer.disconnect();
   }, [isOpen, instance?.id, allInstances.length, manageSearchQuery, manageFilter, isPortrait]);
-  useEffect(() => {
-    if (!isOpen) return;
-    setPanelSize({ w: MANAGE_FRAME_W, h: MANAGE_FRAME_H });
-  }, [isOpen, instance?.id]);
-  const onResizePointerDown = (event: React.PointerEvent<SVGSVGElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    event.currentTarget.setPointerCapture(event.pointerId);
-    resizeDrag.current = {
-      x: event.clientX,
-      y: event.clientY,
-      w: panelSize.w,
-      h: panelSize.h,
-    };
-  };
-  const onResizePointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
-    const drag = resizeDrag.current;
-    if (!drag) return;
-    const zoom = MANAGE_VISUAL_SCALE;
-    const maxW = Math.max(MANAGE_FRAME_W, (window.innerWidth - 16) / zoom);
-    const maxH = Math.max(MANAGE_FRAME_H, (window.innerHeight - 16) / zoom);
-    // 窗口居中，右下角要跟着指针走，宽高需要吃掉两倍位移。
-    // panelSize 是设计像素；zoom 之后指针位移要除回 zoom。不读取 devicePixelRatio。
-    const nextW = Math.round(Math.min(maxW, Math.max(MANAGE_FRAME_W, drag.w + (event.clientX - drag.x) * 2 / zoom)));
-    const nextH = Math.round(Math.min(maxH, Math.max(MANAGE_FRAME_H, drag.h + (event.clientY - drag.y) * 2 / zoom)));
-    setPanelSize((current) => (current.w === nextW && current.h === nextH ? current : { w: nextW, h: nextH }));
-  };
-  const onResizePointerUp = (event: React.PointerEvent<SVGSVGElement>) => {
-    resizeDrag.current = null;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-  };
   const syncRightFade = (event?: React.UIEvent<HTMLDivElement>) => {
     const node = event?.currentTarget ?? rightScrollRef.current;
     if (!node) return;
@@ -826,7 +746,6 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
   const isDynamic = bgMode === "dynamic";
   manageTheme = isLight ? "light" : isDynamic ? "dynamic" : "dark";
   managePortrait = isPortrait;
-  const portraitFit = portraitFitFor(viewportBox.w, viewportBox.h);
 
   const rightFadeTop = manageEm(36);
   const rightFadeBottom = isPortrait ? manageEm(40) : manageEm(36);
@@ -835,7 +754,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
     : undefined;
   const cardListMask = cardListFade.top || cardListFade.bottom
     ? isPortrait
-      ? `linear-gradient(to right, ${cardListFade.top ? "transparent" : "#000"} 0, #000 ${manageEm(36)}, #000 calc(100% - ${manageEm(36)}), ${cardListFade.bottom ? "transparent" : "#000"} 100%)`
+      ? `linear-gradient(to right, ${cardListFade.top ? "transparent" : "#000"} 0, #000 24px, #000 calc(100% - 24px), ${cardListFade.bottom ? "transparent" : "#000"} 100%)`
       : `linear-gradient(to bottom, ${cardListFade.top ? "transparent" : "#000"} 0, #000 ${manageEm(36)}, #000 calc(100% - ${manageEm(36)}), ${cardListFade.bottom ? "transparent" : "#000"} 100%)`
     : undefined;
 
@@ -852,73 +771,33 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
         left: "50%",
         transform: "translate(-50%, -50%)",
         fontSize: MANAGE_FONT_PX,
-        zoom: isPortrait ? portraitFit.zoom : MANAGE_VISUAL_SCALE,
-        width: isPortrait ? PORTRAIT_FRAME_W : panelSize.w,
-        height: isPortrait ? PORTRAIT_FRAME_H : panelSize.h,
-        borderRadius: isPortrait ? 40 : manageEm(49),
-        padding: isPortrait ? "18px 18px 16px" : `${manageEm(27)} ${manageEm(27)} ${manageEm(23)}`,
+        zoom: isPortrait ? 1 : MANAGE_VISUAL_SCALE,
+        width: isPortrait ? `min(${PORTRAIT_MAX_W}px, calc(100vw - ${PORTRAIT_GUTTER * 2}px))` : MANAGE_FRAME_W,
+        height: isPortrait ? `min(${PORTRAIT_MAX_H}px, calc(100dvh - 88px))` : MANAGE_FRAME_H,
+        borderRadius: isPortrait ? 32 : manageEm(49),
+        padding: isPortrait ? "14px 14px 12px" : `${manageEm(27)} ${manageEm(27)} ${manageEm(23)}`,
         background: isLight
-          ? "rgba(255,255,255,0.62)"
+          ? "rgba(255,255,255,0.70)"
           : isDynamic
-            ? "oklch(0.20 0.012 350 / 0.40)"
-            : "oklch(0.18 0.005 260 / 0.40)",
+            ? "rgba(28,20,32,0.70)"
+            : "rgba(26,22,37,0.80)",
         backdropFilter: "blur(40px) saturate(1.8)",
         WebkitBackdropFilter: "blur(40px) saturate(1.8)",
       }}
     >
       {/* 顶部统一控制栏 (Movie navigation: 1200px × 49px, 下间距 28px) */}
-      <div className="relative flex items-center w-full flex-shrink-0 select-none" style={{ height: isPortrait ? PORTRAIT_CTRL : manageEm(49), marginBottom: isPortrait ? 16 : manageEm(28), gap: isPortrait ? 8 : undefined }}>
-        {isPortrait && (
-          <>
-            <button
-              type="button"
-              aria-label="向前翻卡片"
-              disabled={!filteredManageInstances.some((item, index, list) => item.id === mp.id && index > 0)}
-              onClick={() => {
-                const index = filteredManageInstances.findIndex((item) => item.id === mp.id);
-                const previous = filteredManageInstances[index - 1];
-                if (previous) selectManagedInstance(previous);
-              }}
-              className={cn(
-                "manage-recess motion-control flex flex-shrink-0 items-center justify-center rounded-full border-0",
-                "disabled:pointer-events-none disabled:opacity-35",
-                isLight ? "text-[#1a1625]/60 hover:text-[#1a1625]/85" : "text-white/60 hover:text-white/85"
-              )}
-              style={{ width: PORTRAIT_CTRL, height: PORTRAIT_CTRL }}
-            >
-              <ChevronLeft style={{ width: 18, height: 18 }} />
-            </button>
-            <button
-              type="button"
-              aria-label="向后翻卡片"
-              disabled={!filteredManageInstances.some((item, index, list) => item.id === mp.id && index < list.length - 1)}
-              onClick={() => {
-                const index = filteredManageInstances.findIndex((item) => item.id === mp.id);
-                const next = filteredManageInstances[index + 1];
-                if (next) selectManagedInstance(next);
-              }}
-              className={cn(
-                "manage-recess motion-control flex flex-shrink-0 items-center justify-center rounded-full border-0",
-                "disabled:pointer-events-none disabled:opacity-35",
-                isLight ? "text-[#1a1625]/60 hover:text-[#1a1625]/85" : "text-white/60 hover:text-white/85"
-              )}
-              style={{ width: PORTRAIT_CTRL, height: PORTRAIT_CTRL }}
-            >
-              <ChevronRight style={{ width: 18, height: 18 }} />
-            </button>
-          </>
-        )}
-        {/* 左上角搜索栏 (Search movies: 280px × 49px, 圆角 rounded-full, 与下方左侧栏 280px 严格垂直对齐) */}
+      <div className="relative flex items-center w-full flex-shrink-0 select-none" style={{ height: isPortrait ? PORTRAIT_CTRL : manageEm(49), marginBottom: isPortrait ? 10 : manageEm(22), gap: isPortrait ? 10 : undefined }}>
+        {/* 左上角搜索栏。竖版跟关闭键并排，不再绝对定位盖住翻页键。 */}
         <div
-          className="manage-recess overflow-hidden rounded-full flex flex-shrink-0 items-center"
+          className={cn(
+            "manage-recess overflow-hidden rounded-full flex items-center",
+            isPortrait ? "min-w-0 flex-1" : "flex-shrink-0"
+          )}
           style={{
-            width: isPortrait ? 292 : manageEm(280),
+            width: isPortrait ? undefined : manageEm(280),
             height: isPortrait ? PORTRAIT_CTRL : manageEm(49),
             paddingInline: isPortrait ? 16 : manageEm(28),
             gap: isPortrait ? 10 : manageEm(15),
-            position: isPortrait ? "absolute" : undefined,
-            left: isPortrait ? "50%" : undefined,
-            transform: isPortrait ? "translateX(-50%)" : undefined,
             border: "none",
           }}
         >
@@ -941,18 +820,26 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                 : "text-white placeholder:text-white/45"
             )}
           />
-          {manageSearchQuery && (
-            <button
-              type="button"
-              onClick={() => setManageSearchQuery("")}
-              className={cn(
-                "motion-control rounded-full p-1",
-                isLight ? "text-[#1a1625]/40 hover:text-[#1a1625]/85" : "text-white/40 hover:text-white/85"
-              )}
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
+          <div
+            className={cn("motion-slot is-after", manageSearchQuery && "is-open")}
+            style={{ ["--slot-gap" as string]: isPortrait ? "10px" : manageEm(15) }}
+            aria-hidden={!manageSearchQuery}
+          >
+            <div className="motion-slot-clip">
+              <div className="motion-slot-face">
+                <button
+                  type="button"
+                  onClick={() => setManageSearchQuery("")}
+                  className={cn(
+                    "motion-control rounded-full p-1",
+                    isLight ? "text-[#1a1625]/40 hover:text-[#1a1625]/85" : "text-white/40 hover:text-white/85"
+                  )}
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
 
         {!isPortrait && (
@@ -960,107 +847,14 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
         {/* 搜索栏与分类标签间距，与顶栏其余固定间距统一 */}
         <div className="flex-shrink-0" style={{ width: manageEm(18) }} />
 
-        {/* 四个分类：同一条内凹毛玻璃轨道，选中项为浮起小胶囊 */}
-        <div
-          className="manage-recess relative flex flex-shrink-0 items-center overflow-hidden"
-          style={{ height: manageEm(49), padding: manageEm(4), borderRadius: 9999 }}
-        >
-          <div
-            className="manage-thumb pointer-events-none absolute"
-            style={{
-              top: manageEm(4),
-              bottom: manageEm(4),
-              left: `calc(${manageEm(4)} + (100% - ${manageEm(8)}) * ${
-                ["launch", "storage", "terminal", "about"].indexOf(manageTab) / 4
-              })`,
-              width: `calc((100% - ${manageEm(8)}) / 4)`,
-              borderRadius: 9999,
-              transition: "left 500ms cubic-bezier(0.22, 1, 0.36, 1)",
-            }}
-          />
-          {(
-            [
-              { id: "launch", label: "启动参数" },
-              { id: "storage", label: "存储路径" },
-              { id: "terminal", label: "实例终端" },
-              { id: "about", label: "关于实例" },
-            ] as const
-          ).map((tab) => {
-            const isTabActive = manageTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => {
-                  if (tab.id === manageTab) return;
-                  setManageTab(tab.id);
-                }}
-                aria-pressed={isTabActive}
-                className={cn(
-                  "motion-control relative z-[1] flex flex-1 select-none items-center justify-center border-0 bg-transparent shadow-none outline-none",
-                  isTabActive
-                    ? isLight
-                      ? "text-[#1a1625] font-semibold"
-                      : "text-white font-semibold"
-                    : isLight
-                    ? "text-[#1a1625]/55 hover:text-[#1a1625]/85 font-medium"
-                    : "text-white/60 hover:text-white/85 font-medium"
-                )}
-                style={{
-                  width: manageEm(109),
-                  height: "100%",
-                  fontSize: manageFont(16),
-                  borderRadius: 9999,
-                }}
-              >
-                {tab.label}
-              </button>
-            );
-          })}
-        </div>
+        <ManageTabTrack manageTab={manageTab} setManageTab={setManageTab} isPortrait={false} />
         </>
         )}
 
         {/* 剩余空间留给标签与右侧操作之间，操作组本身右对齐关闭键 */}
         {!isPortrait && <div className="flex-1" style={{ minWidth: manageEm(18) }} />}
 
-        <div className="flex items-center flex-shrink-0" style={{ height: isPortrait ? PORTRAIT_CTRL : manageEm(49), gap: isPortrait ? 0 : manageEm(18), marginLeft: isPortrait ? "auto" : undefined }}>
-          {!isPortrait && manageTab === "launch" && (
-            <button
-              type="button"
-              disabled={isSavingManagePanel}
-              onClick={onSaveManagedInstance}
-              className={cn(
-                "manage-recess motion-control flex flex-shrink-0 items-center justify-center rounded-full border-0 font-medium whitespace-nowrap disabled:pointer-events-none disabled:opacity-50",
-                isLight
-                  ? "text-[#1a1625]/60 hover:text-[#1a1625]/85"
-                  : "text-white/60 hover:text-white/85"
-              )}
-              style={{ height: manageEm(49), minHeight: manageEm(49), paddingBlock: 0, paddingInline: manageEm(22), lineHeight: 1, boxSizing: "border-box", fontSize: manageFont(16) }}
-            >
-              {isSavingManagePanel ? "保存中..." : "保存"}
-            </button>
-          )}
-          {!isPortrait && (
-          <button
-            type="button"
-            disabled={Boolean(launchingId)}
-            onClick={() => {
-              onClose();
-              onLaunchInstance(mp);
-            }}
-            className={cn(
-              "motion-control flex flex-shrink-0 items-center justify-center rounded-full border-0 font-semibold whitespace-nowrap disabled:pointer-events-none disabled:opacity-50",
-              isLight
-                ? "bg-[#1a1625] text-white/60 hover:text-white"
-                : "bg-white text-[#1a1625]/60 hover:text-[#1a1625]"
-            )}
-            style={{ height: manageEm(49), minHeight: manageEm(49), paddingBlock: 0, paddingInline: manageEm(22), lineHeight: 1, boxSizing: "border-box", gap: manageEm(8), fontSize: manageFont(16) }}
-          >
-            <Play className="fill-current" style={{ width: manageEm(15), height: manageEm(15) }} />
-            {launchingId === mp.id ? "启动中" : "启动"}
-          </button>
-          )}
+        <div className="flex items-center flex-shrink-0" style={{ height: isPortrait ? PORTRAIT_CTRL : manageEm(49), marginLeft: isPortrait ? "auto" : undefined }}>
           <button
             type="button"
             onClick={onClose}
@@ -1079,19 +873,16 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
       </div>
 
       {/* 主体两列分屏 (Movie content: 1200px × 560px, 列间距 28px) */}
-      <div className={cn("flex w-full min-h-0 flex-1", isPortrait && "flex-col")} style={{ gap: isPortrait ? 14 : manageEm(22) }}>
+      <div className={cn("flex w-full min-h-0 flex-1", isPortrait && "flex-col")} style={{ gap: isPortrait ? 10 : manageEm(18) }}>
         {/* 左侧实例边栏。竖版改成横向卡片带，材质不变。 */}
         <aside
-          className={cn("flex-shrink-0 flex flex-col min-h-0 overflow-hidden", isPortrait && "w-full")}
+          className={cn("relative flex-shrink-0 flex flex-col min-h-0 overflow-hidden", isPortrait && "w-full")}
           style={{
             width: isPortrait ? "100%" : manageEm(280),
             height: isPortrait ? "auto" : "100%",
-            borderRadius: manageEm(30),
-            padding: isPortrait ? "12px" : `${manageEm(27)} ${manageEm(28)}`,
-            background: isLight ? "rgba(26, 22, 37, 0.04)" : "rgba(255, 255, 255, 0.04)",
-            boxShadow: isLight
-              ? "inset 0 1px 0 rgba(255,255,255,0.55), inset 0 -1px 0 rgba(28,18,24,0.05)"
-              : "inset 0 1px 0 rgba(255,255,255,0.06), inset 0 -1px 0 rgba(0,0,0,0.14)",
+            borderRadius: isPortrait ? 22 : manageEm(30),
+            padding: isPortrait ? "8px" : `${manageEm(22)} ${manageEm(22)}`,
+            ...manageReadingWell(isLight, isDynamic),
           }}
         >
           {/* 卡片容器：滚到边缘时渐隐，避免最后一张被栏体硬切 */}
@@ -1142,86 +933,48 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
         </aside>
 
         {isPortrait && (
-          <div
-            className="flex w-full flex-shrink-0 items-center justify-between"
-            style={{ height: 48, paddingInline: 4 }}
-          >
-            {(
-              [
-                { id: "launch", label: "启动参数" },
-                { id: "storage", label: "存储路径" },
-                { id: "terminal", label: "实例终端" },
-                { id: "about", label: "关于实例" },
-              ] as const
-            ).map((tab) => {
-              const isTabActive = manageTab === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => {
-                    if (tab.id === manageTab) return;
-                    setManageTab(tab.id);
-                  }}
-                  aria-pressed={isTabActive}
-                  className={cn(
-                    "motion-control flex flex-shrink-0 select-none items-center justify-center border-0 bg-transparent shadow-none outline-none",
-                    isTabActive && "manage-thumb",
-                    isTabActive
-                      ? isLight
-                        ? "text-[#1a1625] font-semibold"
-                        : "text-white font-semibold"
-                      : isLight
-                      ? "text-[#1a1625]/55 hover:text-[#1a1625]/85 font-medium"
-                      : "text-white/60 hover:text-white/85 font-medium"
-                  )}
-                  style={{
-                    height: 40,
-                    paddingInline: 16,
-                    fontSize: 16,
-                    borderRadius: 9999,
-                    transition: "background-color 500ms cubic-bezier(0.22, 1, 0.36, 1), color 500ms cubic-bezier(0.22, 1, 0.36, 1)",
-                  }}
-                >
-                  {tab.label}
-                </button>
-              );
-            })}
-          </div>
+          <ManageTabTrack manageTab={manageTab} setManageTab={setManageTab} isPortrait />
         )}
 
         {/* 右侧主设置面板。竖版落到卡片和分类下面，材质与溶解不变。 */}
         <section
           ref={rightPaneRef}
           className={cn(
-            "relative min-h-0 min-w-0 flex-1 overflow-hidden",
-            isPortrait && "flex flex-col",
+            "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
             isLight ? "text-[#1a1625]" : "text-white/88"
           )}
           style={{
             height: isPortrait ? undefined : "100%",
-            borderRadius: manageEm(MANAGE_PANE_RADIUS),
-            background: isLight ? "rgba(26, 22, 37, 0.04)" : "rgba(255, 255, 255, 0.04)",
-            boxShadow: isLight
-              ? "inset 0 1px 0 rgba(255,255,255,0.55), inset 0 -1px 0 rgba(28,18,24,0.05)"
-              : "inset 0 1px 0 rgba(255,255,255,0.06), inset 0 -1px 0 rgba(0,0,0,0.14)",
+            borderRadius: isPortrait ? 22 : manageEm(MANAGE_PANE_RADIUS),
+            ...manageReadingWell(isLight, isDynamic),
           }}
         >
-            <div className={cn("motion-panel-stack min-h-0 w-full overflow-hidden", isPortrait ? "flex-1 [contain:paint]" : "h-full")}>
+            <div className={cn("motion-panel-stack min-h-0 w-full flex-1 overflow-hidden", isPortrait && "[contain:paint]")}>
               {/* 启动与配置 */}
               <div
-                className={managePanelFaceClass(manageTab === "launch" && settingsFaceReady, isPortrait)}
+                className={cn(managePanelFaceClass(manageTab === "launch" && settingsFaceReady, isPortrait), "flex flex-col")}
                 aria-hidden={manageTab !== "launch"}
                 inert={manageTab !== "launch"}
-                style={{
-                  WebkitMaskImage: rightFaceMask,
-                  maskImage: rightFaceMask,
-                }}
               >
                 <div
                   ref={launchFaceRef}
                   onScroll={syncRightFade}
-                  className={manageFaceScrollClassName(isPortrait)}
+                  className={cn(
+                    "min-h-0 overflow-y-auto overflow-x-hidden [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden",
+                    isPortrait ? "absolute inset-x-0 top-0" : "h-full",
+                  )}
+                  style={{
+                    WebkitMaskImage: rightFaceMask,
+                    maskImage: rightFaceMask,
+                    flex: "1 1 auto",
+                    height: "auto",
+                    minHeight: 0,
+                    bottom: isPortrait ? 68 : undefined,
+                    display: "flex",
+                    flexDirection: "column",
+                    justifyContent: "safe center",
+                    paddingBlock: isPortrait ? 8 : manageEm(8),
+                  }}
                 >
                 <>
                   {mp.type === "local" ? (
@@ -1412,7 +1165,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                             setPasswordSuccess(null);
                           }}
                           className={cn(
-                            "manage-recess motion-control rounded-md px-2 py-0.5 text-[10px] font-medium",
+                            "manage-flat flat-capsule motion-control h-7 rounded-full px-3 text-[11px] font-medium",
                             isLight
                               ? "text-[#1a1625]/60 hover:text-[#1a1625]/85"
                               : "text-white/60 hover:text-white/85"
@@ -1532,7 +1285,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                             }}
                             disabled={passwordSaving}
                             className={cn(
-                              "manage-recess motion-control h-7 rounded-lg px-3 text-xs font-medium",
+                              "manage-flat flat-capsule motion-control h-7 rounded-full px-3 text-xs font-medium",
                               isLight
                                 ? "text-[#1a1625]/60 hover:text-[#1a1625]/85"
                                 : "text-white/60 hover:text-white/85"
@@ -1597,11 +1350,11 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                               }
                             }}
                             className={cn(
-                              "motion-control h-7 rounded-lg px-3.5 text-xs font-semibold disabled:opacity-40",
+                              "motion-control h-7 rounded-full px-3.5 text-xs font-semibold disabled:opacity-40",
                               passwordMode === "clear"
                                 ? isLight
-                                  ? "manage-recess text-red-900/70 hover:text-red-900"
-                                  : "manage-recess text-red-200/80 hover:text-red-100"
+                                  ? "manage-flat text-red-900/70 hover:text-red-900"
+                                  : "manage-flat text-red-200/80 hover:text-red-100"
                                 : isLight
                                   ? "bg-black text-white/80 hover:text-white"
                                   : "bg-white text-[#1a1625]/80 hover:text-[#1a1625]"
@@ -1632,6 +1385,54 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                   </p>
                 )}
                 </div>
+                <div
+                  className={cn(
+                    "z-[1] flex flex-shrink-0 items-center justify-end",
+                    isPortrait && "absolute inset-x-0 bottom-0",
+                  )}
+                  style={{
+                    gap: isPortrait ? 12 : manageEm(14),
+                    padding: isPortrait ? "4px 16px 12px" : `${manageEm(4)} 28px ${manageEm(18)}`,
+                  }}
+                >
+                  <button
+                    type="button"
+                    disabled={isSavingManagePanel}
+                    onClick={onSaveManagedInstance}
+                    className={cn(
+                      "manage-recess motion-control flex items-center justify-center rounded-full border-0 font-medium whitespace-nowrap",
+                      isLight ? "text-[#1a1625]/60 hover:text-[#1a1625]/85" : "text-white/60 hover:text-white/85"
+                    )}
+                    style={{
+                      height: isPortrait ? 44 : manageEm(49),
+                      paddingInline: isPortrait ? 22 : manageEm(22),
+                      fontSize: isPortrait ? 16 : manageFont(16),
+                    }}
+                  >
+                    {isSavingManagePanel ? "保存中..." : "保存"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={Boolean(launchingId)}
+                    onClick={() => {
+                      onClose();
+                      onLaunchInstance(mp);
+                    }}
+                    className={cn(
+                      "motion-control flex flex-shrink-0 items-center justify-center rounded-full border-0 font-semibold whitespace-nowrap disabled:pointer-events-none disabled:opacity-50",
+                      isLight ? "bg-black/[0.07] text-[#1a1625]/60 hover:text-[#1a1625]" : "bg-white/15 text-white/60 hover:text-white"
+                    )}
+                    style={{
+                      height: isPortrait ? 44 : manageEm(49),
+                      gap: isPortrait ? 6 : manageEm(8),
+                      paddingInline: isPortrait ? 22 : manageEm(22),
+                      fontSize: isPortrait ? 16 : manageFont(16),
+                    }}
+                  >
+                    <Play className="fill-current" style={{ width: isPortrait ? 14 : manageEm(15), height: isPortrait ? 14 : manageEm(15) }} />
+                    {launchingId === mp.id ? "启动中" : "启动"}
+                  </button>
+                </div>
               </div>
 
               {/* 存储 */}
@@ -1639,15 +1440,15 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                 className={managePanelFaceClass(manageTab === "storage" && settingsFaceReady, isPortrait)}
                 aria-hidden={manageTab !== "storage"}
                 inert={manageTab !== "storage"}
-                style={{
-                  WebkitMaskImage: rightFaceMask,
-                  maskImage: rightFaceMask,
-                }}
               >
                 <div
                   ref={storageFaceRef}
                   onScroll={syncRightFade}
                   className={manageFaceScrollClassName(isPortrait)}
+                  style={{
+                    WebkitMaskImage: rightFaceMask,
+                    maskImage: rightFaceMask,
+                  }}
                 >
                 <ManageItem
                   label={mp.type === "local" ? "实例位置" : "连接地址"}
@@ -1922,15 +1723,15 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                 className={managePanelFaceClass(manageTab === "about" && settingsFaceReady, isPortrait)}
                 aria-hidden={manageTab !== "about"}
                 inert={manageTab !== "about"}
-                style={{
-                  WebkitMaskImage: rightFaceMask,
-                  maskImage: rightFaceMask,
-                }}
               >
                 <div
                   ref={aboutFaceRef}
                   onScroll={syncRightFade}
                   className={manageFaceScrollClassName(isPortrait)}
+                  style={{
+                    WebkitMaskImage: rightFaceMask,
+                    maskImage: rightFaceMask,
+                  }}
                 >
                 <ManageItem label="实例名称" isLight={isLight}>
                   <ManageSettingValue isLight={isLight}>{mp.subtitle || mp.name}</ManageSettingValue>
@@ -1975,65 +1776,9 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
               </div>
             <div ref={outgoingHostRef} className="pointer-events-none absolute inset-0 z-[2]" />
             </div>
-            {isPortrait && (
-              <div className="relative z-10 flex flex-shrink-0 items-center justify-end" style={{ gap: 8, padding: "12px 10px 8px" }}>
-                {manageTab === "launch" && (
-                  <button
-                    type="button"
-                    disabled={isSavingManagePanel}
-                    onClick={onSaveManagedInstance}
-                    className={cn(
-                      "manage-recess motion-control flex h-9 flex-shrink-0 items-center justify-center rounded-full border-0 px-4 text-sm font-medium whitespace-nowrap disabled:pointer-events-none disabled:opacity-50",
-                      isLight ? "text-[#1a1625]/60 hover:text-[#1a1625]/85" : "text-white/60 hover:text-white/85"
-                    )}
-                  >
-                    {isSavingManagePanel ? "保存中..." : "保存"}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  disabled={Boolean(launchingId)}
-                  onClick={() => {
-                    onClose();
-                    onLaunchInstance(mp);
-                  }}
-                  className={cn(
-                    "motion-control flex h-9 flex-shrink-0 items-center justify-center gap-1.5 rounded-full border-0 px-4 text-sm font-semibold whitespace-nowrap disabled:pointer-events-none disabled:opacity-50",
-                    isLight ? "bg-[#1a1625] text-white/60 hover:text-white" : "bg-white text-[#1a1625]/60 hover:text-[#1a1625]"
-                  )}
-                >
-                  <Play className="h-3.5 w-3.5 fill-current" />
-                  {launchingId === mp.id ? "启动中" : "启动"}
-                </button>
-              </div>
-            )}
 
         </section>
       </div>
-      {!isPortrait && <svg
-        aria-label="拖动缩放管理窗口"
-        role="button"
-        className="absolute z-10 cursor-nwse-resize touch-none"
-        style={{ right: 0, bottom: 0, width: 49, height: 49, overflow: "visible" }}
-        onPointerDown={onResizePointerDown}
-        onPointerMove={onResizePointerMove}
-        onPointerUp={onResizePointerUp}
-        onPointerCancel={onResizePointerUp}
-      >
-        <path
-          d="M 35 0 A 35 35 0 0 1 0 35"
-          fill="none"
-          stroke="transparent"
-          strokeWidth="18"
-        />
-        <path
-          d="M 35 0 A 35 35 0 0 1 0 35"
-          fill="none"
-          stroke={isLight ? "rgba(28,18,24,0.28)" : "rgba(255,255,255,0.32)"}
-          strokeWidth="1.5"
-          strokeLinecap="round"
-        />
-      </svg>}
     </div>
   );
 };

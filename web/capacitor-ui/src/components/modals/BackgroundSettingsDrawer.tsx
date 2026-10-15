@@ -13,7 +13,7 @@ export interface BackgroundSettingsDrawerProps {
   safeInsetTop: number;
   bgMode: BgMode;
   setBgMode: (mode: BgMode) => void;
-  switchThemeMode: (callback: () => void) => void;
+  switchThemeMode: (callback: () => void, shedAmbient?: boolean) => void;
   dynamicPaused: boolean;
   setDynamicPaused: (paused: boolean) => void;
   themeStyle: ThemeStyle;
@@ -135,7 +135,7 @@ export const BackgroundSettingsDrawer: React.FC<BackgroundSettingsDrawerProps> =
             </button>
             <button
               type="button"
-              onClick={() => switchThemeMode(() => setBgMode("custom"))}
+              onClick={() => switchThemeMode(() => setBgMode("custom"), true)}
               aria-pressed={bgMode === "custom"}
               className="ios-choice-control px-2 py-2 text-xs font-medium border transition-colors duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]"
             >
@@ -163,10 +163,10 @@ export const BackgroundSettingsDrawer: React.FC<BackgroundSettingsDrawerProps> =
             aria-hidden={bgMode !== "dynamic"}
             inert={bgMode !== "dynamic"}
           >
-            <div className="flex items-center justify-between py-1">
+            <div className="setting-row flex items-center justify-between py-1">
               <span
                 className={cn(
-                  "text-xs font-medium",
+                  "setting-label text-xs font-medium",
                   isLight ? "text-[#1a1625]" : "text-white/90"
                 )}
               >
