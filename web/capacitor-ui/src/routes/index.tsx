@@ -2660,6 +2660,18 @@ function SillyClientLauncher() {
       />
 
       {/* 解耦业务组件: 终端面板 */}
+      <LayerBackdrop
+        isOpen={showTerminal || isTerminalClosing}
+        isClosing={isTerminalClosing}
+        onClick={() => {
+          setIsTerminalClosing(true);
+          setTimeout(() => {
+            setShowTerminal(false);
+            setIsTerminalClosing(false);
+          }, PANEL_EXIT_MS);
+        }}
+        zIndex={LAYERS.MODAL_BACKDROP}
+      />
       <TerminalModal
         isOpen={showTerminal}
         isClosing={isTerminalClosing}
