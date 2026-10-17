@@ -126,6 +126,12 @@ export const nativePreview: TarvenEnvPlugin = {
   },
   async enterImmersive(options) {
     record("enterImmersive", options);
+    if (!options.url) {
+      // 多开：仅按 instanceId 切换前台会话，无需 URL。
+      if (!options.instanceId?.trim()) throw new Error("enterImmersive requires url or instanceId");
+      status = { ...status, mode: "tavern", instanceId: options.instanceId };
+      return;
+    }
     const url = validateExternalUrl(options.url);
     if (!options.instanceId?.trim()) {
       await nativePreview.openExternalUrl({ url });
@@ -155,9 +161,10 @@ export const nativePreview: TarvenEnvPlugin = {
     record("importInstanceData", options);
     return { imported: 12, bytes: 3_145_728, skipped: 240 };
   },
-  async exportInstance(options: { instanceId: string; installPath?: string }) {
+  async exportInstance(options: { instanceId: string; installPath?: string; targetPath?: string }) {
     record("exportInstance", options);
-    return { path: `/storage/emulated/0/Download/SillyClient-导出/${options.instanceId}-synthetic.zip`, bytes: 1048576 };
+    const target = options.targetPath || `${options.instanceId}.zip`;
+    return { path: target, bytes: 1048576 };
   },
   async getAppSettings() {
     record("getAppSettings", {});

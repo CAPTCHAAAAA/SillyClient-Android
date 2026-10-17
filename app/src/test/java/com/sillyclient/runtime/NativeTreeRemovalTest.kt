@@ -179,6 +179,28 @@ class NativeTreeRemovalTest {
     }
 
     @Test
+    fun removalSurvivesUnrelatedGenerationBumpsBetweenBatches() = withRemoval { root, removal, supervisor ->
+        val marker = File(root, ".sc-identity").apply { writeText("owned") }
+        val children = (1..70).map { File(root, "synthetic-$it").apply { writeText("remove") } }
+        var seenProcess = false
+        var bumped = false
+        val result = removal.remove(children, root, "test", ensureActive = {
+            if (supervisor.hasProcesses()) {
+                seenProcess = true
+            } else if (seenProcess && !bumped) {
+                bumped = true
+                // 第一批 rm 退出后、第二批启动前递增监管 generation（模拟无关实例的 stopAll）：
+                // 删除 purge 必须重新捕获继续执行，绝不允许留下"卡片消失但文件残留"。
+                supervisor.stopAllAsync()
+            }
+        })
+        assertTrue("The generation bump must actually land between batches", bumped)
+        assertEquals(70L, result.removedEntries)
+        assertTrue(children.none { it.exists() })
+        assertEquals("owned", marker.readText())
+    }
+
+    @Test
     fun childSymlinkIsRemovedWithoutFollowingItsTarget() = withRemoval { root, removal, _ ->
         val preserved = File(root, "preserved").apply { mkdirs() }
         val data = File(preserved, "history.jsonl").apply { writeText("keep") }

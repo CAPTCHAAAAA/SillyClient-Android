@@ -1,10 +1,13 @@
 package com.sillyclient.runtime
 
+import com.sun.net.httpserver.HttpServer
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.net.InetSocketAddress
 import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.concurrent.CancellationException
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import org.json.JSONArray
@@ -287,6 +290,102 @@ class PreinstalledExtensionInstallerTest {
         transaction.rollback()
         assertEquals("user changed code", original.readText())
         assertEquals("new user file", File(target, "user-notes.txt").readText())
+    }
+
+    @Test
+    fun mirrorDownloadFallsBackInOrderAndFollowsRedirects() = withServer { server ->
+        val payload = ByteArray(24_576) { (it % 251).toByte() }
+        val hits = CopyOnWriteArrayList<String>()
+        val http = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        http.createContext("/unavailable") { exchange ->
+            hits.add("unavailable")
+            exchange.sendResponseHeaders(404, -1)
+            exchange.close()
+        }
+        http.createContext("/redirect") { exchange ->
+            hits.add("redirect")
+            exchange.responseHeaders.add("Location", "/payload")
+            exchange.sendResponseHeaders(302, -1)
+            exchange.close()
+        }
+        http.createContext("/payload") { exchange ->
+            hits.add("payload")
+            exchange.sendResponseHeaders(200, payload.size.toLong())
+            exchange.responseBody.use { it.write(payload) }
+        }
+        http.start()
+        try {
+            val base = "http://127.0.0.1:${http.address.port}"
+            OperationCoordinator().use { operations ->
+                val operation = operations.begin("test")
+                val destination = File(server, "mirror.zip")
+                PreinstalledExtensionInstaller.downloadFromMirrors(
+                    listOf("$base/unavailable", "$base/redirect", "$base/never-reached"),
+                    payload.size.toLong(), destination, operations, operation
+                )
+                assertEquals(listOf("unavailable", "redirect", "payload"), hits)
+                assertTrue(payload.contentEquals(destination.readBytes()))
+            }
+        } finally {
+            http.stop(0)
+        }
+    }
+
+    @Test
+    fun mirrorDownloadSkipsSourcesExceedingThePinnedSize() = withServer { server ->
+        val oversized = ByteArray(8_192) { 1 }
+        val pinned = ByteArray(4_096) { 2 }
+        val http = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        http.createContext("/oversized") { exchange ->
+            exchange.sendResponseHeaders(200, oversized.size.toLong())
+            exchange.responseBody.use { it.write(oversized) }
+        }
+        http.createContext("/pinned") { exchange ->
+            exchange.sendResponseHeaders(200, pinned.size.toLong())
+            exchange.responseBody.use { it.write(pinned) }
+        }
+        http.start()
+        try {
+            val base = "http://127.0.0.1:${http.address.port}"
+            OperationCoordinator().use { operations ->
+                val operation = operations.begin("test")
+                val destination = File(server, "mirror.zip")
+                PreinstalledExtensionInstaller.downloadFromMirrors(
+                    listOf("$base/oversized", "$base/pinned"),
+                    pinned.size.toLong(), destination, operations, operation
+                )
+                assertTrue(pinned.contentEquals(destination.readBytes()))
+            }
+        } finally {
+            http.stop(0)
+        }
+    }
+
+    @Test
+    fun mirrorDownloadReportsTheLastFailureWhenEverySourceIsUnavailable() = withServer { server ->
+        val http = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        http.createContext("/gone") { exchange ->
+            exchange.sendResponseHeaders(410, -1)
+            exchange.close()
+        }
+        http.start()
+        try {
+            val base = "http://127.0.0.1:${http.address.port}"
+            OperationCoordinator().use { operations ->
+                val operation = operations.begin("test")
+                val destination = File(server, "mirror.zip")
+                val error = assertThrows(IllegalStateException::class.java) {
+                    PreinstalledExtensionInstaller.downloadFromMirrors(
+                        listOf("$base/gone", "$base/without-context"),
+                        128L, destination, operations, operation
+                    )
+                }
+                assertTrue(error.message.orEmpty().contains("扩展下载失败"))
+                assertFalse(destination.exists())
+            }
+        } finally {
+            http.stop(0)
+        }
     }
 
     private fun sha(bytes: ByteArray): String =

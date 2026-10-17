@@ -20,7 +20,7 @@ import { openExternalUrl } from "@/lib/external-links";
 import type { AppUpdateInfo, CompanionPresetSelection, ContentOpenMode, InstanceConfig, InstallPathMode, GithubRelease, GarbageItem, TarvenEvent, PreinstalledExtensionId } from "@/capacitor-plugin";
 import { buildInstanceSubfolder, installationSelection, instanceParentPath, sanitizeFolderName } from "@/lib/install-location";
 import { humanizeNativeError } from "@/lib/native-errors";
-import { normalizeStoredInstances, serializeInstanceRecords, parseInstanceBackup, type StoredInstance } from "@/lib/instance-persistence";
+import { normalizeStoredInstances, serializeInstanceRecords, type StoredInstance } from "@/lib/instance-persistence";
 import { GLOBAL_LOG_KEY, instanceLogs, type LogLine } from "@/lib/log-store";
 import { OperationCoordinator, OperationCancelledError, type OperationContext } from "@/lib/operation-coordinator";
 import { APP_VERSION } from "@/constants/app-version";
@@ -68,7 +68,7 @@ const LEGACY_MIGRATION_KEY = "sillyclient.legacy_migration.version";
 const CURRENT_VERSION = 2;
 const BACKGROUND_PANEL_EXIT_MS = 300;
 const PANEL_EXIT_MS = 300;
-const POPOVER_EXIT_MS = 200;
+const POPOVER_EXIT_MS = 300;
 const MANAGE_PANEL_OPEN_GAP_MS = 32;
 
 function hydrateInstance(t: StoredInstance): TavernInstance {
@@ -80,12 +80,6 @@ function hydrateInstance(t: StoredInstance): TavernInstance {
       : t.totalUsage,
     icon: t.type === "local" ? <Folder className="w-5 h-5" /> : <Cloud className="w-5 h-5" />,
   };
-}
-
-function mergeInstanceBackup(existing: TavernInstance[], incoming: StoredInstance[]) {
-  const map = new Map(existing.map(instance => [instance.id, instance]));
-  for (const item of incoming) map.set(item.id, hydrateInstance(item));
-  return Array.from(map.values());
 }
 
 /** 从 localStorage 读取已持久化的实例列表;版本不匹配时清空旧数据。 */
@@ -100,12 +94,21 @@ function loadInstances(): TavernInstance[] {
   try {
     const raw = localStorage.getItem(INSTANCES_KEY);
     if (raw) {
-      return normalizeStoredInstances(JSON.parse(raw), { resetStatus: true }).map(hydrateInstance);
+      return normalizeStoredInstances(JSON.parse(raw), { resetStatus: true })
+        .map(hydrateInstance)
+        .map(stripOneShotCreationParams);
     }
   } catch {
     /* ignore */
   }
   return [];
+}
+
+/** 安装源与预装项是一次性创建参数：旧版本持久化的卡片可能残留，读取时统一剥离，
+ *  防止启动链路携带安装源、在数据丢失时被静默重装顶替。 */
+function stripOneShotCreationParams(instance: TavernInstance): TavernInstance {
+  const { zipballUrl: _zipballUrl, localZipPath: _localZipPath, preinstall: _preinstall, companionPreset: _companionPreset, ...rest } = instance;
+  return rest;
 }
 
 function normalizeStoredCover(cover?: string) {
@@ -196,6 +199,7 @@ function SillyClientLauncher() {
   const isWeb = !Capacitor.isNativePlatform();
   const showcaseParams = new URLSearchParams(window.location.search);
   const isShowcase = showcaseParams.get("showcase") === "1";
+  const isLocalPreview = /^(127\.0\.0\.1|localhost)$/.test(window.location.hostname);
   const isNativePreview = import.meta.env.DEV && showcaseParams.get("nativePreview") === "1";
   const isDemoPreview = import.meta.env.DEV && isWeb && !isShowcase;
   const showcaseSafeTop = isShowcase
@@ -239,11 +243,24 @@ function SillyClientLauncher() {
   });
   const [showBgPanel, setShowBgPanel] = useState(false);
   const [isPanelClosing, setIsPanelClosing] = useState(false);
-  const [bgMode, setBgMode] = useState<BgMode>("dynamic");
+  const [bgMode, setBgMode] = useState<BgMode>(() => {
+    try {
+      const saved = localStorage.getItem("sillyclient.bgMode") || localStorage.getItem("bgMode");
+      if (saved === "dynamic" || saved === "custom") return saved;
+    } catch {}
+    return "dynamic";
+  });
   const [dynamicPaused, setDynamicPaused] = useState(false);
-  const [themeStyle, setThemeStyle] = useState<ThemeStyle>("dark");
+  const [themeStyle, setThemeStyle] = useState<ThemeStyle>(() => {
+    try {
+      const saved = localStorage.getItem("sillyclient.themeStyle") || localStorage.getItem("theme");
+      if (saved === "light" || saved === "dark") return saved;
+    } catch {}
+    return "dark";
+  });
   const [themeSmoothing, setThemeSmoothing] = useState(false);
   const themeSmoothingTimer = useRef<number | null>(null);
+  const themeSwitchFrame = useRef<number | null>(null);
   const [customWallpaperUrl, setCustomWallpaperUrl] = useState<string | null>(null);
   const wallpaperInputRef = useRef<HTMLInputElement>(null);
   const [showTerminal, setShowTerminal] = useState(false);
@@ -263,6 +280,19 @@ function SillyClientLauncher() {
   }, [operations]);
   const [lastLaunchParams, setLastLaunchParams] = useState<TavernInstance | null>(null);
   const [operationPurpose, setOperationPurpose] = useState<OperationPurpose>("launch");
+
+  // 实例访问密码解锁状态
+  const [unlockingInstance, setUnlockingInstance] = useState<TavernInstance | null>(null);
+  const [isUnlockModalOpen, setIsUnlockModalOpen] = useState(false);
+  const [isUnlockModalClosing, setIsUnlockModalClosing] = useState(false);
+  const closeUnlockModal = useCallback(() => {
+    setIsUnlockModalClosing(true);
+    setTimeout(() => {
+      setIsUnlockModalOpen(false);
+      setIsUnlockModalClosing(false);
+      setUnlockingInstance(null);
+    }, POPOVER_EXIT_MS);
+  }, []);
 
   // Logo 字体切换
   const logoFonts = [
@@ -404,8 +434,6 @@ function SillyClientLauncher() {
   const [renameError, setRenameError] = useState<string | null>(null);
   const [isRenamingSaving, setIsRenamingSaving] = useState(false);
 
-  // 数据导入文件 ref
-  const importInputRef = useRef<HTMLInputElement>(null);
   // 管理面板 draftConfig/draftPort(保存前不写入 instances)
   const [draftConfig, setDraftConfig] = useState<InstanceConfig>(DEFAULT_CONFIG);
   const [draftPort, setDraftPort] = useState(8000);
@@ -424,19 +452,6 @@ function SillyClientLauncher() {
   const [pendingDelete, setPendingDelete] = useState<TavernInstance | null>(null);
   const [isDeletingInstance, setIsDeletingInstance] = useState(false);
   const [deleteInstanceError, setDeleteInstanceError] = useState<string | null>(null);
-
-  // 实例访问密码解锁状态
-  const [unlockingInstance, setUnlockingInstance] = useState<TavernInstance | null>(null);
-  const [isUnlockModalOpen, setIsUnlockModalOpen] = useState(false);
-  const [isUnlockModalClosing, setIsUnlockModalClosing] = useState(false);
-  const closeUnlockModal = useCallback(() => {
-    setIsUnlockModalClosing(true);
-    setTimeout(() => {
-      setIsUnlockModalOpen(false);
-      setIsUnlockModalClosing(false);
-      setUnlockingInstance(null);
-    }, POPOVER_EXIT_MS);
-  }, []);
 
   const isLight = bgMode === "custom" && themeStyle === "light";
   const isDynamic = bgMode === "dynamic";
@@ -546,12 +561,12 @@ function SillyClientLauncher() {
     }
   }, []);
 
-  // 液态玻璃底色:动态模式微偏红,黑夜模式蓝紫,白天模式白色
+  // 液态玻璃底色:动态偏红紫,黑夜保持 #1a1625 深蓝紫,白天白色。黑夜不再用近黑 #0d0d12。
   const glassBg = isLight
     ? "bg-white/70 border-black/5 shadow-[0_16px_60px_rgba(0,0,0,0.10)]"
     : isDynamic
       ? "bg-[#1c1420]/70 border-white/10 shadow-[0_16px_60px_rgba(0,0,0,0.30)]"
-      : "bg-[#1a1625]/70 border-white/10 shadow-[0_16px_60px_rgba(0,0,0,0.35)]";
+      : "bg-[#1a1625]/80 border-white/[0.08] shadow-[0_16px_60px_rgba(26,22,37,0.45)]";
 
 
 
@@ -708,14 +723,33 @@ function SillyClientLauncher() {
 
   useEffect(() => () => {
     if (themeSmoothingTimer.current !== null) window.clearTimeout(themeSmoothingTimer.current);
+    if (themeSwitchFrame.current !== null) window.cancelAnimationFrame(themeSwitchFrame.current);
   }, []);
 
-  const switchThemeMode = useCallback((apply: () => void) => {
-    setThemeSmoothing(true);
-    apply();
-    if (themeSmoothingTimer.current !== null) window.clearTimeout(themeSmoothingTimer.current);
-    themeSmoothingTimer.current = window.setTimeout(() => setThemeSmoothing(false), 1200);
-  }, []);
+  const switchThemeMode = useCallback((apply: () => void, shedAmbient = false) => {
+    const begin = () => {
+      setThemeSmoothing(true);
+      apply();
+      if (themeSmoothingTimer.current !== null) window.clearTimeout(themeSmoothingTimer.current);
+      themeSmoothingTimer.current = window.setTimeout(() => setThemeSmoothing(false), 1200);
+    };
+    if (themeSwitchFrame.current !== null) window.cancelAnimationFrame(themeSwitchFrame.current);
+    // 只有离开动态壁纸、并且白天已经选中时，才先卸掉五层全屏模糊。
+    // 其它切换不能留下 is-shedding，否则同一节点会一直不显示。
+    const shedAmbientFirst = shedAmbient && bgMode === "dynamic" && themeStyle === "light";
+    if (!shedAmbientFirst) {
+      document.querySelector(".ambient-glow-container")?.classList.remove("is-shedding");
+      begin();
+      return;
+    }
+    document.querySelector(".ambient-glow-container")?.classList.add("is-shedding");
+    themeSwitchFrame.current = window.requestAnimationFrame(() => {
+      themeSwitchFrame.current = window.requestAnimationFrame(() => {
+        themeSwitchFrame.current = null;
+        begin();
+      });
+    });
+  }, [bgMode, themeStyle]);
 
   const switchInstanceMode = useCallback((mode: "local" | "remote") => {
     if (newInstanceMode === mode) return;
@@ -829,6 +863,14 @@ function SillyClientLauncher() {
     return () => ro.disconnect();
   }, [bgMode, showBgPanel, customWallpaperUrl]);
 
+  // 背景模式与主题风格持久化到 localStorage
+  useEffect(() => {
+    try {
+      localStorage.setItem("sillyclient.bgMode", bgMode);
+      localStorage.setItem("sillyclient.themeStyle", themeStyle);
+    } catch {}
+  }, [bgMode, themeStyle]);
+
   // 实例列表持久化到 localStorage
   useEffect(() => {
     if (!isShowcase && !isDemoPreview) saveInstances(instances);
@@ -901,6 +943,12 @@ function SillyClientLauncher() {
     );
   }, []);
 
+  // 手机桌面级长按拖拽重排持久化
+  const handleReorderInstances = useCallback((newInstances: TavernInstance[]) => {
+    setInstances(newInstances);
+    saveInstances(newInstances);
+  }, []);
+
   // 下拉刷新:触发远程状态检测与本地实例同步
   const handlePullRefresh = useCallback(async () => {
     setIsRefreshing(true);
@@ -963,7 +1011,7 @@ function SillyClientLauncher() {
     if (isShowcase) return;
     let disposed = false;
     const handles: { remove: () => Promise<void> }[] = [];
-    const register = async (event: "log" | "progress" | "ready" | "mode", listener: (d: TarvenEvent) => void) => {
+    const register = async (event: "log" | "progress" | "ready" | "mode" | "exit", listener: (d: TarvenEvent) => void) => {
       const handle = await TarvenEnv.addListener(event, d => {
         if (!disposed) listener(d);
       });
@@ -1000,6 +1048,14 @@ function SillyClientLauncher() {
         await register("ready", d => {
           if (d.source === "command") return;
           if (d.ready !== false) append(d, { msg: `✓ 就绪${d.url ? " " + d.url : ""}`, level: "success" });
+        });
+        await register("exit", d => {
+          // 多开：原生主动广播（无 operationId），任一实例进程退出时按实例幂等置停，
+          // 不走 acceptsGlobal 门禁（legacySafe 在任意取消后永久为 false，会把事件饿死）。
+          if (!d.instanceId) return;
+          setInstances(prev => prev.map(t => (t.type === "local" && (t.installDir || t.id) === d.instanceId)
+            ? { ...t, status: "stopped" }
+            : t));
         });
         await register("mode", d => {
           if (d.source === "command") return;
@@ -1038,17 +1094,21 @@ function SillyClientLauncher() {
   useEffect(() => () => { operations.cancel(); }, [operations]);
 
   // 配置并启动本地实例。创建流程只在确认服务可访问后写入卡片。
-  const doLaunch = useCallback(async (instance: TavernInstance, operation: OperationContext, enterWhenReady = true) => {
+  // createIntent 仅创建向导为 true：安装源与预装项只随创建下发，启动既有实例绝不携带，
+  // 后端据此在目录丢失/损坏时拒绝静默重装顶替用户数据。
+  const lastLaunchCreateIntentRef = useRef(false);
+  const doLaunch = useCallback(async (instance: TavernInstance, operation: OperationContext, enterWhenReady = true, createIntent = false) => {
     operation.assertCurrent();
+    lastLaunchCreateIntentRef.current = createIntent;
     const port = instance.port ?? 8000;
     const instanceId = instance.installDir || instance.id;
     const version = instance.version || "stable";
     const config = instance.config ?? DEFAULT_CONFIG;
-    const zipballUrl = instance.zipballUrl;
-    const localZipPath = instance.localZipPath;
+    const zipballUrl = createIntent ? instance.zipballUrl : undefined;
+    const localZipPath = createIntent ? instance.localZipPath : undefined;
     const installPath = instance.installPath;
-    const companionPreset = instance.companionPreset;
-    const preinstall = instance.preinstall;
+    const companionPreset = createIntent ? instance.companionPreset : undefined;
+    const preinstall = createIntent ? instance.preinstall : undefined;
 
     setLaunchProgress({ pct: 0, text: "初始化" });
     setLaunchError(null);
@@ -1098,8 +1158,8 @@ function SillyClientLauncher() {
 
       // 调用原生 provision
       const provisionResult = await operation.wait(TarvenEnv.provisionAndStart({
-        port, instanceId, instanceName: instance.subtitle || instance.name, operationId: operation.id, version, zipballUrl, localZipPath,
-        installPath, installPathMode: instance.installPathMode, companionPreset, preinstall, config,
+        port, instanceId, instanceName: instance.subtitle || instance.name, operationId: operation.id, version, createIntent,
+        zipballUrl, localZipPath, installPath, installPathMode: instance.installPathMode, companionPreset, preinstall, config,
       }));
       if (provisionResult?.ready === false) {
         throw new Error(errorMsg || "实例未能启动，请检查安装日志");
@@ -1250,8 +1310,10 @@ function SillyClientLauncher() {
   const handleReturnToTavern = useCallback(async (instance: TavernInstance) => {
     const expected = operations.current;
     try {
-      if (expected) await expected.wait(TarvenEnv.returnToTavern());
-      else await TarvenEnv.returnToTavern();
+      // 多开：指定实例 ID 切前台，由原生侧接管该实例的存活会话与 URL。
+      const entering = TarvenEnv.enterImmersive({ instanceId: instance.installDir || instance.id, showGestureHint: false });
+      if (expected) await expected.wait(entering);
+      else await entering;
     } catch (error) {
       if (error instanceof OperationCancelledError || operations.current !== expected) return;
       // 容错或浏览器环境 fallback
@@ -1309,18 +1371,21 @@ function SillyClientLauncher() {
       return;
     }
 
-    const result = await doLaunch(instance, operation, false);
+    const result = await doLaunch(instance, operation, false, true);
     const info = await operation.wait(TarvenEnv.getInstanceInfo({
       instanceId: instance.installDir || instance.id,
       installPath: instance.installPathMode === "root" ? undefined : instance.installPath,
       port: result.port,
     }));
     if (!info.path) throw new Error("原生未确认实例的实际安装目录，创建未完成");
-    setLastLaunchParams({ ...instance, installPath: info.path, installPathMode: "exact", port: result.port });
+    // 安装源（zipballUrl/localZipPath）与预装项是一次性创建参数，绝不持久化到卡片：
+    // 后端以 createIntent 区分创建与启动意图，卡片残留安装源会导致数据丢失时被静默重装顶替。
+    const { zipballUrl: _zipballUrl, localZipPath: _localZipPath, preinstall: _preinstall, companionPreset: _companionPreset, ...persistedInstance } = instance;
+    setLastLaunchParams({ ...persistedInstance, installPath: info.path, installPathMode: "exact", port: result.port });
     setInstances(prev => prev.some(t => t.id === instance.id)
       ? prev
       : [...prev, {
-          ...instance,
+          ...persistedInstance,
           status: "running",
           port: result.port,
           version: info.version && info.version !== "unknown" ? normalizeStoredVersion(info.version) : instance.version,
@@ -1600,12 +1665,12 @@ function SillyClientLauncher() {
         await openRemoteInstance(lastLaunchParams, operation);
         if (!operation.isCurrent) return;
         setInstances(prev => prev.map(t => t.id === lastLaunchParams.id ? { ...t, status: "online" } : t));
-        setTimeout(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 500);
+        operation.schedule(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 500);
       } else {
-        const result = await doLaunch(lastLaunchParams, operation);
+        const result = await doLaunch(lastLaunchParams, operation, true, lastLaunchCreateIntentRef.current);
         if (!operation.isCurrent) return;
         setInstances(prev => prev.map(t => t.id === lastLaunchParams.id ? { ...t, status: "running", port: result.port } : t));
-        setTimeout(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 800);
+        operation.schedule(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 800);
       }
     } catch (err: any) {
       if (!operation.isCurrent || err instanceof OperationCancelledError) return;
@@ -1829,7 +1894,9 @@ function SillyClientLauncher() {
 
     try {
       let freedBytes = 0;
-      if (pendingDelete.type === "local") {
+      if (isWeb) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1400));
+      } else if (pendingDelete.type === "local") {
         if (pendingDelete.status === "running") {
           operations.cancel(pendingDelete.installDir || pendingDelete.id);
           await TarvenEnv.closeTavern({ instanceId: pendingDelete.installDir || pendingDelete.id });
@@ -1860,7 +1927,7 @@ function SillyClientLauncher() {
     } finally {
       setIsDeletingInstance(false);
     }
-  }, [instances.length, isDeletingInstance, pendingDelete, operations, setTerminalLogs]);
+  }, [instances.length, isDeletingInstance, isWeb, pendingDelete, operations, setTerminalLogs]);
 
   /** 更新当前管理面板实例的 config 字段。 */
   const updateManagedConfig = (patch: Partial<InstanceConfig>) => {
@@ -2018,7 +2085,7 @@ function SillyClientLauncher() {
 
   const dismissLegacyMigration = useCallback(() => {
     if (isLegacyMigrationBusy || isLegacyMigrationClosing) return;
-    localStorage.setItem(LEGACY_MIGRATION_KEY, APP_VERSION);
+    // 「稍后处理」不写版本标记：只要旧版实例仍未迁完，下次启动会再次提醒。
     setIsLegacyMigrationClosing(true);
     if (legacyCloseTimerRef.current) clearTimeout(legacyCloseTimerRef.current);
     legacyCloseTimerRef.current = setTimeout(() => {
@@ -2031,20 +2098,27 @@ function SillyClientLauncher() {
   const checkLegacyMigration = useCallback(async () => {
     if ((isWeb && !isWindows) || isShowcase) return;
     const generation = ++legacyCheckRef.current;
-    const openWith = (instances: LegacyMigrationItem[]) => {
-      if (generation !== legacyCheckRef.current) return;
-      setLegacyMigrationList(instances);
-      setShowLegacyMigration(true);
-      setIsLegacyMigrationClosing(false);
-    };
     try {
       const result = await TarvenEnv.checkLegacyInstances();
-      // 无论是否存在旧版实例均弹出，无实例时展示优雅空态供审查
-      openWith(result.instances);
+      if (generation !== legacyCheckRef.current) return;
+      const found = result.instances || [];
+      if (found.length > 0) {
+        setLegacyMigrationList(found);
+        setShowLegacyMigration(true);
+        setIsLegacyMigrationClosing(false);
+      } else {
+        // 无待迁移实例：记录本版本标记长期静默，不再弹空窗打扰。
+        localStorage.setItem(LEGACY_MIGRATION_KEY, APP_VERSION);
+      }
     } catch {
-      openWith([]);
+      // 检测异常不写版本标记：下次启动重新检测，避免一次抖动永久跳过迁移。
     }
   }, [isWeb, isWindows, isShowcase]);
+
+  const handleLegacyMigrationComplete = useCallback(() => {
+    // 弹窗仅在全部迁移成功时回调（部分失败会保留列表供重试）：全部迁成才写版本标记长期静默。
+    localStorage.setItem(LEGACY_MIGRATION_KEY, APP_VERSION);
+  }, []);
 
   const dismissWhatsNew = useCallback(() => {
     localStorage.setItem(WHATS_NEW_KEY, WHATS_NEW_VERSION);
@@ -2135,7 +2209,6 @@ function SillyClientLauncher() {
     }
   }, [showManagePanel]);
 
-
   const openVersionDropdown = useCallback((trigger: HTMLElement) => {
     const r = trigger.getBoundingClientRect();
     setVerDropdownPos({
@@ -2201,20 +2274,20 @@ function SillyClientLauncher() {
   }, [renamingId, registerLayer, closeRenameDialog]);
 
   useEffect(() => {
-    if (showLegacyMigration) return registerLayer("legacy_migration", dismissLegacyMigration);
-  }, [showLegacyMigration, registerLayer, dismissLegacyMigration]);
-
-  useEffect(() => {
-    if (showRelocateModal) return registerLayer("relocate_instance", closeRelocateModal);
-  }, [showRelocateModal, registerLayer, closeRelocateModal]);
-
-  useEffect(() => {
     if (verDropdownOpen) return registerLayer("version_dropdown", closeVersionDropdown);
   }, [verDropdownOpen, registerLayer, closeVersionDropdown]);
 
   useEffect(() => {
     if (activeCardMenu) return registerLayer("card_menu", closeCardMenu);
   }, [activeCardMenu, registerLayer, closeCardMenu]);
+
+  useEffect(() => {
+    if (showLegacyMigration) return registerLayer("legacy_migration", dismissLegacyMigration);
+  }, [showLegacyMigration, registerLayer, dismissLegacyMigration]);
+
+  useEffect(() => {
+    if (showRelocateModal) return registerLayer("relocate_modal", closeRelocateModal);
+  }, [showRelocateModal, registerLayer, closeRelocateModal]);
 
   return (
     <div
@@ -2270,19 +2343,6 @@ function SillyClientLauncher() {
       )}
 
       <input ref={wallpaperInputRef} type="file" accept="image/*" className="hidden" onChange={handleWallpaperUpload} />
-      <input ref={importInputRef} type="file" accept=".json,application/json,text/plain" className="hidden" onChange={(e) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = () => {
-          try {
-            const incoming = parseInstanceBackup(String(reader.result));
-            setInstances(prev => mergeInstanceBackup(prev, incoming));
-          } catch (err) { console.error('[import]', err); }
-        };
-        reader.readAsText(file);
-        e.target.value = "";
-      }} />
 
       {/* 顶部导航 */}
       <header className="fixed left-0 right-0 z-50 px-4" style={{ top: `max(env(safe-area-inset-top), ${safeInsetTop + 4}px)` }}>
@@ -2318,7 +2378,7 @@ function SillyClientLauncher() {
               }}
               className={cn(
                 "ios-glass-btn px-3 h-8 flex items-center justify-center text-xs font-medium transition-all",
-                isLight ? "text-[#1a1625]/70" : "text-white/70"
+                isLight ? "text-[#1a1625]/70 hover:text-[#1a1625]" : "text-white/70 hover:text-white"
               )}
             >
               <Terminal className="w-3.5 h-3.5" />
@@ -2326,18 +2386,18 @@ function SillyClientLauncher() {
           </div>
 
           <div className="flex-1 flex items-center justify-center">
-            <button onClick={toggleBgPanel} className={cn("flex items-center gap-2 px-4 py-1.5 rounded-full transition-all max-w-[200px] border", isLight ? "hover:bg-black/5 border-black/10 shadow-[inset_0_1px_2px_rgba(0,0,0,0.05),0_1px_2px_rgba(255,255,255,0.5)]" : "hover:bg-white/10 border-white/10 shadow-[inset_0_1px_2px_rgba(0,0,0,0.2),0_1px_2px_rgba(255,255,255,0.1)]")}>
-              <span className={cn("text-sm font-medium truncate", isLight ? "text-[#1a1625]" : "text-white")}>
+            <button onClick={toggleBgPanel} className={cn("group flex items-center gap-2 px-4 py-1.5 rounded-full transition-colors duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] max-w-[200px] border", isLight ? "border-black/10 text-[#1a1625]/80 hover:text-[#1a1625] shadow-[inset_0_1px_2px_rgba(0,0,0,0.05),0_1px_2px_rgba(255,255,255,0.5)]" : "border-white/10 text-white/80 hover:text-white shadow-[inset_0_1px_2px_rgba(0,0,0,0.2),0_1px_2px_rgba(255,255,255,0.1)]")}>
+              <span className="text-sm font-medium truncate">
                 {new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
               </span>
-              <ChevronDown className={cn("w-4 h-4 flex-shrink-0 transition-transform", isLight ? "text-[#1a1625]/60" : "text-white/60", showBgPanel && "rotate-180")} />
+              <ChevronDown className={cn("w-4 h-4 flex-shrink-0 text-current transition-transform", showBgPanel && "rotate-180")} />
             </button>
           </div>
 
           <button
             ref={settingsBtnRef}
             onClick={() => {
-              if (isWeb && !isShowcase) return;
+              if (isWeb && !isShowcase && !isLocalPreview) return;
               if (showAppMenu) {
                 closeAppMenu();
               } else {
@@ -2348,7 +2408,7 @@ function SillyClientLauncher() {
             }}
             className={cn(
               "motion-control ios-glass-btn px-4 h-9 flex items-center justify-center text-xs font-medium flex-shrink-0",
-              isLight ? "text-[#1a1625]/70" : "text-white/70"
+              isLight ? "text-[#1a1625]/70 hover:text-[#1a1625]" : "text-white/70 hover:text-white"
             )}
           >
             <Menu className="w-4 h-4" />
@@ -2378,10 +2438,10 @@ function SillyClientLauncher() {
               setUpdatePromptDismissed(true);
             }}
             className={cn(
-              "motion-control h-7 px-3 rounded-full text-xs font-semibold transition-all border",
+              "flat-capsule motion-control h-7 px-3 rounded-full text-xs font-semibold border-0",
               isLight
-                ? "bg-black/[0.08] border-black/[0.10] text-[#1a1625] hover:bg-black/[0.14]"
-                : "bg-white/20 border-white/15 text-white hover:bg-white/30"
+                ? "text-[#1a1625]/70 hover:text-[#1a1625]"
+                : "text-white/70 hover:text-white"
             )}
           >
             查看
@@ -2391,7 +2451,7 @@ function SillyClientLauncher() {
             aria-label="关闭更新提示"
             className={cn(
               "motion-control w-7 h-7 rounded-full flex items-center justify-center transition-all",
-              isLight ? "hover:bg-black/5 text-[#1a1625]/50" : "hover:bg-white/10 text-white/50"
+              isLight ? "text-[#1a1625]/40 hover:text-[#1a1625]/85" : "text-white/40 hover:text-white/85"
             )}
           >
             <X className="w-3.5 h-3.5" />
@@ -2430,26 +2490,28 @@ function SillyClientLauncher() {
 
         {/* 搜索栏 */}
         <div className="relative mb-10 w-full max-w-2xl">
-          <Search className={cn("absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5", isLight ? "text-[#1a1625]/40" : "text-white/40")} />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                const match = instances.find(t => (t.subtitle || t.name).toLowerCase().includes(searchQuery.toLowerCase()));
-                if (match) {
-                  const idx = instances.indexOf(match) + 1;
-                  carouselRef.current?.goToSlide(idx);
+          <div className={cn("home-search", isLight && "is-light")}>
+            <Search className={cn("pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5", isLight ? "text-[#1a1625]/40" : "text-white/40")} />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  const match = instances.find(t => (t.subtitle || t.name).toLowerCase().includes(searchQuery.toLowerCase()));
+                  if (match) {
+                    const idx = instances.indexOf(match) + 1;
+                    carouselRef.current?.goToSlide(idx);
+                  }
                 }
-              }
-            }}
-            placeholder="搜索并打开实例"
-            className={cn(
-              "w-full h-14 pl-12 pr-4 rounded-[20px] border focus:outline-none focus:ring-0",
-              isLight ? "bg-black/5 border-black/10 text-[#1a1625] placeholder:text-[#1a1625]/40" : "bg-white/5 border-white/10 text-white placeholder:text-white/40"
-            )}
-          />
+              }}
+              placeholder="搜索并打开实例"
+              className={cn(
+                "w-full h-14 pl-12 pr-4 rounded-[20px] border-0 bg-transparent focus:outline-none focus:ring-0",
+                isLight ? "text-[#1a1625] placeholder:text-[#1a1625]/40" : "text-white placeholder:text-white/40"
+              )}
+            />
+          </div>
           {searchQuery && (
             <div className="motion-menu-list animate-dropdown absolute top-full left-0 right-0 mt-2 rounded-2xl border overflow-hidden z-30 max-h-64 overflow-y-auto scrollbar-subtle">
               {searchResults.map(t => (
@@ -2462,7 +2524,7 @@ function SillyClientLauncher() {
                   }}
                   className={cn(
                     "motion-menu-item w-full px-4 py-3 text-left text-sm flex items-center gap-3 transition-colors",
-                    isLight ? "bg-[#f5f3ef]/95 hover:bg-black/5 text-[#1a1625]/80" : "bg-[#1a1625]/95 hover:bg-white/10 text-white/80"
+                    isLight ? "bg-[#f5f3ef]/95 text-[#1a1625]/60 hover:text-[#1a1625]" : "bg-[#1a1625]/95 text-white/60 hover:text-white"
                   )}
                 >
                   <span className="scale-75">{t.icon}</span>
@@ -2482,6 +2544,7 @@ function SillyClientLauncher() {
           ref={carouselRef}
           instances={instances}
           isLight={isLight}
+          isDynamic={isDynamic}
           glassBg={glassBg}
           hoveredCard={hoveredCard}
           setHoveredCard={setHoveredCard}
@@ -2498,12 +2561,21 @@ function SillyClientLauncher() {
             setActiveCardMenu(inst.id);
             setIsCardMenuClosing(false);
           }}
-          onRenameSave={executeRenameInstance}
+          onRenameSave={async (instanceId, newName) => {
+            try {
+              await executeRenameInstance(instanceId, newName);
+              setExternallyRenamingId(null);
+            } catch (err: any) {
+              alert(err?.message || "重命名实例文件夹失败");
+            }
+          }}
           externallyRenamingId={externallyRenamingId}
           onClearExternalRenaming={() => setExternallyRenamingId(null)}
+          onReorderInstances={handleReorderInstances}
           isWindows={isWindows}
           isWeb={isWeb}
           isShowcase={isShowcase}
+          isLocalPreview={isLocalPreview}
           onNewInstance={() => {
             if (isWeb && !isShowcase && !import.meta.env.DEV) {
               void openExternalUrl("https://github.com/CAPTCHAAAAA/SillyClient/releases/latest").catch(() => {});
@@ -2588,6 +2660,18 @@ function SillyClientLauncher() {
       />
 
       {/* 解耦业务组件: 终端面板 */}
+      <LayerBackdrop
+        isOpen={showTerminal || isTerminalClosing}
+        isClosing={isTerminalClosing}
+        onClick={() => {
+          setIsTerminalClosing(true);
+          setTimeout(() => {
+            setShowTerminal(false);
+            setIsTerminalClosing(false);
+          }, PANEL_EXIT_MS);
+        }}
+        zIndex={LAYERS.MODAL_BACKDROP}
+      />
       <TerminalModal
         isOpen={showTerminal}
         isClosing={isTerminalClosing}
@@ -2631,11 +2715,6 @@ function SillyClientLauncher() {
         replayOnboarding={replayOnboarding}
         instances={instances}
         setInstances={setInstances}
-        onImportBackup={content => {
-          const incoming = parseInstanceBackup(content);
-          setInstances(previous => mergeInstanceBackup(previous, incoming));
-        }}
-        importInputRef={importInputRef}
         appUpdateState={appUpdateState}
         appUpdateInfo={appUpdateInfo}
         checkForAppUpdate={checkForAppUpdate}
@@ -2723,7 +2802,7 @@ function SillyClientLauncher() {
       {/* 解耦公共组件: 统一多层遮罩 */}
       <LayerBackdrop
         isOpen={showNewInstancePanel || isNewInstancePanelClosing || showLaunchPanel || isLaunchPanelClosing}
-        isClosing={!showNewInstancePanel && !showLaunchPanel && (isNewInstancePanelClosing || isLaunchPanelClosing)}
+        isClosing={(isNewInstancePanelClosing || isLaunchPanelClosing) && (!showNewInstancePanel || isNewInstancePanelClosing) && (!showLaunchPanel || isLaunchPanelClosing)}
         onClick={() => {
           if (showNewInstancePanel && !isCreatingInstance) {
             closeVersionDropdown();
@@ -2870,6 +2949,8 @@ function SillyClientLauncher() {
         isClosing={isManagePanelClosing}
         onClose={closeManagePanel}
         isLight={isLight}
+        bgMode={bgMode}
+        themeStyle={themeStyle}
         glassBg={glassBg}
         isWindows={isWindows}
         allInstances={instances}
@@ -2921,6 +3002,33 @@ function SillyClientLauncher() {
         onUpdateInstancePasswordStatus={handleUpdateInstancePasswordStatus}
       />
 
+      {/* 旧版路径实例一键迁移向导（检测结果非空时自动弹出） */}
+      <LegacyMigrationModal
+        isOpen={showLegacyMigration}
+        isClosing={isLegacyMigrationClosing}
+        onClose={dismissLegacyMigration}
+        isLight={isLight}
+        glassBg={glassBg}
+        legacyInstances={legacyMigrationList}
+        isWindows={isWindows}
+        onBusyChange={setIsLegacyMigrationBusy}
+        onInstanceRelocated={handleInstanceRelocated}
+        onMigrationComplete={handleLegacyMigrationComplete}
+      />
+
+      {/* 单实例存储路径无损重定位弹窗 */}
+      <RelocateInstanceModal
+        instance={relocatingInstance}
+        isOpen={showRelocateModal}
+        isClosing={isRelocateModalClosing}
+        onClose={closeRelocateModal}
+        isLight={isLight}
+        glassBg={glassBg}
+        isWindows={isWindows}
+        onBusyChange={setIsRelocationBusy}
+        onRelocated={handleInstanceRelocated}
+      />
+
       <InstanceMaintenancePanel instance={maintenanceInstance} isOpen={!!maintenanceInstance}
         onClose={closeMaintenance} isLight={isLight} glassBg={glassBg} registerLayer={registerLayer} />
 
@@ -2942,33 +3050,6 @@ function SillyClientLauncher() {
         glassBg={glassBg}
       />
 
-      {/* 新版本旧路径实例全屏一键迁移向导 */}
-      <LegacyMigrationModal
-        isOpen={showLegacyMigration}
-        isClosing={isLegacyMigrationClosing}
-        onClose={dismissLegacyMigration}
-        isLight={isLight}
-        glassBg={glassBg}
-        legacyInstances={legacyMigrationList}
-        isWindows={isWindows}
-        onBusyChange={setIsLegacyMigrationBusy}
-        onInstanceRelocated={handleInstanceRelocated}
-        onMigrationComplete={() => localStorage.setItem(LEGACY_MIGRATION_KEY, APP_VERSION)}
-      />
-
-      {/* 单实例存储路径迁移模态框 */}
-      <RelocateInstanceModal
-        instance={relocatingInstance}
-        isOpen={showRelocateModal}
-        isClosing={isRelocateModalClosing}
-        onClose={closeRelocateModal}
-        isLight={isLight}
-        glassBg={glassBg}
-        isWindows={isWindows}
-        onBusyChange={setIsRelocationBusy}
-        onRelocated={handleInstanceRelocated}
-      />
-
       {/* 【视觉与动效测试专用】底部悬浮调试板：仅在本地开发走查环境可见，用于设计验收与过渡动效测试，在任何正式生产构建（Windows/Android/Pages）中自动剔除 */}
       {import.meta.env.DEV && !isNativePreview && (
         <div
@@ -2984,18 +3065,9 @@ function SillyClientLauncher() {
               setShowWhatsNew(true);
               setIsWhatsNewClosing(false);
             }}
-            className="motion-control h-7 px-3 rounded-full border border-white/10 bg-white/10 text-white/90 hover:bg-white/20 active:bg-white/25 font-medium transition-all"
+            className="motion-control h-7 px-3 rounded-full border border-white/10 bg-white/10 text-white/70 hover:text-white active:bg-white/25 font-medium transition-colors"
           >
             更新画布
-          </button>
-          <button
-            onClick={() => {
-              setShowLegacyMigration(true);
-              setIsLegacyMigrationClosing(false);
-            }}
-            className="motion-control h-7 px-3 rounded-full border border-white/10 bg-white/10 text-white/90 hover:bg-white/20 active:bg-white/25 font-medium transition-all"
-          >
-            旧版迁移
           </button>
           <button
             onClick={() => {
@@ -3004,7 +3076,7 @@ function SillyClientLauncher() {
               setShowNewInstancePanel(true);
               setIsNewInstancePanelClosing(false);
             }}
-            className="motion-control h-7 px-3 rounded-full border border-white/10 bg-white/10 text-white/90 hover:bg-white/20 active:bg-white/25 font-medium transition-all"
+            className="motion-control h-7 px-3 rounded-full border border-white/10 bg-white/10 text-white/70 hover:text-white active:bg-white/25 font-medium transition-colors"
           >
             打开向导
           </button>
@@ -3023,7 +3095,7 @@ function SillyClientLauncher() {
                 { msg: "解压运行时与核心组件...", level: "info" },
               ]);
             }}
-            className="motion-control h-7 px-3 rounded-full border border-white/10 bg-white/10 text-white/90 hover:bg-white/20 active:bg-white/25 font-medium transition-all"
+            className="motion-control h-7 px-3 rounded-full border border-white/10 bg-white/10 text-white/70 hover:text-white active:bg-white/25 font-medium transition-colors"
           >
             模拟过渡
           </button>
@@ -3041,7 +3113,7 @@ function SillyClientLauncher() {
                 { msg: "服务可访问，实例创建完成", level: "success" },
               ]);
             }}
-            className="motion-control h-7 px-3 rounded-full border border-white/20 bg-white/20 text-white hover:bg-white/30 active:bg-white/35 font-semibold transition-all"
+            className="motion-control h-7 px-3 rounded-full border border-white/20 bg-white/20 text-white/80 hover:text-white active:bg-white/35 font-semibold transition-colors"
           >
             模拟完成态
           </button>
@@ -3052,7 +3124,7 @@ function SillyClientLauncher() {
               setIsNewInstancePanelClosing(false);
             }}
             title="关闭弹层"
-            className="motion-control w-7 h-7 rounded-full flex items-center justify-center text-white/40 hover:text-white hover:bg-white/10 transition-all"
+            className="motion-control w-7 h-7 rounded-full flex items-center justify-center text-white/40 hover:text-white transition-colors"
           >
             <X className="w-3 h-3" />
           </button>

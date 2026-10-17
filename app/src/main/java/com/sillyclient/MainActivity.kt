@@ -201,6 +201,8 @@ class MainActivity : BridgeActivity() {
     // ---- State ----
     @Volatile private var serverReady = false
     @Volatile private var isWebViewVisible = false
+    /** 最近一次派发到前端的 IME 派发键（底距目标态×2+动画中位），-1 = 尚未派发。 */
+    private var lastImeDispatchKey = -1
     private var statusBarFixedPx = 0  // fixed physical pixels, never changes
     // 启动器支持多实例:目标 URL 与端口由前端实例数据决定,不再硬编码 8000
     @Volatile private var tavernUrl = "http://127.0.0.1:8000/"
@@ -212,6 +214,26 @@ class MainActivity : BridgeActivity() {
                 chameleonController.setInstanceId(value)
             }
         }
+
+    /** 并行运行的本地实例会话（多开）。前台 WebView 目标仍是 currentTavernInstanceId；
+     *  serverReady/serverProcess/tavernUrl/tavernPort 作为前台会话的缓存视图，
+     *  任何后台会话的状态变化只允许落在本表，绝不允许污染前台缓存。 */
+    private data class ServerSession(
+        val instanceId: String,
+        var process: Process?,
+        var port: Int,
+        var url: String,
+        var ready: Boolean
+    )
+    private val serverSessions = java.util.concurrent.ConcurrentHashMap<String, ServerSession>()
+
+    /** 回环端口探测：仅校验 127.0.0.1 绑定（服务以 HOST=127.0.0.1 启动）。 */
+    private fun isLoopbackPortFree(port: Int): Boolean = runCatching {
+        java.net.ServerSocket().use { socket ->
+            socket.reuseAddress = false
+            socket.bind(java.net.InetSocketAddress("127.0.0.1", port))
+        }
+    }.isSuccess
     private var tavernAuthHost: String? = null
     private var tavernAuthUsername: String? = null
     private var tavernAuthPassword: String? = null
@@ -328,10 +350,44 @@ class MainActivity : BridgeActivity() {
         // with the startup extraction or an instance launch already in flight.
         Thread {
             runCatching { Thread.sleep(45_000) }
+            // 媒体扫描免疫：给全部已登记实例与残留依赖银行补 .nomedia，
+            // 整树退出 MediaStore 重索引（公共存储上 2 万级文件的扫描风暴是发热主因）。
+            runCatching {
+                val paths = RuntimePaths.from(this)
+                paths.installLocations.entries().values.forEach { dir ->
+                    runCatching {
+                        val marker = File(dir, ".nomedia")
+                        if (dir.isDirectory && !marker.isFile) marker.writeBytes(ByteArray(0))
+                    }
+                }
+                val roots = buildList {
+                    paths.installLocations.entries().values.forEach { add(it.parentFile) }
+                    add(paths.serversDir)
+                    add(paths.legacyServersDir)
+                    add(paths.legacyExternalServersDir)
+                }.filterNotNull().distinctBy { runCatching { it.canonicalFile }.getOrNull() ?: it }
+                roots.forEach { root ->
+                    val bank = File(root, DependencyBank.DIR_NAME)
+                    if (DependencyBank.read(bank) != null) {
+                        runCatching { File(bank, ".nomedia").writeBytes(ByteArray(0)) }
+                    }
+                }
+            }.onFailure { runtimeDiagnostic("nomedia.immunize_failed ${it.message?.take(160)}") }
             runCatching {
                 InstanceRelocation(RuntimePaths.from(this), operations, processSupervisor)
                     .sweepRetainedSources { runtimeDiagnostic(it) }
             }.onFailure { runtimeDiagnostic("relocat.sweep_failed ${it.message?.take(160)}") }
+            // 旧版共享依赖库（<根>/node_modules）退役清退：仅动带银行标记且不再被需要的目录。
+            runCatching {
+                val paths = RuntimePaths.from(this)
+                val roots = buildList {
+                    paths.installLocations.entries().values.forEach { add(it.parentFile) }
+                    add(paths.serversDir)
+                    add(paths.legacyServersDir)
+                    add(paths.legacyExternalServersDir)
+                }.filterNotNull().distinctBy { runCatching { it.canonicalFile }.getOrNull() ?: it }
+                roots.forEach { sweepObsoleteDependencyBank(paths, it) }
+            }.onFailure { runtimeDiagnostic("bank.sweep_failed ${it.message?.take(160)}") }
         }.apply {
             name = "SC-relocation-sweep"
             isDaemon = true
@@ -604,7 +660,6 @@ class MainActivity : BridgeActivity() {
         cleanupStaleExportTempFiles()
 
         webView = WebView(this).apply {
-            setLayerType(View.LAYER_TYPE_NONE, null)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
             }
@@ -628,6 +683,7 @@ class MainActivity : BridgeActivity() {
             settings.layoutAlgorithm = android.webkit.WebSettings.LayoutAlgorithm.NORMAL
             settings.textZoom = 100
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                // 离屏预栅格化实测在酒馆重页面上抬高显存与光栅压力，保持默认关闭。
                 settings.offscreenPreRaster = false
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -812,37 +868,31 @@ class MainActivity : BridgeActivity() {
         }
         chameleonController.setStatusHint(tavernStatusHint)
 
-        // IME 零重排零延迟适配（TT 同款架构）：
-        // 废除 webViewScreen.setPadding(...)，绝不改变 WebView 物理高宽，彻底消灭 Viewport Resize 全局重排！
-        // 原生直接将软键盘高度转换为 CSS 像素，驱动 GPU 硬件加速的局部 translate3d 位移。
+        // IME 键盘避让 = 纯原生 translationY 平移（GPU 合成器直出）：
+        // 实测教训：逐帧 resize/底垫压缩会迫使 Chromium 逐帧整页重排，酒馆重页面上卡到
+        // 不可用。平移全程零重排、零 JS、零 IPC、视口恒尺寸——流畅/快速/通用优先。
+        // IME insets 不透传给 WebView，杜绝 Chromium 自发 resize 的双重避让。
+        fun applyImeTranslation(imeHeightPx: Int) {
+            webViewScreen.translationY = -imeHeightPx.toFloat()
+        }
         ViewCompat.setWindowInsetsAnimationCallback(
             webViewScreen,
             object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
                 override fun onPrepare(animation: WindowInsetsAnimationCompat) {}
 
+                // 动画起点绝不派发 JS：底距变量的 120ms padding 过渡与平移叠加
+                // 就是实测"一两帧抽搐"的来源；终态由 onEnd/Insets 监听器统一落位。
                 override fun onStart(
                     animation: WindowInsetsAnimationCompat,
                     bounds: WindowInsetsAnimationCompat.BoundsCompat
-                ): WindowInsetsAnimationCompat.BoundsCompat {
-                    if ((animation.typeMask and WindowInsetsCompat.Type.ime()) != 0) {
-                        val rootInsets = ViewCompat.getRootWindowInsets(webViewScreen)
-                        val navHeight = rootInsets?.getInsets(WindowInsetsCompat.Type.navigationBars())?.bottom ?: 0
-                        val targetHeight = bounds.upperBound.bottom
-                        val imeVisible = rootInsets?.isVisible(WindowInsetsCompat.Type.ime()) ?: (targetHeight > 0)
-                        dispatchImeOffset(if (imeVisible) targetHeight else 0, navHeight)
-                    }
-                    return super.onStart(animation, bounds)
-                }
+                ): WindowInsetsAnimationCompat.BoundsCompat = super.onStart(animation, bounds)
 
                 override fun onProgress(
                     insets: WindowInsetsCompat,
                     runningAnimations: MutableList<WindowInsetsAnimationCompat>
                 ): WindowInsetsCompat {
-                    val imeType = WindowInsetsCompat.Type.ime()
-                    val navHeight = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
-                    val imeHeight = insets.getInsets(imeType).bottom
-                    val isImeVisible = insets.isVisible(imeType)
-                    dispatchImeOffset(if (isImeVisible) imeHeight else 0, navHeight)
+                    // 逐帧平移：GPU 合成，页面零重排。
+                    applyImeTranslation(insets.getInsets(WindowInsetsCompat.Type.ime()).bottom)
                     return insets
                 }
 
@@ -853,6 +903,7 @@ class MainActivity : BridgeActivity() {
                         val imeVisible = rootInsets?.isVisible(WindowInsetsCompat.Type.ime()) ?: false
                         val imeHeight = rootInsets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
                         dispatchImeOffset(if (imeVisible) imeHeight else 0, navHeight)
+                        applyImeTranslation(if (imeVisible) imeHeight else 0)
                     }
                 }
             }
@@ -863,7 +914,14 @@ class MainActivity : BridgeActivity() {
             val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
             val imeHeight = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
             dispatchImeOffset(if (imeVisible) imeHeight else 0, navHeight)
-            insets
+            // 非动画路径（直接弹出/收起）同步最终平移量。
+            applyImeTranslation(if (imeVisible) imeHeight else 0)
+            // IME inset 不透传给 WebView：键盘避让完全由原生平移承担，
+            // 杜绝 Chromium 自发 resize 造成双重避让。
+            WindowInsetsCompat.Builder(insets)
+                .setInsets(WindowInsetsCompat.Type.ime(), Insets.NONE)
+                .setVisible(WindowInsetsCompat.Type.ime(), false)
+                .build()
         }
 
         // ---- Hybrid UI host owns the web dashboard + console + bridge ----
@@ -927,6 +985,16 @@ class MainActivity : BridgeActivity() {
     fun isTavernVisible(): Boolean = isWebViewVisible
     fun getTavernUrl(): String = tavernUrl
     fun getRunningInstanceId(): String? = currentTavernInstanceId.takeIf { serverReady }
+
+    /** 当前仍在运行的本地实例 ID 列表（多开）。 */
+    fun getRunningInstanceIds(): List<String> =
+        serverSessions.values.filter { it.ready && it.process?.isAlive == true }.map { it.instanceId }
+
+    /** 指定实例是否正在运行（多开）。 */
+    fun isInstanceRunning(instanceId: String): Boolean {
+        val session = serverSessions[RuntimePaths.normalizeInstanceId(instanceId)] ?: return false
+        return session.ready && session.process?.isAlive == true
+    }
     fun getRunningOperationId(): String? = operations.current()?.takeIf {
         serverReady && it.instanceId == currentTavernInstanceId && serverProcess?.isAlive == true
     }?.operationId
@@ -943,21 +1011,40 @@ class MainActivity : BridgeActivity() {
         preinstall: PreinstalledExtensionsRequest? = null,
         installPath: String? = null,
         installPathMode: String = "exact",
-        instanceName: String? = null
+        instanceName: String? = null,
+        createIntent: Boolean = false
     ) {
         require(port in 1..65535) { "Invalid instance port" }
         require(config.ipv4 || config.ipv6) { "请至少启用 IPv4 或 IPv6" }
         require(config.heartbeat >= 0) { "Invalid heartbeat interval" }
         val paths = RuntimePaths.from(this)
         val id = RuntimePaths.normalizeInstanceId(instanceId)
-        val targetServerDir = paths.launchDirectoryFor(id, installPath, installPathMode, instanceName)
+        // 创建意图仅来自前端创建向导（createIntent=true）：同名已登记实例在其他位置时
+        // 拒绝分身创建；无创建意图的启动在目标缺失/损坏时拒绝静默全新安装顶替。
+        val targetServerDir = paths.launchDirectoryFor(id, installPath, installPathMode, instanceName, forCreation = createIntent)
         val operation = operations.begin(id, operationId)
-        val previousStop = processSupervisor.stopAllAsync()
+        // 多开：只停止同名实例的旧会话（重启语义），其余实例保持运行。
+        val previousStop = processSupervisor.stopAllAsync(id)
+        serverSessions.remove(id)?.process = null
+        // 端口消解：回环监听时静默顺延到空闲端口；LAN 共享（listen=true）必须报错，
+        // 否则用户对外公布的端口会被静默替换。
+        var effectivePort = port
+        while (effectivePort <= port + 100) {
+            val heldByPeer = serverSessions.values.any { it.port == effectivePort && it.process?.isAlive == true }
+            if (!heldByPeer && isLoopbackPortFree(effectivePort)) break
+            if (config.listen) throw IllegalStateException(
+                "端口 $effectivePort 已被占用；请先停止占用该端口的实例，或为本实例更换端口后再启动"
+            )
+            effectivePort++
+        }
+        require(effectivePort <= port + 100 && effectivePort <= 65535) {
+            "端口 $port 起的 100 个端口均被占用，请停止部分实例或更换端口后再启动"
+        }
         cleanupService.invalidate()
         serverProcess = null
         serverReady = false
-        tavernPort = port
-        tavernUrl = "http://${if (config.ipv4) "127.0.0.1" else "[::1]"}:$port/"
+        tavernPort = effectivePort
+        tavernUrl = "http://${if (config.ipv4) "127.0.0.1" else "[::1]"}:$effectivePort/"
         currentTavernInstanceId = id
         clearTavernBasicAuth()
         KeepAlive.acquire(this)
@@ -1000,24 +1087,22 @@ class MainActivity : BridgeActivity() {
                             }
                         },
                         installDependencies = { directory ->
-                            if (localZipPath == null &&
-                                bundledTavernSource.matchesRequestedVersion(version, zipballUrl)) {
-                                // Bundled source: one shared tree serves every instance
-                                // from <root>/node_modules via standard Node resolution.
-                                updateProgress(85, "正在准备共享依赖组件（仅首次）")
-                                ensureDependencyBank(paths, { operations.ensureCurrent(operation) },
-                                    manifestDirectory = directory)
-                                true
-                            } else {
-                                updateProgress(85, "正在准备实例依赖")
-                                runNpmInstall(paths, directory) { restored ->
-                                    updateProgress(85, "正在恢复依赖组件 · $restored")
-                                }
+                            // 实例自持：依赖一律落进实例目录自身，绝不向用户选择的存放文件夹
+                            // 写入共享 node_modules（杜绝污染相册/文档等日常路径）。
+                            updateProgress(85, "正在准备实例依赖")
+                            runNpmInstall(paths, directory) { restored ->
+                                updateProgress(85, "正在恢复依赖组件 · $restored")
                             }
                         },
                         commit = { action -> operations.commit(operation, action) },
-                        instanceId = id
+                        instanceId = id,
+                        allowFreshInstall = createIntent
                     )
+                // 存量实例回填 .nomedia：整树退出媒体扫描（创建期写入已于 InstanceInstaller 就位）。
+                runCatching {
+                    val noMedia = File(targetServerDir, ".nomedia")
+                    if (!noMedia.isFile) noMedia.writeBytes(ByteArray(0))
+                }
                 instanceRepository.invalidate(targetServerDir)
                 val runtimeConfiguration = RuntimeConfiguration(paths, operations, processSupervisor)
                 if (companionPreset != null || preinstall?.extensionIds?.isNotEmpty() == true) {
@@ -1037,13 +1122,13 @@ class MainActivity : BridgeActivity() {
                     appendLog("[OK] SC Bordeaux 主题预设已就绪")
                 }
                 updateProgress(97, "Starting server")
-                ensureBankForLaunch(paths, targetServerDir, operation)
+                ensureDependenciesForLaunch(paths, targetServerDir, operation)
                 bundledDependencyArchive(paths) { operations.ensureCurrent(operation) }?.let { (key, _) ->
                     if (webpackCacheSeed(paths).seedInstance(targetServerDir, key) { operations.ensureCurrent(operation) }) {
                         runtimeDiagnostic("webpack.seeded key=${key.take(12)}")
                     }
                 }
-                launched = startServer(paths, targetServerDir, port, config, operation)
+                launched = startServer(paths, targetServerDir, effectivePort, config, operation)
                 check(launched != null) { "Node.js 服务启动失败，请检查实例完整性" }
                 appendLog("[OK] Node.js process launched")
                 updateProgress(99, "Waiting for server")
@@ -1056,6 +1141,11 @@ class MainActivity : BridgeActivity() {
                     operations.commit(operation) {
                         presetTransaction?.commit()
                         extensionsTransaction?.commit()
+                        // 多开：服务进程在就绪后脱离启动操作的生命周期——
+                        // 此后任何新操作（如下一次启动/维护）的取消都不会杀死本实例。
+                        processSupervisor.forget(launched)
+                        processSupervisor.track(launched, id)
+                        serverSessions[id] = ServerSession(id, launched, effectivePort, tavernUrl, ready = true)
                     }
                     // Archive after the server is ready so the heavy tree copy cannot
                     // compete with Node's cold-start dependency reads.
@@ -1434,15 +1524,25 @@ class MainActivity : BridgeActivity() {
         if (isWebViewVisible) return false
         val requestedInstanceId = instanceId?.trim()?.takeIf { it.isNotEmpty() } ?: currentTavernInstanceId
         val operation = operations.current()
+        // 多开：目标是存活的运行中会话时允许直接切换前台。
+        val targetSession = requestedInstanceId?.let { serverSessions[it] }
         val changesTarget = (requestedInstanceId != null && requestedInstanceId != currentTavernInstanceId) ||
             (targetUrl != null && targetUrl != tavernUrl)
-        if (changesTarget && (operations.hasPendingWork() || serverProcess?.isAlive == true)) {
+        if (changesTarget && targetSession?.process?.isAlive != true &&
+            (operations.hasPendingWork() || serverProcess?.isAlive == true)) {
             throw IllegalStateException("请先停止当前实例或等待当前任务结束后再切换")
         }
-        val willBeReady = serverReady || (targetUrl != null && !isLocalUrl(targetUrl))
+        val willBeReady = serverReady || targetSession?.ready == true || (targetUrl != null && !isLocalUrl(targetUrl))
         if (!willBeReady) return false
         if (changesTarget && operation != null) operations.cancel(operation.instanceId, operation.operationId)
         currentTavernInstanceId = requestedInstanceId
+        // 前台缓存与目标会话对齐（切换对象 = 运行中的其他实例时接管其进程视图）。
+        if (targetSession != null) {
+            tavernPort = targetSession.port
+            tavernUrl = targetSession.url
+            serverProcess = targetSession.process
+            serverReady = targetSession.ready
+        }
         // 远程实例:直接进入(无需 serverReady);本地实例:需 serverReady
         if (targetUrl != null) {
             tavernUrl = targetUrl
@@ -1529,14 +1629,35 @@ class MainActivity : BridgeActivity() {
      * 由前端"停止"按钮调用。
      */
     fun closeTavern(instanceId: String? = null, operationId: String? = null) {
+        val targetId = instanceId?.takeIf { it.isNotBlank() }?.let { RuntimePaths.normalizeInstanceId(it) }
+            ?: currentTavernInstanceId
         val operation = operations.current()
         if (operation == null) {
-            if (operationId != null || (instanceId != null && instanceId != currentTavernInstanceId)) return
+            // 无活动操作时允许停止任意正在运行的会话（多开），不再局限于前台实例。
+            if (operationId != null) return
         } else if (!operations.cancel(instanceId, operationId)) {
             return
         }
         cleanupService.invalidate()
-        processSupervisor.stopAllAsync()
+        if (targetId != null) {
+            processSupervisor.stopAllAsync(targetId)
+            serverSessions.remove(targetId)?.process = null
+        } else {
+            processSupervisor.stopAllAsync()
+            serverSessions.clear()
+        }
+        if (targetId != null && targetId != currentTavernInstanceId) {
+            // 后台会话关停：前台视图不受影响，仅广播实例级停止事件。
+            notifyRuntime("exit", JSObject().put("instanceId", targetId), null, allowCancelled = true)
+            return
+        }
+        closeTavernUi(operation)
+    }
+
+    /** 酒馆前台视图的纯 UI 拆卸：不取消操作、不停止进程（调用方必须已自行处理进程）。
+     *  删除流程专用——经完整 closeTavern 二次停止会递增监管 generation，
+     *  误杀后台物理清理线程，导致"卡片消失但文件残留"。 */
+    private fun closeTavernUi(operation: OperationCoordinator.Operation? = null) {
         chameleonController.reset()
         tavernStatusHint.dismiss()
         tavernDownloadBridge.invalidateSession()
@@ -1666,6 +1787,8 @@ class MainActivity : BridgeActivity() {
 
     private fun switchToHome(animate: Boolean, tavernRunning: Boolean = false) {
         isWebViewVisible = false
+        // 复位键盘避让平移：隐藏中的视图不参与 insets 分发，回到启动器时键盘必已收起。
+        webViewScreen.translationY = 0f
         // 唤醒底座 Capacitor 控制台
         bridge?.webView?.apply {
             visibility = View.VISIBLE
@@ -1838,12 +1961,43 @@ class MainActivity : BridgeActivity() {
                     if (document.getElementById('sc-mobile-layout')) return;
                     const style = document.createElement('style');
                     style.id = 'sc-mobile-layout';
-                    style.textContent = ':root { --sc-nav-bottom: 18px; }' +
-                        '#form_sheld { padding-bottom: 0 !important; }' +
-                        '#send_form { padding-bottom: max(12px, var(--sc-nav-bottom, 14px)) !important;' +
-                        ' box-sizing: border-box !important;' +
-                        ' transition: padding-bottom 120ms cubic-bezier(0.12, 0.98, 0.24, 1) !important; }' +
-                        '#chat { padding-bottom: calc(var(--bottomFormBlockSize, 60px) + var(--sc-nav-bottom, 14px) + 6px) !important; }';
+                    style.textContent = `
+/* ─── 布局层：键盘避让与底栏安全区（变量由原生按键盘状态驱动） ─── */
+:root { --sc-nav-bottom: 18px; }
+#form_sheld { padding-bottom: 0 !important; }
+#send_form { padding-bottom: max(12px, var(--sc-nav-bottom, 14px)) !important;
+  box-sizing: border-box !important;
+  transition: padding-bottom 120ms cubic-bezier(0.12, 0.98, 0.24, 1) !important; }
+#chat { padding-bottom: calc(var(--bottomFormBlockSize, 60px) + var(--sc-nav-bottom, 14px) + 6px) !important; }
+
+/* ─── 全局性能层（与主题无关，对所有实例生效） ─── */
+/* 触控 0 延迟：消除移动端 300ms 点击判定 */
+html, body { touch-action: manipulation; }
+button, .menu_button, .drawer-icon, .inline-drawer-header, .mes_button, .fa-solid.interactable {
+  touch-action: manipulation;
+}
+/* 消除 Android 点击灰闪（自有 :active 反馈接管，观感更干脆） */
+* { -webkit-tap-highlight-color: rgba(0, 0, 0, 0); }
+/* 聊天滚动到顶/底不再链式带动整页橡皮筋 */
+#chat { overscroll-behavior: contain; }
+/* 滚动与重排隔离：聊天区独立合成，滚动只 repaint 内部 */
+#chat { contain: layout style paint; isolation: isolate; }
+.mes { contain: layout style; }
+.mes_text { contain: content; }
+/* 视口虚拟化：抽屉里海量角色卡与最近聊天项按需渲染 */
+.character_select { content-visibility: auto; contain-intrinsic-size: auto 72px; }
+.recentChat { content-visibility: auto; contain-intrinsic-size: auto 58px; }
+/* 合成层提升：顶栏与输入栏 backdrop-filter 采样可缓存 */
+#top-bar, #send_form { will-change: transform; }
+/* 抽屉/弹窗打开时底层聊天 blur 短路卸载：杜绝双层全屏高斯卷积掉帧 */
+body:has(.drawer-content.openDrawer) #chat,
+body:has(.drawer-content[style*="display: block"]) #chat,
+body:has(.popup[open]) #chat,
+body:has(.popup[opening]) #chat {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+`;
                     document.head.appendChild(style);
                 } catch(_) {}
             })();
@@ -1851,6 +2005,7 @@ class MainActivity : BridgeActivity() {
         webView.evaluateJavascript(script, null)
         // Re-apply the current insets so the fresh stylesheet starts from the
         // real keyboard/navigation state instead of the 18px default.
+        lastImeDispatchKey = -1
         val insets = ViewCompat.getRootWindowInsets(webViewScreen)
         val imeVisible = insets?.isVisible(WindowInsetsCompat.Type.ime()) ?: false
         val imeHeight = insets?.getInsets(WindowInsetsCompat.Type.ime())?.bottom ?: 0
@@ -1862,6 +2017,10 @@ class MainActivity : BridgeActivity() {
         if (!::webView.isInitialized) return
         val density = resources.displayMetrics.density
         val navCssPx = if (density > 0) navHeightPx / density else navHeightPx.toFloat()
+        // 去重：onStart/onEnd/InsetsListener 会对同一终态重复回调，只有目标态变化才过桥。
+        val targetState = (if (imeHeightPx > 0) 0 else maxOf(kotlin.math.ceil(navCssPx.toDouble()).toInt(), 18))
+        if (targetState == lastImeDispatchKey) return
+        lastImeDispatchKey = targetState
         val script = """
             (function() {
                 try {
@@ -1936,18 +2095,7 @@ class MainActivity : BridgeActivity() {
                             pushLog(line, operation)
                         }
                     }, onExit = { code ->
-                        if (operations.isCurrent(operation) && serverProcess === process && serverReady) {
-                            runCatching {
-                                operations.commit(operation) {
-                                    if (serverProcess === process) {
-                                        serverProcess = null
-                                        serverReady = false
-                                        pushReady(false, operation)
-                                        notifyRuntime("error", JSObject().put("message", "Node.js 进程已退出 (code $code)"), operation)
-                                    }
-                                }
-                            }
-                        }
+                        runCatching { onServerProcessExit(operation.instanceId, process, code) }
                     })
                 }
             }
@@ -1958,6 +2106,31 @@ class MainActivity : BridgeActivity() {
         } catch (error: Exception) {
             runtimeDiagnostic("server.launch_failed ${error.javaClass.simpleName} ${error.message?.take(240)}")
             return null
+        }
+    }
+
+    /** 服务进程退出守望：无论死于启动期还是运行期、操作是否仍在世，都会话级清理并广播。 */
+    private fun onServerProcessExit(instanceId: String, process: Process, code: Int) {
+        val session = serverSessions[instanceId]
+        val wasReady = session?.ready == true && session.process === process
+        if (session?.process === process) {
+            serverSessions.remove(instanceId)
+            session.process = null
+        }
+        // 前台缓存同步：仅当死者是前台会话时回落视图状态。
+        if (currentTavernInstanceId == instanceId && serverProcess === process) {
+            serverProcess = null
+            serverReady = false
+        }
+        if (wasReady) {
+            // 运行期死亡：广播 exit（前端按实例置 stopped）；前台实例额外推就绪回落与错误提示。
+            notifyRuntime("exit", JSObject()
+                .put("instanceId", instanceId)
+                .put("code", code), null, allowCancelled = true)
+            if (currentTavernInstanceId == instanceId) {
+                pushReady(false, null, allowCancelled = true)
+                notifyRuntime("error", JSObject().put("message", "Node.js 进程已退出 (code $code)"), null, allowCancelled = true)
+            }
         }
     }
 
@@ -2112,7 +2285,10 @@ class MainActivity : BridgeActivity() {
         // 归档仅作为安装加速缓存，缺失或损坏时回退 npm（同 Windows 语义）。
         val recoveryDirectory = File(targetServerDir, ".sillyclient-dependency-restore")
         if (!File(targetServerDir, InstanceInstaller.DEPENDENCY_MARKER).exists() && !recoveryDirectory.exists() &&
-            DependencyInstaller.hasRequiredPackages(targetServerDir)) return true
+            DependencyInstaller.hasRequiredPackages(targetServerDir)) {
+            runtimeDiagnostic("deps.fastpath instance_ready")
+            return true
+        }
         val archive = dependencyArchive(paths)
         val lockKey = archive.lockKey(File(targetServerDir, "package-lock.json"))
         val lockMismatch = DependencyInstaller.lockManifestMismatch(targetServerDir)
@@ -2124,107 +2300,63 @@ class MainActivity : BridgeActivity() {
         } else if (restoreDependencies(archive, lockKey, targetServerDir, onRestoreProgress)) return true
         runtimeDiagnostic("deps.archive.miss instance=${operation.instanceId} key=${lockKey?.take(12) ?: "none"}")
         updateProgress(85, "正在安装依赖，请查看控制台进度")
-        return DependencyInstaller(paths, operations, processSupervisor, ::appendLog, ::runtimeDiagnostic)
+        val installed = DependencyInstaller(paths, operations, processSupervisor, ::appendLog, ::runtimeDiagnostic)
             .install(targetServerDir, operation)
+        runtimeDiagnostic("deps.npm.done result=$installed dir=${targetServerDir.name}")
+        if (installed && !DependencyInstaller.hasRequiredPackages(targetServerDir)) {
+            // npm 自报成功但复核失败：安装与校验之间文件状态变了（并发清理/FUSE 竞态），现场必须留下。
+            runtimeDiagnostic("deps.npm.verify_drift " +
+                DependencyInstaller.diagnoseRequiredPackages(targetServerDir))
+        }
+        return installed
     }
 
-    /**
-     * Complete with the instance's own node_modules or with the shared bank at
-     * `<root>/node_modules` covering the instance's lock file.
-     */
-    private fun instanceDependenciesComplete(directory: File): Boolean =
-        DependencyInstaller.hasRequiredPackages(directory) || bankCovers(directory)
-
-    private fun bankCovers(instanceDirectory: File): Boolean {
-        val paths = RuntimePaths.from(this)
-        val lockKey = DependencyArchive(File(paths.tarvenHome, "dependency-archives"))
-            .lockKey(File(instanceDirectory, "package-lock.json"))
-        return DependencyBank.covers(instanceDirectory, lockKey)
-    }
-
-    /**
-     * Materialize/refresh the shared dependency bank at `<root>/node_modules`
-     * from the bundled archive. Extraction goes directly into the bank — a
-     * populated tree must never be renamed on shared storage (MediaProvider
-     * re-indexes every descendant), and a stale bank is cleared first so a
-     * half-swapped version can never survive.
-     */
-    private fun ensureDependencyBank(paths: RuntimePaths, ensureActive: () -> Unit,
-                                     manifestDirectory: File? = null) {
-        // Node resolves packages by walking up from the instance directory: from
-        // `<parent>/<name>` the first candidate is `<parent>/node_modules`, and
-        // during creation the staging directory shares that same parent. The
-        // bank must sit exactly there — bankDirectory(instanceOrStaging)
-        // answers `<parent>/node_modules` for both.
-        val bank = DependencyBank.bankDirectory(manifestDirectory ?: paths.serversDir)
-        // The earlier private layout (files/node_modules) is one level off and
-        // must not linger as dead weight.
-        val legacyBank = File(paths.appFilesDir, "node_modules")
-        if (legacyBank != bank && legacyBank.isDirectory) {
-            runCatching { ManagedFiles.deleteDirectory(legacyBank, paths.appFilesDir) }
-        }
-        val (key, archive) = bundledDependencyArchive(paths, ensureActive)
-            ?: error("缺少内置依赖归档，无法准备共享依赖，请检查安装包完整性")
-        val manifest = manifestDirectory
-        if (DependencyBank.read(bank)?.key == key &&
-            (manifest == null || DependencyInstaller.hasRequiredPackages(manifest, bank))) {
-            runtimeDiagnostic("bank.hit key=${key.take(12)}")
-            return
-        }
-        if (bank.exists()) {
-            // The bank sits one level above the instances root; its own parent
-            // is the managed scope, and deletion runs through the child rm so
-            // tens of thousands of files never serialize the app process.
-            runtimeDiagnostic("bank.reset")
-            val bankParent = requireNotNull(bank.parentFile)
-            NativeTreeRemoval(processSupervisor).remove(
-                listOf(bank), bankParent, "dependencies", operations.context(), ensureActive)
-            check(!bank.exists()) { "无法清理旧的共享依赖目录，请重试" }
-        }
-        val extractor = shardExtractor(paths)
-        val extractorProgress: (Int) -> Unit = { count ->
-            updateProgress(85, "正在准备共享依赖组件 · $count")
-        }
-        val extracted = extractor.available() && extractor.extract(archive, bank, ensureActive, extractorProgress)
-        if (!extracted) {
-            // No platform tar (or child extraction failed): fall back to the
-            // in-process transaction, which publishes through a same-parent
-            // rename. The completeness check needs the manifest that defines
-            // the dependency set — the instance being created or launched.
-            // Without one (idle prewarm) the fallback is skipped and the work
-            // is retried on the next opportunity.
-            check(manifestDirectory != null) { "共享依赖准备失败，请重试" }
-            bank.deleteRecursively()
-            check(dependencyArchive(paths).restore(key,
-                manifestDirectory?.parentFile ?: paths.serversDir, replaceIncomplete = true,
-                skipExecutableLinks = true,
-                validateModules = { modules -> DependencyInstaller.hasRequiredPackages(manifest, modules) },
-                ensureActive = ensureActive)) { "共享依赖准备失败，请重试" }
-        }
-        // The bank holds node_modules only; verify against the instance manifest
-        // when one is available (prewarm has none — the tar path already
-        // verified every top-level package exists).
-        check(manifest == null || DependencyInstaller.hasRequiredPackages(manifest, bank)) {
-            "共享依赖校验失败，请重试"
-        }
-        DependencyBank.write(bank, key)
-        runtimeDiagnostic("bank.ready key=${key.take(12)}")
-    }
-
-    /** Self-heal hook: a launch that needs the bank rebuilds it before the server starts. */
-    private fun ensureBankForLaunch(paths: RuntimePaths, target: File, operation: OperationCoordinator.Operation) {
+    /** 启动自愈：实例缺失依赖时就地补齐自己的 node_modules（实例自持，绝不写共享目录）。 */
+    private fun ensureDependenciesForLaunch(paths: RuntimePaths, target: File, operation: OperationCoordinator.Operation) {
         if (DependencyInstaller.hasRequiredPackages(target)) return
         if (File(target, InstanceInstaller.DEPENDENCY_MARKER).exists()) return
-        val extract = { operations.ensureCurrent(operation) }
-        val lockKey = DependencyArchive(File(paths.tarvenHome, "dependency-archives"))
-            .lockKey(File(target, "package-lock.json")) ?: return
-        if (DependencyBank.covers(target, lockKey)) return
-        // The bank can only serve the lock the bundled archive was built from;
-        // anything else keeps the npm flow as its owner.
-        val bundled = bundledDependencyArchive(paths, extract) ?: return
-        if (bundled.first != lockKey) return
-        updateProgress(96, "正在准备共享依赖组件（仅首次）")
-        ensureDependencyBank(paths, extract, manifestDirectory = target)
+        operations.ensureCurrent(operation)
+        appendLog("> 正在补齐实例依赖组件…")
+        updateProgress(96, "正在准备实例依赖组件")
+        check(runNpmInstall(paths, target)) { "实例依赖准备失败，请重试" }
+        // 旧版共享依赖库（<根>/node_modules）可能因此实例不再被需要，顺手清退。
+        sweepObsoleteDependencyBank(paths, target.parentFile)
+    }
+
+    /**
+     * 旧版共享依赖库（<根>/node_modules）清退：仅处理带 SillyClient 银行标记的目录
+     * （用户自己的 node_modules 绝不动），且仅当该根下已登记实例全部自持依赖后
+     * 才在后台移除；公共存储无授权时留待下次。
+     */
+    private fun sweepObsoleteDependencyBank(paths: RuntimePaths, root: File?) {
+        if (root == null) return
+        val bank = File(root, DependencyBank.DIR_NAME)
+        val state = DependencyBank.read(bank) ?: return
+        val canonicalRoot = runCatching { root.canonicalFile }.getOrNull() ?: return
+        val archive = DependencyArchive(File(paths.tarvenHome, "dependency-archives"))
+        val stillNeeded = paths.installLocations.entries().any { (_, directory) ->
+            runCatching { directory.parentFile?.canonicalFile }.getOrNull() == canonicalRoot &&
+                !DependencyInstaller.hasRequiredPackages(directory) &&
+                archive.lockKey(File(directory, "package-lock.json")) == state.key
+        }
+        if (stillNeeded) return
+        val isPrivate = runCatching { canonicalRoot.toPath().startsWith(paths.appFilesDir.canonicalFile.toPath()) }
+            .getOrDefault(false)
+        if (!isPrivate && !com.sillyclient.storage.InstanceStorageAccess.isGranted(this)) return
+        KeepAlive.acquire(this)
+        Thread {
+            try {
+                NativeTreeRemoval(processSupervisor).remove(listOf(bank), root, "dependencies")
+                runtimeDiagnostic("bank.swept root=${root.name}")
+            } catch (error: Exception) {
+                runtimeDiagnostic("bank.sweep_failed type=${error.javaClass.simpleName}")
+            } finally {
+                runOnUiThread { KeepAlive.release(applicationContext) }
+            }
+        }.apply {
+            name = "SC-bank-sweep"
+            isDaemon = true
+        }.start()
     }
 
     /** (lockKey, archiveFile) of the bundled dependency archive, materialized on demand. */
@@ -2308,6 +2440,9 @@ class MainActivity : BridgeActivity() {
         if (File(instanceDirectory, InstanceInstaller.DEPENDENCY_MARKER).exists() ||
             !DependencyInstaller.hasRequiredPackages(instanceDirectory)) return
         Thread {
+            // 实例自持后每个实例都有完整依赖树：归档是 2 万级文件的重活，
+            // 绝不与任何进行中的操作抢存储队列（防创建/启动期 IO 风暴发热）。
+            if (operations.hasPendingWork()) return@Thread
             val started = System.nanoTime()
             try {
                 if (archive.archive(instanceDirectory, lockKey)) {
@@ -2328,8 +2463,13 @@ class MainActivity : BridgeActivity() {
         com.sillyclient.runtime.Diag.append(RuntimePaths.from(this).tarvenHome, "runtime ${message.take(512)}")
     }
 
+    /** 实例依赖完整 = 实例目录内自带可解析的 node_modules（实例自持，无共享库兜底）。 */
+    private fun instanceDependenciesComplete(directory: File): Boolean =
+        DependencyInstaller.hasRequiredPackages(directory)
+
     private fun instanceInstaller(paths: RuntimePaths) = InstanceInstaller(
         paths.serversDir, paths.installLocations, ::instanceDependenciesComplete,
+        dependenciesDiagnosis = { DependencyInstaller.diagnoseRequiredPackages(it) },
         removeStaging = { directory, root, marker, verifyIdentity ->
             val operation = operations.context() ?: error("Missing installation cleanup operation")
             val interrupted = Thread.interrupted()
@@ -2511,7 +2651,8 @@ class MainActivity : BridgeActivity() {
         val paths = RuntimePaths.from(this)
         val id = RuntimePaths.normalizeInstanceId(instanceId)
         val targetDir = paths.serverDirFor(id, installPath, create = false)
-        check(!serverReady || currentTavernInstanceId == id) { "请先停止正在运行的其他实例后再删除" }
+        // 多开：删除只与目标实例自身相关（下方 stopAllAsync(id) 兜底停止），
+        // 其他实例正在运行不再构成删除阻碍。
         check(!operations.hasPendingWork() || operations.current()?.instanceId == id) {
             "请先等待其他实例任务完成"
         }
@@ -2535,9 +2676,10 @@ class MainActivity : BridgeActivity() {
                 runtimeDiagnostic("removal.stopped")
                 operations.ensureCurrent(operation)
                 val freed = uninstallInstanceFiles(id, targetDir)
+                // 删除流程只拆卸前台视图：进程已被 stopAllAsync(id) 停止；绝不经
+                // closeTavern 二次停止/取消本操作，避免误杀后台物理清理线程。
                 runOnUiThread {
-                    if (operations.current() === operation) closeTavern(id, operation.operationId)
-                    else if (operations.current() == null && currentTavernInstanceId == id) closeTavern(id)
+                    if (currentTavernInstanceId == id) closeTavernUi(operation)
                 }
                 freed
             }
@@ -2549,11 +2691,6 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    /**
-     * Package an instance directory into a ZIP under Download/SillyClient-导出
-     * so the user always has a file-manager-visible copy on demand, whether the
-     * instance itself lives in the managed area or a custom directory.
-     */
     /**
      * 把完整压缩包里的用户数据无损导入到已有实例：只覆盖用户数据
      * （data/、第三方扩展、plugins/，可选的 secrets.json/config.yaml），
@@ -2591,39 +2728,31 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    fun exportInstance(instanceId: String, installPath: String? = null): Pair<String, Long> {
+    fun exportInstanceToStream(instanceId: String, installPath: String?, outputStream: java.io.OutputStream): Pair<Int, Long> {
         val paths = RuntimePaths.from(this)
         val id = RuntimePaths.normalizeInstanceId(instanceId)
         val directory = paths.serverDirFor(id, installPath, create = false)
-        require(directory.isDirectory && File(directory, "server.js").isFile) { "实例目录不存在或尚未安装" }
-        val targetDir = File(android.os.Environment.getExternalStorageDirectory(), "Download/SillyClient-导出").apply { mkdirs() }
-        require(targetDir.isDirectory) { "无法创建导出目录，请检查存储权限" }
-        val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
-        val zip = File(targetDir, "${directory.name}-$stamp.zip")
-        var entries = 0
-        var bytes = 0L
-        val rootPath = directory.toPath()
-        java.util.zip.ZipOutputStream(java.io.BufferedOutputStream(java.io.FileOutputStream(zip), 256 * 1024)).use { output ->
-            directory.walkTopDown().forEach { file ->
-                if (Thread.currentThread().isInterrupted) throw java.util.concurrent.CancellationException("export cancelled")
-                if (java.nio.file.Files.isSymbolicLink(file.toPath())) return@forEach
-                val relative = rootPath.relativize(file.toPath()).toString().replace(File.separatorChar, '/')
-                if (relative.isEmpty()) return@forEach
-                if (file.isDirectory) {
-                    output.putNextEntry(java.util.zip.ZipEntry("$relative/"))
-                    output.closeEntry()
-                } else if (file.isFile) {
-                    output.putNextEntry(java.util.zip.ZipEntry(relative))
-                    file.inputStream().use { it.copyTo(output, 256 * 1024) }
-                    output.closeEntry()
-                    entries++
-                    bytes += file.length()
-                    if (entries % 200 == 0) pushLog("正在打包实例 · $entries 项")
-                }
-            }
+        val (entries, bytes) = com.sillyclient.runtime.InstanceExport.exportToStream(directory, outputStream) { count ->
+            pushLog("正在打包实例 · $count 项")
         }
-        runtimeDiagnostic("export.done entries=$entries bytes=$bytes path=${zip.name}")
-        return zip.absolutePath to bytes
+        runtimeDiagnostic("export.done entries=$entries bytes=$bytes")
+        return entries to bytes
+    }
+
+    fun exportInstanceToFile(instanceId: String, installPath: String?, targetFileOrDir: File): Pair<String, Long> {
+        val paths = RuntimePaths.from(this)
+        val id = RuntimePaths.normalizeInstanceId(instanceId)
+        val directory = paths.serverDirFor(id, installPath, create = false)
+        val result = com.sillyclient.runtime.InstanceExport.exportToFile(directory, targetFileOrDir) { count ->
+            pushLog("正在打包实例 · $count 项")
+        }
+        runtimeDiagnostic("export.done entries=${result.entryCount} bytes=${result.bytes} path=${result.destinationPath}")
+        return result.destinationPath to result.bytes
+    }
+
+    fun exportInstance(instanceId: String, installPath: String? = null, targetFileOrDir: File? = null): Pair<String, Long> {
+        requireNotNull(targetFileOrDir) { "必须指定导出目标位置" }
+        return exportInstanceToFile(instanceId, installPath, targetFileOrDir)
     }
 
     private fun uninstallInstanceFiles(instanceId: String, targetDir: File): Long {
@@ -2641,32 +2770,36 @@ class MainActivity : BridgeActivity() {
         // Remnants of earlier interrupted removals in this root are reclaimed
         // alongside; marked directories from any root are hidden by scanners.
         sweepRemovalRemnants(parent, instanceId)
-        // The visible removal is one marker write plus one registry update: the
-        // instance disappears from the console immediately and the physical
-        // delete streams in the background. A directory rename is deliberately
-        // NOT used: on emulated storage it makes MediaProvider re-index every
-        // descendant, which is slower than the delete itself.
-        operations.commit(operation) {
-            val marker = File(targetDir, InstanceRemoval.REMOVAL_MARKER)
-            require(ManagedFiles.isWithin(marker, targetDir)) { "Invalid removal marker path" }
-            marker.writeText(InstanceRemoval.MARKER_CONTENT)
-            paths.installLocations.unregisterAfterDelete(instanceId, targetDir)
-        }
-        runtimeDiagnostic("removal.disappeared")
+        // 定版删除事务（验收契约：身份标记最后删、文件删完才解除登记）：
+        // 目录已被手动删除时直接解除登记；存在时先删内容、身份标记垫底、
+        // 空目录与注册注销在同一 commit 临界区完成，任何一步失败都保留注册信息可重试。
+        // 前台服务+唤醒锁全程持有：进程被 ROM 冻结/杀死也绝不留下半删状态。
         KeepAlive.acquire(this)
-        Thread {
-            try {
-                NativeTreeRemoval(processSupervisor).remove(listOf(targetDir), parent, instanceId)
-                runtimeDiagnostic("removal.purged")
-            } catch (error: Exception) {
-                runtimeDiagnostic("removal.purge_failed type=${error.javaClass.simpleName} msg=${error.message?.take(160)}")
-            } finally {
-                runOnUiThread { KeepAlive.release(applicationContext) }
-            }
-        }.apply {
-            name = "SC-removal-purge"
-            isDaemon = true
-        }.start()
+        try {
+            com.sillyclient.runtime.InstanceRemoval.remove(
+                targetDir, paths.installLocations.allowedRootFor(targetDir),
+                verifyIdentity = {
+                    require(paths.installLocations.resolve(instanceId, targetDir.absolutePath).canonicalFile ==
+                        targetDir.canonicalFile)
+                },
+                ensureActive = { operations.ensureCurrent(operation) },
+                removeChildren = { children ->
+                    NativeTreeRemoval(processSupervisor).remove(
+                        children, targetDir, instanceId, operation,
+                        ensureActive = { operations.ensureCurrent(operation) },
+                        onProgress = { progress ->
+                            runtimeDiagnostic("removal.purge ${progress.removedEntries}")
+                            pushLog("正在删除实例文件 · ${progress.removedEntries} 项")
+                        }
+                    )
+                },
+                commit = { action -> operations.commit(operation, action) },
+                unregister = { paths.installLocations.unregisterAfterDelete(instanceId, targetDir) }
+            )
+            runtimeDiagnostic("removal.disappeared")
+        } finally {
+            KeepAlive.release(this)
+        }
         instanceRepository.invalidate(targetDir)
         val safeId = instanceId.replace(Regex("[^a-zA-Z0-9._-]"), "_")
         val coverFile = File(paths.bootstrapDir, "covers/$safeId.png")

@@ -977,6 +977,18 @@
           .ios-toggle-track-active {
             background: #34c759 !important;
             border-color: transparent !important;
+            -webkit-backdrop-filter: none !important;
+            backdrop-filter: none !important;
+            box-shadow:
+              0 0 12px rgba(52, 199, 89, 0.4),
+              0 0 4px rgba(52, 199, 89, 0.2) !important;
+          }
+
+          .ios-floating-menu.is-light .ios-toggle-track-active {
+            background: #34c759 !important;
+            border-color: transparent !important;
+            -webkit-backdrop-filter: none !important;
+            backdrop-filter: none !important;
             box-shadow:
               0 0 12px rgba(52, 199, 89, 0.4),
               0 0 4px rgba(52, 199, 89, 0.2) !important;
@@ -1176,7 +1188,7 @@
             -webkit-backdrop-filter: blur(var(--sf-blur, 0px)) saturate(var(--sf-sat, 1.1)) !important;
             backdrop-filter: blur(var(--sf-blur, 0px)) saturate(var(--sf-sat, 1.1)) !important;
             box-shadow:
-              inset 0 0 var(--sf-glow1-spread, 18px) 1px rgba(var(--sf-glow1-rgb, 228 186 204) / var(--sf-glow1, 0.11)),
+              inset 0 0 var(--sf-glow1-spread, 18px) 0 rgba(var(--sf-glow1-rgb, 228 186 204) / var(--sf-glow1, 0.11)),
               inset 0 0 var(--sf-glow2-spread, 40px) 0 rgba(var(--sf-glow2-rgb, 196 120 142) / var(--sf-glow2, 0.01)),
               0 var(--sf-sh-y, 3px) var(--sf-sh-blur, 12px) rgba(var(--sf-sh-rgb, 7 5 10) / var(--sf-sh-a, 0.075)) !important;
             transition: box-shadow 400ms cubic-bezier(0.22, 1, 0.36, 1) !important;
@@ -1251,14 +1263,14 @@
           /* 主题模式差异仅剩发光色；浓度/雾/遮罩统一由调试面板全局变量控制 */
           body[data-preview-light] .motion-instance-card {
             box-shadow:
-              inset 0 0 var(--sf-glow1-spread, 18px) 1px rgba(var(--sf-glow1-rgb, 96 84 76) / var(--sf-glow1, 0.11)),
+              inset 0 0 var(--sf-glow1-spread, 18px) 0 rgba(var(--sf-glow1-rgb, 96 84 76) / var(--sf-glow1, 0.11)),
               inset 0 0 var(--sf-glow2-spread, 40px) 0 rgba(var(--sf-glow2-rgb, 110 96 86) / var(--sf-glow2, 0.01)),
               0 var(--sf-sh-y, 3px) var(--sf-sh-blur, 12px) rgba(var(--sf-sh-rgb, 120 100 80) / var(--sf-sh-a, 0.075)) !important;
           }
 
           body[data-preview-light] .motion-instance-card:hover {
             box-shadow:
-              inset 0 0 var(--sf-glow1-spread, 18px) 1px rgba(var(--sf-glow1-rgb, 96 84 76) / var(--sf-glow1, 0.11)),
+              inset 0 0 var(--sf-glow1-spread, 18px) 0 rgba(var(--sf-glow1-rgb, 96 84 76) / var(--sf-glow1, 0.11)),
               inset 0 0 var(--sf-glow2-spread, 40px) 0 rgba(var(--sf-glow2-rgb, 110 96 86) / var(--sf-glow2, 0.01)),
               0 var(--sf-sh-y, 3px) var(--sf-sh-blur, 12px) rgba(var(--sf-sh-rgb, 120 100 80) / var(--sf-sh-a, 0.075)) !important;
           }
@@ -1266,14 +1278,14 @@
           /* 黑夜模式（indigo 系，与源码暗夜按钮 indigo-500 同族） */
           body[data-preview-dark-mode] .motion-instance-card {
             box-shadow:
-              inset 0 0 var(--sf-glow1-spread, 18px) 1px rgba(var(--sf-glow1-rgb, 151 171 255) / var(--sf-glow1, 0.11)),
+              inset 0 0 var(--sf-glow1-spread, 18px) 0 rgba(var(--sf-glow1-rgb, 151 171 255) / var(--sf-glow1, 0.11)),
               inset 0 0 var(--sf-glow2-spread, 40px) 0 rgba(var(--sf-glow2-rgb, 120 140 230) / var(--sf-glow2, 0.01)),
               0 var(--sf-sh-y, 3px) var(--sf-sh-blur, 12px) rgba(var(--sf-sh-rgb, 7 5 10) / var(--sf-sh-a, 0.075)) !important;
           }
 
           body[data-preview-dark-mode] .motion-instance-card:hover {
             box-shadow:
-              inset 0 0 var(--sf-glow1-spread, 18px) 1px rgba(var(--sf-glow1-rgb, 151 171 255) / var(--sf-glow1, 0.11)),
+              inset 0 0 var(--sf-glow1-spread, 18px) 0 rgba(var(--sf-glow1-rgb, 151 171 255) / var(--sf-glow1, 0.11)),
               inset 0 0 var(--sf-glow2-spread, 40px) 0 rgba(var(--sf-glow2-rgb, 120 140 230) / var(--sf-glow2, 0.01)),
               0 var(--sf-sh-y, 3px) var(--sf-sh-blur, 12px) rgba(var(--sf-sh-rgb, 7 5 10) / var(--sf-sh-a, 0.075)) !important;
           }
@@ -1588,6 +1600,38 @@
 
           @keyframes preview-wallpaper-out {
             to { opacity: 0; }
+          }
+
+          /* 管理菜单左侧卡片跟创建实例卡同一套雾面和边缘光。
+             不画 1px 内描边：zoom 后会被拉成细线。也不外扩投影，避免圆角外裁出深色断层。 */
+          .manage-panel-surface aside .motion-instance-card,
+          .manage-panel-surface aside .motion-instance-card:hover,
+          body[data-preview-light] .manage-panel-surface aside .motion-instance-card,
+          body[data-preview-light] .manage-panel-surface aside .motion-instance-card:hover,
+          body[data-preview-dark-mode] .manage-panel-surface aside .motion-instance-card,
+          body[data-preview-dark-mode] .manage-panel-surface aside .motion-instance-card:hover {
+            background-color: rgba(var(--sf-fog-rgb, 249 255 249) / var(--sf-fog, 0.02)) !important;
+            -webkit-backdrop-filter: blur(var(--sf-blur, 1px)) saturate(var(--sf-sat, 1.36)) !important;
+            backdrop-filter: blur(var(--sf-blur, 1px)) saturate(var(--sf-sat, 1.36)) !important;
+            box-shadow:
+              inset 0 0 var(--sf-glow1-spread, 23px) 0 rgba(var(--sf-glow1-rgb, 36 18 76) / var(--sf-glow1, 0.03)),
+              inset 0 0 var(--sf-glow2-spread, 53px) 0 rgba(var(--sf-glow2-rgb, 91 79 118) / var(--sf-glow2, 0.14)) !important;
+          }
+
+          .manage-panel-surface aside .motion-instance-card::after,
+          body[data-preview-light] .manage-panel-surface aside .motion-instance-card::after,
+          body[data-preview-dark-mode] .manage-panel-surface aside .motion-instance-card::after {
+            background: transparent !important;
+          }
+
+          body[data-preview-light] .manage-panel-surface.is-light aside .motion-instance-card,
+          body[data-preview-light] .manage-panel-surface.is-light aside .motion-instance-card:hover,
+          .manage-panel-surface.is-light aside .motion-instance-card,
+          .manage-panel-surface.is-light aside .motion-instance-card:hover {
+            background-color: rgba(var(--sf-fog-rgb, 171 168 169) / var(--sf-fog, 0.02)) !important;
+            box-shadow:
+              inset 0 0 var(--sf-glow1-spread, 41px) 0 rgba(var(--sf-glow1-rgb, 255 255 255) / var(--sf-glow1, 0.48)),
+              inset 0 0 var(--sf-glow2-spread, 81px) 0 rgba(var(--sf-glow2-rgb, 255 255 255) / var(--sf-glow2, 0.27)) !important;
           }
 
         `;
@@ -2649,6 +2693,31 @@
           }
         };
         migrateSfDraftsToApprovedBaseline();
+
+        // 酒红底板已否决。只把动态草稿的遮罩色和渐变色拉回基线一次，其它手调不动。
+        const SF_DYNAMIC_PLATE_KEY = "sillyclient.sfTuningPreset.dynamicPlate";
+        const clearDynamicWinePlate = () => {
+          let applied = null;
+          try {
+            applied = window.localStorage.getItem(SF_DYNAMIC_PLATE_KEY);
+          } catch (err) {
+            return;
+          }
+          if (applied === "clear-20261014") return;
+          const raw = readSfJson(SF_DRAFT_KEYS.dynamic);
+          if (raw && raw.values && typeof raw.values === "object") {
+            raw.values.coverRgb = [18, 16, 20];
+            raw.values.gradRgb = [30, 15, 24];
+            raw.updatedAt = Date.now();
+            writeSfJson(SF_DRAFT_KEYS.dynamic, raw);
+          }
+          try {
+            window.localStorage.setItem(SF_DYNAMIC_PLATE_KEY, "clear-20261014");
+          } catch (err) {
+            /* 存储不可用时仍回退到内置默认 */
+          }
+        };
+        clearDynamicWinePlate();
 
         const sfDraftCache = Object.create(null);
         const sfDraftSaveTimers = Object.create(null);

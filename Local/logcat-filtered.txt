@@ -1,0 +1,152 @@
+
+10-13 17:11:21.916  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:21.923  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:21.932  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:21.939  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:21.949  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:21.955  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:21.970  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:21.974  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:21.980  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:21.993  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:21.998  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:22.005  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:22.014  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:22.022  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:22.033  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:22.041  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:22.047  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:22.056  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:22.069  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:22.074  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:22.081  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:22.093  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:22.097  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:22.113  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:22.124  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:22.132  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:22.139  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:22.156  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:22.167  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:22.181  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:22.191  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:24.430  1331  1331 I VRI[MainActivity]: DisplayState - old: 2, new: 1
+10-13 17:11:24.440  2443  4289 W SettingsProvider: java.lang.SecurityException: Failed to find provider settings for user 999; expected to find a valid ContentProvider for this authority
+10-13 17:11:24.583  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:24.655  1331  1331 I VRI[MainActivity]: DisplayState - old: 1, new: 3
+10-13 17:11:24.662  2443  4289 W SettingsProvider: java.lang.SecurityException: Failed to find provider settings for user 999; expected to find a valid ContentProvider for this authority
+10-13 17:11:24.662  2443  4289 W SettingsProvider: java.lang.SecurityException: Failed to find provider settings for user 999; expected to find a valid ContentProvider for this authority
+10-13 17:11:24.663  2443  4289 W SettingsProvider: java.lang.SecurityException: Failed to find provider settings for user 999; expected to find a valid ContentProvider for this authority
+10-13 17:11:29.643  1331  1331 I VRI[MainActivity]: DisplayState - old: 3, new: 4
+10-13 17:11:32.383  2443  6088 W ActivityManager: pid 22317 com.tencent.mm:push sent binder code 1 with flags 0 to frozen apps and got error -2147483646
+10-13 17:11:33.654  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:33.654  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:33.655  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:33.669  2443  4289 W SettingsProvider: java.lang.SecurityException: Failed to find provider settings for user 999; expected to find a valid ContentProvider for this authority
+10-13 17:11:33.671  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:33.687  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:33.688  2443  4289 W SettingsProvider: java.lang.SecurityException: Failed to find provider settings for user 999; expected to find a valid ContentProvider for this authority
+10-13 17:11:33.689  2443  4289 W SettingsProvider: java.lang.SecurityException: Failed to find provider settings for user 999; expected to find a valid ContentProvider for this authority
+10-13 17:11:33.704  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:33.716  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:33.782  1331  1331 I VRI[MainActivity]: DisplayState - old: 4, new: 2
+10-13 17:11:34.872  2443  4289 W SettingsProvider: java.lang.SecurityException: Failed to find provider settings for user 999; expected to find a valid ContentProvider for this authority
+10-13 17:11:41.129  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.142  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.146  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.153  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.162  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.170  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.179  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.184  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.192  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.203  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.211  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.218  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.227  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.236  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.242  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.255  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.262  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.268  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.276  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.285  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.293  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.302  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.312  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.319  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.325  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.338  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.344  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.352  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.362  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.368  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.376  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.386  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.393  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.404  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.410  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.420  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.428  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.435  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.453  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.459  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.464  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.468  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.476  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.501  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.505  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.511  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.511  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.519  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.526  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.543  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.549  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.553  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.561  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.567  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.574  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.587  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.593  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.606  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.613  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.619  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.625  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.634  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.646  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.651  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.669  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.674  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.685  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.691  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.699  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.701  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.709  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.716  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.726  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.737  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.741  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.763  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.773  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.786  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:41.791  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:44.028  1331  1331 I VRI[MainActivity]: DisplayState - old: 2, new: 1
+10-13 17:11:44.042  2443  4289 W SettingsProvider: java.lang.SecurityException: Failed to find provider settings for user 999; expected to find a valid ContentProvider for this authority
+10-13 17:11:44.205  2443  4662 W ActivityManager: pid 2443 system sent binder code 31101 with flags 0 to frozen apps and got error -74
+10-13 17:11:44.262  1331  1331 I VRI[MainActivity]: DisplayState - old: 1, new: 3
+10-13 17:11:44.287  2443  4289 W SettingsProvider: java.lang.SecurityException: Failed to find provider settings for user 999; expected to find a valid ContentProvider for this authority
+10-13 17:11:44.301  2443  4289 W SettingsProvider: java.lang.SecurityException: Failed to find provider settings for user 999; expected to find a valid ContentProvider for this authority
+10-13 17:11:44.302  2443  4289 W SettingsProvider: java.lang.SecurityException: Failed to find provider settings for user 999; expected to find a valid ContentProvider for this authority
+10-13 17:11:49.251  1331  1331 I VRI[MainActivity]: DisplayState - old: 3, new: 4
+10-13 17:12:28.850  1750  8316 E ANDR-PERF-MPCTL: ANDR-PERF-MPCTL: exception_recovery_poll_fun() 1497: exception_recovery_poll_fun
+10-13 17:12:30.559  3120  3120 I adbd    : in ShellService: dumpsys package com.sillyclient
+10-13 17:12:30.920 13387 13390 I artd    : GetBestInfo: odex next to the dex file (/data/app/~~0srVmG3xVlOG2tMRqQL0xA==/com.sillyclient-_agvu8840cPycA5fEprNrA==/oat/arm64/base.odex) is kOatUpToDate with filter 'speed-profile' executable 'false'
+10-13 17:12:30.923 13387 13391 I artd    : GetBestInfo: odex next to the dex file (/data/app/~~0srVmG3xVlOG2tMRqQL0xA==/com.sillyclient-_agvu8840cPycA5fEprNrA==/oat/arm64/base.odex) is kOatUpToDate with filter 'speed-profile' executable 'false'
+10-13 17:12:31.380 22317 22710 E IPCThreadState: Binder transaction failure. id: 46918625, BR_*: 29202, error: 0 (Success)
+10-13 17:12:31.383  2443  4246 W ActivityManager: pid 22317 com.tencent.mm:push sent binder code 1 with flags 0 to frozen apps and got error -2147483646
+10-13 17:12:44.289  2443  4651 W MiuiMemoryService: com.sillyclient changed, compaction skipped.
+10-13 17:12:55.660 13419 13482 E MiFluencyUtil: java.lang.NoSuchMethodException: android.inputmethodservice.InputMethodService.isInternalTestMode [class android.content.Context]
+10-13 17:12:55.663 13419 13484 W System.err: java.lang.NullPointerException: Attempt to invoke virtual method 'void java.net.URLConnection.setConnectTimeout(int)' on a null object reference
+10-13 17:12:55.696 13419 13471 D SplitManager: java.lang.NoSuchMethodException: android.inputmethodservice.InputMethodService.updateImeStyle [int, int]
+10-13 17:13:06.088  3120  3120 I adbd    : in ShellService: export ANDROID_LOG_TAGS=''; exec logcat '-d' '-s' 'SillyClient:*' 'MainActivity:*' 'AndroidRuntime:E' '*:F'
+

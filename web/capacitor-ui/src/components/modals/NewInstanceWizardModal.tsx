@@ -89,18 +89,18 @@ function InfoBadgeButton({
           : readTitle || "点击查看说明"
       }
       className={cn(
-        "motion-control relative w-4 h-4 rounded-full flex items-center justify-center transition-all duration-300",
+        "motion-control relative w-4 h-4 rounded-full flex items-center justify-center transition-colors duration-200",
         isUnread
           ? isLight
-            ? "bg-rose-500/10 border border-rose-500/40 text-rose-600 hover:bg-rose-500/20 shadow-[0_0_8px_rgba(244,63,94,0.22)]"
-            : "bg-rose-500/15 border border-rose-500/40 text-rose-400 hover:bg-rose-500/25 shadow-[0_0_8px_rgba(244,63,94,0.30)]"
+            ? "bg-rose-500/10 border border-rose-500/30 text-rose-600/75 hover:text-rose-600"
+            : "bg-rose-500/15 border border-rose-500/30 text-rose-400/75 hover:text-rose-400"
           : isOpen
           ? isLight
             ? "bg-black/10 text-[#1a1625]"
             : "bg-white/15 text-white"
           : isLight
-          ? "text-[#1a1625]/30 hover:text-[#1a1625]/70 hover:bg-black/5"
-          : "text-white/30 hover:text-white/70 hover:bg-white/5"
+          ? "text-[#1a1625]/40 hover:text-[#1a1625]/85"
+          : "text-white/40 hover:text-white/85"
       )}
     >
       {isUnread ? (
@@ -260,6 +260,8 @@ export const NewInstanceWizardModal: React.FC<NewInstanceWizardModalProps> = ({
   const importTakeoverRef = useRef<HTMLDivElement>(null);
   const [wizardHeight, setWizardHeight] = useState<number | null>(null);
   const [releaseFetchError, setReleaseFetchError] = useState<string | null>(null);
+  const wizardBodyRef = useRef<HTMLDivElement>(null);
+  const [wizardBodyFade, setWizardBodyFade] = useState({ top: false, bottom: false });
 
   const [showAccessModeInfo, setShowAccessModeInfo] = useState(false);
   const [hasReadAccessMode, setHasReadAccessMode] = useState(false);
@@ -300,6 +302,35 @@ export const NewInstanceWizardModal: React.FC<NewInstanceWizardModalProps> = ({
     isOpen,
   ]);
 
+  const syncWizardBodyFade = () => {
+    const node = wizardBodyRef.current;
+    if (!node) return;
+    const top = node.scrollTop > 2;
+    const bottom = node.scrollHeight - node.clientHeight - node.scrollTop > 2;
+    setWizardBodyFade((current) => (
+      current.top === top && current.bottom === bottom ? current : { top, bottom }
+    ));
+  };
+
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+    syncWizardBodyFade();
+    const node = wizardBodyRef.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => syncWizardBodyFade());
+    observer.observe(node);
+    Array.from(node.children).forEach((child) => observer.observe(child));
+    return () => observer.disconnect();
+  }, [
+    isOpen,
+    newInstanceMode,
+    wizardHeight,
+    newInstanceError,
+    newInstanceCompanionPresetEnabled,
+    newRemoteAuthEnabled,
+    showAccessModeInfo,
+  ]);
+
   const handleSwitchMode = (mode: WizardMode) => {
     if (mode === newInstanceMode) return;
     if (wizardContainerRef.current) {
@@ -310,10 +341,14 @@ export const NewInstanceWizardModal: React.FC<NewInstanceWizardModalProps> = ({
 
   if (!isOpen && !isClosing) return null;
 
+  const wizardBodyMask = wizardBodyFade.top || wizardBodyFade.bottom
+    ? `linear-gradient(to bottom, ${wizardBodyFade.top ? "transparent" : "#000"} 0, #000 36px, #000 calc(100% - 36px), ${wizardBodyFade.bottom ? "transparent" : "#000"} 100%)`
+    : undefined;
+
   return (
     <div
       className={cn(
-        "ios-task-surface fixed rounded-2xl flex flex-col overflow-hidden backdrop-blur-[40px] saturate-180",
+        "ios-task-surface reading-flat-surface fixed rounded-2xl flex flex-col overflow-hidden backdrop-blur-[40px] saturate-180",
         glassBg,
         isLight && "is-light",
         isClosing ? "animate-clone-panel-exit" : "animate-clone-panel"
@@ -344,7 +379,20 @@ export const NewInstanceWizardModal: React.FC<NewInstanceWizardModalProps> = ({
         </span>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-5 space-y-5 scrollbar-hidden">
+      <div
+        style={{
+          flex: "1 1 auto",
+          WebkitMaskImage: wizardBodyMask,
+          maskImage: wizardBodyMask,
+        }}
+        className="flex min-h-0 flex-col overflow-hidden"
+      >
+      <div
+        ref={wizardBodyRef}
+        onScroll={syncWizardBodyFade}
+        className="min-h-0 overflow-y-auto p-5 space-y-5 scrollbar-hidden"
+        style={{ flex: "1 1 auto" }}
+      >
         {/* 实例名称 */}
         <NewInstanceField label="名称" isLight={isLight}>
           <input
@@ -371,35 +419,23 @@ export const NewInstanceWizardModal: React.FC<NewInstanceWizardModalProps> = ({
           >
             实例模式
           </div>
-          <div className="flex gap-2">
+          <div className="ios-choice-track" role="group" aria-label="实例模式">
             <button
+              type="button"
               onClick={() => handleSwitchMode("local")}
               aria-pressed={newInstanceMode === "local"}
               className={cn(
-                "ios-choice-control motion-control flex-1 h-9 rounded-xl text-xs font-medium border transition-colors duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
-                newInstanceMode === "local"
-                  ? isLight
-                    ? "bg-[#1a1625]/8 border-[#1a1625]/15 text-[#1a1625]"
-                    : "bg-white/10 border-white/15 text-white"
-                  : isLight
-                  ? "bg-transparent border-black/[0.06] text-[#1a1625]/35 hover:border-black/12 hover:text-[#1a1625]/55"
-                  : "bg-transparent border-white/[0.06] text-white/35 hover:border-white/12 hover:text-white/55"
+                "ios-choice-control py-2 text-xs font-medium border flex items-center justify-center gap-1.5 transition-colors duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]"
               )}
             >
               本地实例
             </button>
             <button
+              type="button"
               onClick={() => handleSwitchMode("remote")}
               aria-pressed={newInstanceMode === "remote"}
               className={cn(
-                "ios-choice-control motion-control flex-1 h-9 rounded-xl text-xs font-medium border transition-colors duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
-                newInstanceMode === "remote"
-                  ? isLight
-                    ? "bg-[#1a1625]/8 border-[#1a1625]/15 text-[#1a1625]"
-                    : "bg-white/10 border-white/15 text-white"
-                  : isLight
-                  ? "bg-transparent border-black/[0.06] text-[#1a1625]/35 hover:border-black/12 hover:text-[#1a1625]/55"
-                  : "bg-transparent border-white/[0.06] text-white/35 hover:border-white/12 hover:text-white/55"
+                "ios-choice-control py-2 text-xs font-medium border flex items-center justify-center gap-1.5 transition-colors duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]"
               )}
             >
               远程连接
@@ -442,10 +478,10 @@ export const NewInstanceWizardModal: React.FC<NewInstanceWizardModalProps> = ({
                 <button
                   onClick={onPickInstallFolder}
                   className={cn(
-                    "motion-control h-9 px-3 rounded-xl text-[11px] font-medium border flex-shrink-0",
+                    "flat-capsule motion-control h-9 px-3 rounded-full text-[11px] font-medium border-0 flex-shrink-0",
                     isLight
-                      ? "border-black/[0.08] text-[#1a1625]/50 hover:bg-black/[0.04]"
-                      : "border-white/[0.08] text-white/50 hover:bg-white/[0.04]"
+                      ? "text-[#1a1625]/60 hover:text-[#1a1625]"
+                      : "text-white/60 hover:text-white"
                   )}
                 >
                   浏览
@@ -525,10 +561,10 @@ export const NewInstanceWizardModal: React.FC<NewInstanceWizardModalProps> = ({
                     }
                   }}
                   className={cn(
-                    "motion-control h-9 px-3 rounded-xl text-[11px] font-medium border flex-shrink-0",
+                    "flat-capsule motion-control h-9 px-3 rounded-full text-[11px] font-medium border-0 flex-shrink-0",
                     isLight
-                      ? "border-black/[0.08] text-[#1a1625]/50 hover:bg-black/[0.04]"
-                      : "border-white/[0.08] text-white/50 hover:bg-white/[0.04]"
+                      ? "text-[#1a1625]/60 hover:text-[#1a1625]"
+                      : "text-white/60 hover:text-white"
                   )}
                 >
                   {newInstanceLocalZip ? "更换" : "导入 ZIP"}
@@ -585,11 +621,11 @@ export const NewInstanceWizardModal: React.FC<NewInstanceWizardModalProps> = ({
                 isLight ? "border-black/[0.04]" : "border-white/[0.04]"
               )}
             >
-              <div className="flex items-center justify-between gap-4">
+              <div className="setting-row flex items-center justify-between gap-4">
                 <div>
                   <div
                     className={cn(
-                      "text-xs font-medium",
+                      "setting-label text-xs font-medium",
                       isLight ? "text-[#1a1625]/70" : "text-white/70"
                     )}
                   >
@@ -681,6 +717,7 @@ export const NewInstanceWizardModal: React.FC<NewInstanceWizardModalProps> = ({
       </div>
 
       </div>
+      </div>
 
       {/* 底部按钮 */}
       <div
@@ -710,11 +747,11 @@ export const NewInstanceWizardModal: React.FC<NewInstanceWizardModalProps> = ({
               onClose();
             }}
             className={cn(
-              "motion-control px-4 h-8 rounded-full text-xs font-medium transition-all border",
+              "flat-capsule motion-control px-4 h-8 rounded-full text-xs font-medium border-0",
               "disabled:pointer-events-none disabled:opacity-40",
               isLight
-                ? "bg-black/[0.04] border-black/[0.06] text-[#1a1625]/60 hover:bg-black/[0.08]"
-                : "bg-white/[0.08] border-white/[0.06] text-white/60 hover:bg-white/[0.14]"
+                ? "text-[#1a1625]/60 hover:text-[#1a1625]"
+                : "text-white/60 hover:text-white"
             )}
           >
             取消
@@ -723,10 +760,10 @@ export const NewInstanceWizardModal: React.FC<NewInstanceWizardModalProps> = ({
             onClick={createInstance}
             disabled={isCreatingInstance}
             className={cn(
-              "motion-control px-5 h-8 rounded-full text-xs font-semibold disabled:pointer-events-none disabled:opacity-50 flex items-center gap-1.5 transition-all border",
+              "flat-capsule motion-control px-5 h-8 rounded-full text-xs font-semibold disabled:pointer-events-none disabled:opacity-50 flex items-center gap-1.5 border-0",
               isLight
-                ? "bg-[#1a1625] border-[#1a1625] text-white hover:bg-[#1a1625]/90 active:bg-[#1a1625]/80 shadow-[0_2px_8px_rgba(0,0,0,0.10)]"
-                : "bg-white border-white text-[#14101e] hover:bg-white/90 active:bg-white/80 shadow-[0_2px_10px_rgba(255,255,255,0.12)]"
+                ? "text-[#1a1625]/70 hover:text-[#1a1625]"
+                : "text-white/70 hover:text-white"
             )}
           >
             {isCreatingInstance && (

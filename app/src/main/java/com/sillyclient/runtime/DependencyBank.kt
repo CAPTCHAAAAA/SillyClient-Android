@@ -2,34 +2,20 @@ package com.sillyclient.runtime
 
 import org.json.JSONObject
 import java.io.File
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 
 /**
- * One shared dependency tree per instance root, stored at `<root>/node_modules`.
+ * 已退役的共享依赖库（`<根>/node_modules`）的唯一遗物：读取银行标记。
  *
- * Node and webpack resolve packages by walking up from the instance directory,
- * so placing the tree one level above the instances makes every instance
- * resolve it with zero launch wiring — this is the 1.9.1 model with today's
- * safeguards: the bank carries a marker naming the lock key it satisfies,
- * [covers] verifies it cheaply, and the launcher re-materializes it from the
- * bundled archive when it is missing, incomplete, or stale. Instances that
- * still carry their own node_modules keep working: their local tree wins and
- * the bank is simply ignored.
- *
- * Traps already paid for, do not reintroduce: renames of populated trees are
- * banned on shared storage (MediaProvider re-indexes every descendant), and
- * extraction into the public tree must use the parallel tar groups — the
- * measured floor is ~45 s for the 20k-file tree, paid once per root.
+ * 共享库模型会向用户选择的存放文件夹写入 node_modules，污染相册/文档等日常路径，
+ * 已被"实例自持"模型取代（每个实例目录内自带完整 node_modules）。本对象只保留
+ * 读取能力，供启动自愈后的旧库清退（sweep）识别"哪些 node_modules 是我们留下的"：
+ * 没有银行标记的目录绝不动。
  */
 object DependencyBank {
     internal const val DIR_NAME = "node_modules"
     internal const val MARKER = ".sillyclient-bank.json"
 
     data class State(val root: File, val key: String, val createdAt: Long)
-
-    fun bankDirectory(instanceOrRootDirectory: File): File =
-        File(instanceOrRootDirectory.parentFile ?: instanceOrRootDirectory, DIR_NAME)
 
     fun markerFile(bankDirectory: File): File = File(bankDirectory, MARKER)
 
@@ -47,26 +33,4 @@ object DependencyBank {
         }
     }
 
-    fun write(bankDirectory: File, key: String) {
-        require(key.matches(Regex("[0-9a-f]{64}"))) { "Invalid dependency bank key" }
-        val document = JSONObject()
-            .put("key", key)
-            .put("complete", true)
-            .put("createdAt", System.currentTimeMillis())
-        val staging = File(bankDirectory, "$MARKER.tmp")
-        Files.write(staging.toPath(), document.toString().toByteArray(Charsets.UTF_8))
-        Files.move(staging.toPath(), markerFile(bankDirectory).toPath(),
-            StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-    }
-
-    /** Complete only when the bank names the same lock key as the instance. */
-    fun covers(instanceDirectory: File, instanceLockKey: String?): Boolean {
-        if (instanceLockKey == null) return false
-        val bank = bankDirectory(instanceDirectory)
-        val state = read(bank) ?: return false
-        // The bank is the node_modules tree itself and carries no manifest; the
-        // instance's package.json defines the dependency set to verify against.
-        return state.key == instanceLockKey &&
-            DependencyInstaller.hasRequiredPackages(instanceDirectory, bank)
-    }
 }

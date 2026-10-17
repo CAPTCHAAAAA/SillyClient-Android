@@ -13,6 +13,7 @@ class InstanceInstaller(
     private val serversRoot: File,
     private val installLocations: InstallLocationRegistry? = null,
     private val dependenciesComplete: (File) -> Boolean = { File(it, "node_modules").isDirectory },
+    private val dependenciesDiagnosis: (File) -> String = { "node_modules 缺失或依赖不完整" },
     private val removeStaging: (File, File, File, () -> Unit) -> Boolean = { directory, root, _, verify ->
         verify()
         ManagedFiles.deleteDirectory(directory, root)
@@ -24,7 +25,8 @@ class InstanceInstaller(
         extract: (File) -> Boolean,
         installDependencies: (File) -> Boolean,
         commit: (() -> Unit) -> Unit,
-        instanceId: String? = null
+        instanceId: String? = null,
+        allowFreshInstall: Boolean = true
     ) {
         ensureActive()
         val id = instanceId ?: target.name
@@ -43,6 +45,19 @@ class InstanceInstaller(
             commit { installLocations?.registerCommitted(id, target) }
             return
         }
+        // 启动既有实例绝不携带创建意图：目标缺失/损坏时拒绝静默全新安装顶替用户数据，
+        // 只给出清晰中文引导（创建流程恒为 allowFreshInstall=true，不受此闸门影响）。
+        if (!allowFreshInstall) {
+            if (exists(target)) throw IllegalStateException(
+                "实例安装目录已损坏（缺少 server.js）：${target.absolutePath}。" +
+                    "为保护你的数据，本次启动未执行任何重装；请通过「导入数据（ZIP）」恢复，或卸载后重新创建实例"
+            )
+            throw IllegalStateException(
+                "实例安装目录不存在：${target.absolutePath}。" +
+                    "目录可能已被移动或删除，为防数据被静默顶替，本次启动已拒绝自动全新安装；" +
+                    "若确认数据已丢失，请卸载此实例后重新创建"
+            )
+        }
         requireEmptyOrMissing(target)
         val originalTarget = if (exists(target)) attributes(target) else null
         val parent = requireNotNull(target.absoluteFile.parentFile) { "Instance has no parent directory" }
@@ -60,6 +75,10 @@ class InstanceInstaller(
                 StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS).use {
                 it.write(owner.toByteArray(Charsets.US_ASCII))
             }
+            // .nomedia 必须在批量写入前就位：实例整树退出 MediaStore 扫描。
+            // 2 万级依赖文件写共享存储会触发 MediaProvider 逐文件重索引（实测 111% CPU ×
+            // 120s、42°C），它是创建期发热与卡顿的主因；同时杜绝实例媒体混进系统相册。
+            File(staging, ".nomedia").writeBytes(ByteArray(0))
         } catch (error: Exception) {
             try {
                 if (sameDirectory(staging, identity)) Files.delete(staging.toPath())
@@ -159,8 +178,10 @@ class InstanceInstaller(
         val installed = installDependencies(directory)
         check(installed) { "依赖安装被拒绝；实例数据已保留" }
         check(ManagedFiles.isWithin(dependencies, directory)) { "依赖目录逃逸实例范围；实例数据已保留" }
-        check(dependenciesComplete(directory)) {
-            "依赖完整性校验未通过（未找到本实例可解析的依赖）；实例数据已保留"
+        if (!dependenciesComplete(directory)) {
+            throw IllegalStateException(
+                "依赖完整性校验未通过（${dependenciesDiagnosis(directory)}）；实例数据已保留"
+            )
         }
         ensureActive()
         commit {

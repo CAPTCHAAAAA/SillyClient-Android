@@ -30,9 +30,8 @@ data class RuntimePaths(
             legacyServersDir,
             customRootsProvider,
             dependenciesComplete = { directory ->
-                DependencyInstaller.hasRequiredPackages(directory) ||
-                    DependencyBank.covers(directory, DependencyArchive(File(tarvenHome, "dependency-archives"))
-                        .lockKey(File(directory, "package-lock.json")))
+                // 实例自持：依赖完整性只看实例目录自身的 node_modules，不再有共享库兜底。
+                DependencyInstaller.hasRequiredPackages(directory)
             }
         )
     }
@@ -132,6 +131,7 @@ data class RuntimePaths(
         return target
     }
 
-    fun launchDirectoryFor(instanceId: String, requestedPath: String?, installPathMode: String = "exact", displayName: String? = null): File =
-        installLocations.resolve(instanceId, requestedPath, installPathMode, displayName)
+    fun launchDirectoryFor(instanceId: String, requestedPath: String? = null, installPathMode: String = "exact", displayName: String? = null,
+        forCreation: Boolean = false): File =
+        installLocations.resolve(instanceId, requestedPath, installPathMode, displayName, forCreation)
 }

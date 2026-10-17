@@ -181,33 +181,64 @@ object PreinstalledExtensionInstaller {
         extension: Extension, destination: File,
         operations: OperationCoordinator, operation: OperationCoordinator.Operation
     ) {
-        val connection = URL(extension.archiveUrl).openConnection() as HttpURLConnection
-        connection.connectTimeout = 20_000
-        connection.readTimeout = 30_000
-        connection.instanceFollowRedirects = false
-        connection.setRequestProperty("User-Agent", "SillyClient")
-        operations.onCancel(operation) {
-            Thread({ connection.disconnect() }, "SillyClient-cancel-extension").apply { isDaemon = true }.start()
-        }.use {
-            try {
-                operations.ensureCurrent(operation)
-                check(connection.responseCode == 200) { "扩展下载失败 (HTTP ${connection.responseCode})" }
-                if (connection.contentLengthLong >= 0) check(connection.contentLengthLong <= MAX_ARCHIVE) { "扩展下载超过大小上限" }
-                connection.inputStream.use { input ->
-                    destination.outputStream().use { output ->
-                        val buffer = ByteArray(65_536)
-                        var total = 0L
-                        var count: Int
-                        while (input.read(buffer).also { count = it } >= 0) {
-                            operations.ensureCurrent(operation)
-                            total += count
-                            check(total <= MAX_ARCHIVE && total <= extension.bytes) { "扩展下载超过大小上限" }
-                            output.write(buffer, 0, count)
+        downloadFromMirrors(
+            listOf(
+                extension.archiveUrl,
+                "https://ghfast.top/${extension.archiveUrl}",
+                "https://gh-proxy.com/${extension.archiveUrl}",
+                "https://ghproxy.net/${extension.archiveUrl}"
+            ),
+            extension.bytes, destination, operations, operation
+        )
+    }
+
+    /** Try each candidate source in order; the first complete response wins. */
+    internal fun downloadFromMirrors(
+        candidates: List<String>, expectedBytes: Long, destination: File,
+        operations: OperationCoordinator, operation: OperationCoordinator.Operation
+    ) {
+        var lastError: Throwable? = null
+        for (urlStr in candidates) {
+            operations.ensureCurrent(operation)
+            val connection = URL(urlStr).openConnection() as HttpURLConnection
+            connection.connectTimeout = 20_000
+            connection.readTimeout = 30_000
+            connection.instanceFollowRedirects = true
+            connection.setRequestProperty("User-Agent", "SillyClient")
+            var succeeded = false
+            operations.onCancel(operation) {
+                Thread({ connection.disconnect() }, "SillyClient-cancel-extension").apply { isDaemon = true }.start()
+            }.use {
+                try {
+                    operations.ensureCurrent(operation)
+                    val code = connection.responseCode
+                    if (code in 200..299) {
+                        if (connection.contentLengthLong >= 0) check(connection.contentLengthLong <= MAX_ARCHIVE) { "扩展下载超过大小上限" }
+                        connection.inputStream.use { input ->
+                            destination.outputStream().use { output ->
+                                val buffer = ByteArray(65_536)
+                                var total = 0L
+                                var count: Int
+                                while (input.read(buffer).also { count = it } >= 0) {
+                                    operations.ensureCurrent(operation)
+                                    total += count
+                                    check(total <= MAX_ARCHIVE && total <= expectedBytes) { "扩展下载超过大小上限" }
+                                    output.write(buffer, 0, count)
+                                }
+                            }
                         }
+                        succeeded = true
+                    } else {
+                        lastError = IllegalStateException("扩展下载失败 (HTTP $code): $urlStr")
                     }
-                }
-            } finally { connection.disconnect() }
+                } catch (t: Throwable) {
+                    operations.ensureCurrent(operation)
+                    lastError = t
+                } finally { connection.disconnect() }
+            }
+            if (succeeded) return
         }
+        throw lastError ?: IllegalStateException("扩展下载失败：所有来源均不可用")
     }
 
     internal fun extractVerifiedArchive(

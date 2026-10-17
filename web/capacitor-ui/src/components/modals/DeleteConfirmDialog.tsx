@@ -1,5 +1,5 @@
 import React from "react";
-import { X, AlertTriangle, LoaderCircle } from "lucide-react";
+import { X, AlertTriangle } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { LAYERS } from "../../constants/layers";
 import { LayerBackdrop } from "../common/LayerBackdrop";
@@ -76,8 +76,8 @@ export const DeleteConfirmDialog: React.FC<DeleteConfirmDialogProps> = ({
             className={cn(
               "rounded-lg p-1.5 transition-colors disabled:pointer-events-none disabled:opacity-30",
               isLight
-                ? "text-[#1a1625]/30 hover:bg-black/5"
-                : "text-white/30 hover:bg-white/5"
+                ? "text-[#1a1625]/40 hover:text-[#1a1625]/85"
+                : "text-white/40 hover:text-white/85"
             )}
           >
             <X className="h-4 w-4" />
@@ -112,6 +112,37 @@ export const DeleteConfirmDialog: React.FC<DeleteConfirmDialogProps> = ({
               此操作无法撤销
             </p>
           )}
+          {isDeleting && (
+            <div className="mt-4">
+              <div
+                className={cn(
+                  "h-[3px] overflow-hidden rounded-full",
+                  isLight ? "bg-black/[0.06]" : "bg-white/[0.08]"
+                )}
+                role="progressbar"
+                aria-valuetext={instance.type === "local" ? "正在删除实例文件" : "正在移除连接"}
+              >
+                <div
+                  className={cn(
+                    "delete-progress-fill relative h-full overflow-hidden rounded-full",
+                    isLight
+                      ? "bg-[#8b3a52]"
+                      : "bg-gradient-to-r from-[#7a3245] via-[#a04860] to-[#8b3a52]"
+                  )}
+                >
+                  <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-[shimmer_1.5s_ease-in-out_infinite]" />
+                </div>
+              </div>
+              <p
+                className={cn(
+                  "mt-2 text-[12px] font-medium",
+                  isLight ? "text-[#1a1625]/50" : "text-white/50"
+                )}
+              >
+                {instance.type === "local" ? "正在删除实例文件" : "正在移除连接"}
+              </p>
+            </div>
+          )}
           {deleteError && (
             <div
               className={cn(
@@ -137,10 +168,10 @@ export const DeleteConfirmDialog: React.FC<DeleteConfirmDialogProps> = ({
             disabled={isDeleting}
             onClick={onClose}
             className={cn(
-              "motion-control h-8 rounded-full px-4 text-xs font-medium transition-all border disabled:pointer-events-none disabled:opacity-40",
+              "flat-capsule motion-control h-8 rounded-full px-4 text-xs font-medium border-0 disabled:pointer-events-none disabled:opacity-40",
               isLight
-                ? "bg-black/[0.04] border-black/[0.06] text-[#1a1625]/60 hover:bg-black/[0.08]"
-                : "bg-white/[0.08] border-white/[0.06] text-white/60 hover:bg-white/[0.14]"
+                ? "text-[#1a1625]/60 hover:text-[#1a1625]"
+                : "text-white/60 hover:text-white"
             )}
           >
             取消
@@ -150,15 +181,12 @@ export const DeleteConfirmDialog: React.FC<DeleteConfirmDialogProps> = ({
             disabled={isDeleting}
             onClick={onConfirm}
             className={cn(
-              "motion-control flex h-8 items-center justify-center gap-1.5 rounded-full px-5 text-xs font-semibold disabled:pointer-events-none disabled:opacity-50 transition-all border",
+              "flat-capsule motion-control flex h-8 items-center justify-center gap-1.5 rounded-full px-5 text-xs font-semibold border-0 disabled:pointer-events-none disabled:opacity-50",
               isLight
-                ? "bg-red-500/10 border-red-500/15 text-red-600 hover:bg-red-500/20 active:bg-red-500/25"
-                : "bg-red-500/20 border-red-500/25 text-red-300 hover:bg-red-500/30 active:bg-red-500/35"
+                ? "text-red-900/60 hover:text-red-900"
+                : "text-red-300/75 hover:text-red-200"
             )}
           >
-            {isDeleting && (
-              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-            )}
             {isDeleting ? "正在删除" : "删除"}
           </button>
         </div>

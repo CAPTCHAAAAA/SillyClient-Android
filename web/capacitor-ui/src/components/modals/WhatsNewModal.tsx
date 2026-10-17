@@ -85,8 +85,8 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({
             className={cn(
               "p-1.5 rounded-full transition-colors",
               isLight
-                ? "hover:bg-black/5 text-[#1a1625]/30 hover:text-[#1a1625]/60"
-                : "hover:bg-white/5 text-white/30 hover:text-white/60"
+                ? "text-[#1a1625]/40 hover:text-[#1a1625]/85"
+                : "text-white/40 hover:text-white/85"
             )}
             aria-label="关闭"
           >
@@ -172,10 +172,10 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({
           <button
             onClick={onClose}
             className={cn(
-              "motion-control h-8 px-5 rounded-xl text-xs font-medium border-0 transition-colors",
+              "flat-capsule motion-control h-8 px-5 rounded-full text-xs font-medium border-0",
               isLight
-                ? "bg-black/[0.06] hover:bg-black/[0.1] text-[#1a1625]/85"
-                : "bg-white/[0.08] hover:bg-white/[0.12] text-white/90"
+                ? "text-[#1a1625]/60 hover:text-[#1a1625]"
+                : "text-white/60 hover:text-white"
             )}
           >
             开始使用

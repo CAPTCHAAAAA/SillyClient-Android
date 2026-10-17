@@ -96,18 +96,27 @@ select:focus-visible {
   --glass: oklch(1 0 0 / 0.15);
   --glass-border: oklch(0 0 0 / 0.06);
 
-  /* 动效 */
-  --motion-press: 90ms;
-  --motion-fast: 160ms;
-  --motion-base: 240ms;
-  --motion-layout: 280ms;
+  /* 动效：紧致克制按压与利落回弹，杜绝过冲与果冻颤动，保持沉稳硬朗质感 */
+  --motion-press: 80ms;
+  --motion-release: 150ms;
+  --motion-fast: 140ms;
+  --motion-base: 220ms;
+  --motion-layout: 260ms;
+  --motion-ease-press: cubic-bezier(0.2, 0, 0, 1);
+  --motion-ease-release: cubic-bezier(0.16, 1, 0.3, 1);
   --motion-ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --motion-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  /* 状态切换溶解。两端都减速，不能用 --motion-ease-out，那个前段就冲完了。 */
+  --motion-dissolve: 780ms;
+  --motion-dissolve-ease: cubic-bezier(0.5, 0, 0.2, 1);
+  /* 弹窗进出用同一条曲线，但更短。先显现，再把最后一点位移收回来。 */
+  --motion-present: 440ms;
+  --motion-dismiss: 280ms;
+  --motion-present-ease: var(--motion-dissolve-ease);
   --motion-ease-exit: cubic-bezier(0.4, 0, 1, 1);
   --transition-fast: var(--motion-fast) var(--motion-ease-out);
   --transition-normal: var(--motion-base) var(--motion-ease-out);
   --transition-spring: var(--motion-layout) var(--motion-ease-in-out);
-
 }
 
 /* 深色模式 - iOS 黑白灰绿 */
@@ -440,8 +449,16 @@ body::-webkit-scrollbar,
   animation-play-state: paused !important;
 }
 
-/* iOS 拨杆开关 - 动态壁纸控制 */
+.ambient-glow-container.is-shedding {
+  display: none !important;
+}
+
+/* 动态壁纸拨杆：比 h-9 略收一档，拨杆比轨道小一圈，填充对齐扁平胶囊。 */
 .ios-toggle {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  height: 32px;
   background: none;
   border: none;
   padding: 0;
@@ -451,72 +468,76 @@ body::-webkit-scrollbar,
 
 .ios-toggle-track {
   position: relative;
-  width: 51px;
-  height: 31px;
+  width: 52px;
+  height: 32px;
   border-radius: 16px;
-  background: rgba(120, 120, 128, 0.16);
-  border: 0.5px solid rgba(0, 0, 0, 0.04);
-  transition: background 0.3s ease, box-shadow 0.3s ease;
-  overflow: hidden;
+  background: rgba(255, 255, 255, 0.18);
+  border: 0.5px solid rgba(255, 255, 255, 0.1);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.22),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.08);
+  transition:
+    background-color 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    background 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 420ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 420ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .ios-toggle-track-active {
   background: #34c759;
   border-color: transparent;
-  box-shadow: 0 0 12px rgba(52, 199, 89, 0.4), 0 0 4px rgba(52, 199, 89, 0.2);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow:
+    0 0 12px rgba(52, 199, 89, 0.4),
+    0 0 4px rgba(52, 199, 89, 0.2);
 }
 
-.ios-toggle-icons {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 7px;
-  font-size: 10px;
-  font-weight: 600;
-  pointer-events: none;
-  z-index: 1;
+.ios-floating-menu.is-light .ios-toggle-track {
+  background: rgba(26, 22, 37, 0.14);
+  border-color: rgba(26, 22, 37, 0.08);
+  box-shadow:
+    inset 0 1px 2px rgba(26, 22, 37, 0.12),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.7);
 }
 
-.ios-toggle-icon-off {
-  color: rgba(0, 0, 0, 0.2);
-  opacity: 1;
-  transition: opacity 0.2s ease;
-}
-
-.ios-toggle-icon-on {
-  color: rgba(255, 255, 255, 0.9);
-  opacity: 0;
-  transition: opacity 0.2s ease;
-}
-
-.ios-toggle-track-active .ios-toggle-icon-off {
-  opacity: 0;
-}
-
-.ios-toggle-track-active .ios-toggle-icon-on {
-  opacity: 1;
+.ios-floating-menu.is-light .ios-toggle-track-active {
+  background: #34c759;
+  border-color: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow:
+    0 0 12px rgba(52, 199, 89, 0.4),
+    0 0 4px rgba(52, 199, 89, 0.2);
 }
 
 .ios-toggle-thumb {
   position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 27px;
-  height: 27px;
+  top: 4px;
+  left: 4px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
-  background: white;
+  background: #fff;
   box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.12),
-    0 1px 2px rgba(0, 0, 0, 0.08),
-    0 3px 8px rgba(0, 0, 0, 0.06);
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  z-index: 2;
+    0 1px 2px rgba(0, 0, 0, 0.16),
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.9);
+  transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ios-floating-menu.is-light .ios-toggle-thumb {
+  background: #fff;
 }
 
 .ios-toggle-thumb-active {
   transform: translateX(20px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ios-toggle-track,
+  .ios-toggle-thumb {
+    transition-duration: 120ms;
+  }
 }
 
 /* ===== Apple HIG 风格细节优化 ===== */
@@ -545,23 +566,95 @@ select:focus-visible {
 
 button {
   -webkit-tap-highlight-color: transparent;
+  transition:
+    transform var(--motion-release) var(--motion-ease-release),
+    filter var(--motion-release) ease;
 }
 
-/* 按钮按压反馈：短促压缩，松手后从当前值自然回到原位。 */
+/* 按钮按压反馈：紧致敏捷微触感 */
 button:active:not(:disabled) {
-  filter: brightness(0.96) saturate(0.96);
-  transform: scale(0.985);
-  transition: transform var(--motion-press) var(--motion-ease-out), filter var(--motion-press) ease-out;
+  filter: brightness(0.97) saturate(0.98);
+  transform: scale(0.98);
+  transition:
+    transform var(--motion-press) var(--motion-ease-press),
+    filter var(--motion-press) ease-out;
 }
 
 .motion-control {
   transition-property: transform, filter, color, background-color, border-color, box-shadow, opacity;
-  transition-duration: var(--motion-fast);
-  transition-timing-function: var(--motion-ease-out);
+  transition-duration: var(--motion-release);
+  transition-timing-function: var(--motion-ease-release);
 }
 
 .motion-control:active:not(:disabled) {
-  transform: translateY(0) scale(0.985);
+  transform: translateY(0) scale(0.975);
+  transition-duration: var(--motion-press);
+  transition-timing-function: var(--motion-ease-press);
+}
+
+.carousel-pagination {
+  color: #fff;
+  transition: color 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.carousel-pagination.is-light {
+  color: #1a1625;
+}
+
+.carousel-pagination button {
+  transition-property: transform, filter, background-color, border-color, box-shadow, opacity;
+}
+
+.carousel-pagination__dot-coverage,
+.carousel-pagination__dot {
+  display: block;
+  width: 6px;
+  height: 6px;
+}
+
+.carousel-pagination__dot-coverage {
+  transition: none;
+}
+
+.carousel-pagination__dot {
+  background-color: currentColor;
+  border-radius: 999px;
+  opacity: 0.2;
+  transition: opacity 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.carousel-pagination__mover {
+  position: absolute;
+  top: calc(50% - 3px);
+  left: 0;
+  width: 18px;
+  height: 6px;
+  pointer-events: none;
+  will-change: transform;
+  transition: none;
+}
+
+.carousel-pagination__capsule {
+  display: block;
+  width: 18px;
+  height: 6px;
+  border-radius: 999px;
+  background-color: currentColor;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  opacity: 0.9;
+  transform-origin: center;
+  will-change: transform;
+  transition: opacity 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.carousel-pagination.is-light .carousel-pagination__capsule {
+  opacity: 0.75;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .carousel-pagination button:hover .carousel-pagination__dot {
+    opacity: 0.4;
+  }
 }
 
 .carousel-pagination {
@@ -700,25 +793,48 @@ header span[class*="truncate"] {
   }
 }
 
-.overlay-backdrop {
-  animation: overlay-fade-in 0.25s cubic-bezier(0.32, 0.72, 0, 1) forwards;
-  transition: opacity 0.22s cubic-bezier(0.32, 0.72, 0, 1), backdrop-filter 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+@keyframes overlay-fade-out {
+  0% {
+    opacity: 1;
+    backdrop-filter: blur(var(--overlay-blur, 2px));
+    -webkit-backdrop-filter: blur(var(--overlay-blur, 2px));
+  }
+  100% {
+    opacity: 0;
+    backdrop-filter: blur(0px);
+    -webkit-backdrop-filter: blur(0px);
+  }
 }
 
-.overlay-backdrop-exit {
-  animation: none;
-  opacity: 0 !important;
-  backdrop-filter: blur(0px) !important;
-  -webkit-backdrop-filter: blur(0px) !important;
+.overlay-backdrop {
+  animation: overlay-fade-in 340ms var(--motion-present-ease) forwards;
+}
+
+.overlay-backdrop.overlay-backdrop-exit {
+  animation: overlay-fade-out var(--motion-dismiss) var(--motion-ease-out) forwards;
   pointer-events: none;
 }
 
-/* 普通切换：仅在模式变化时临时给整棵树加缓动颜色过渡。 */
+/* 普通切换：仅在模式变化时临时给整棵树加缓动颜色过渡。
+   排除一切带自有 transform/位移动画的组件（3D 卡片、动态壁纸）：
+   transition-property 的 !important 覆盖会打断这些组件正在进行的动画，
+   使其 transform 过渡瞬间失效、1 秒后又恢复——这就是画面"抽搐"的机制。
+   box-shadow 不参与插值：毛玻璃下逐帧重算多层阴影 + 模糊重采样是全屏卡顿主开销。 */
 .theme-smoothing,
-.theme-smoothing *:not(.motion-panel-stack):not(.motion-panel-face):not(.carousel-pagination):not(.carousel-pagination *) {
-  transition-property: color, background-color, border-color, box-shadow, fill, stroke !important;
+.theme-smoothing *:not(.motion-panel-stack):not(.motion-panel-face):not(.carousel-pagination):not(.carousel-pagination *):not(.flip-card):not(.flip-card *):not(.motion-instance-card):not(.motion-instance-card *):not(.ambient-glow-container):not(.ambient-glow-container *) {
+  transition-property: color, background-color, border-color, fill, stroke !important;
   transition-duration: 1000ms !important;
   transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+
+/* 毛玻璃材质在主题切换时瞬切（iOS 深色模式同语义）：对 background 做 1s 渐变
+   会迫使 backdrop-filter 逐帧重采样整屏模糊；瞬切材质 + 内容文字渐变，
+   静止视觉完全一致，切换过程不再掉帧。 */
+.theme-smoothing .glass-panel,
+.theme-smoothing .liquid-glass,
+.theme-smoothing .ios-floating-menu,
+.theme-smoothing .overlay-backdrop {
+  transition: none !important;
 }
 
 /* 菜单弹出动画 */
@@ -793,6 +909,41 @@ header span[class*="truncate"] {
 }
 
 /* 阻断对话框轻拟物弹性弹出动画 */
+/* 管理菜单外层改成全屏居中层后，弹跳动画只缩放不再自带居中位移 */
+@keyframes manage-panel-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.986);
+  }
+  46% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.animate-manage-panel {
+  animation: manage-panel-in var(--motion-present) var(--motion-present-ease) forwards;
+}
+
+@keyframes manage-panel-out {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.992);
+  }
+}
+
+.animate-manage-panel-exit {
+  animation: manage-panel-out var(--motion-dismiss) var(--motion-present-ease) forwards;
+  pointer-events: none;
+}
+
 @keyframes modal-dialog-in {
   0% {
     opacity: 0;
@@ -904,10 +1055,8 @@ header span[class*="truncate"] {
     inset 0 -1px 0 rgba(0, 0, 0, 0.06),
     0 0 12px rgba(7, 5, 10, 0.08),
     0 2px 5px rgba(7, 5, 10, 0.055);
-  transform: translate3d(0, 0, 0);
-  backface-visibility: hidden;
-  will-change: transform;
   transition:
+    transform var(--motion-release) var(--motion-ease-release),
     border-color var(--motion-fast) ease,
     box-shadow var(--motion-layout) var(--motion-ease-out),
     opacity var(--motion-fast) ease;
@@ -936,12 +1085,17 @@ header span[class*="truncate"] {
 }
 
 .motion-instance-card:active {
-  opacity: 0.95;
-  transition-duration: var(--motion-press);
+  opacity: 0.98;
+  transform: translateY(1px);
+  transition:
+    transform var(--motion-press) var(--motion-ease-press),
+    box-shadow var(--motion-press) var(--motion-ease-press),
+    opacity var(--motion-press) ease;
 }
 
-.motion-instance-card:active:not([data-card-motion-managed]):not([data-card-motion-managed] .motion-instance-card) {
-  transform: scale(0.985) translate3d(0, 0, 0);
+/* 当卡片位于 FlipCard 容器内时，由外层 FlipCard 统领微动效，内部不再重复变形叠加 */
+.flip-card .motion-instance-card:active {
+  transform: none !important;
 }
 
 .motion-panel-stack {
@@ -968,6 +1122,44 @@ header span[class*="truncate"] {
   filter: blur(0);
   visibility: visible;
   transition-delay: 0s;
+}
+
+.manage-settings-outgoing {
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 2;
+  width: auto !important;
+  height: auto !important;
+  margin: 0 !important;
+  pointer-events: none !important;
+}
+
+/* 管理页翻页停在同一个槽位里。不位移、不缩放、不越过落点。
+   旧页用较短的 ease-out 让开，避免两页叠在中间发糊。
+   新页透明度先到位，模糊再用同一条刹车曲线多停一会儿，收焦而不是弹回来。
+   透明度和模糊始终挂在过渡上，切换当帧不改 animation。 */
+.manage-panel-surface .motion-panel-face {
+  opacity: 0;
+  filter: blur(6px);
+  transform: none;
+  transition:
+    opacity 320ms cubic-bezier(0.23, 1, 0.32, 1),
+    filter 320ms cubic-bezier(0.23, 1, 0.32, 1),
+    visibility 0s linear 320ms;
+}
+
+.manage-panel-surface .motion-panel-face.is-active {
+  opacity: 1;
+  filter: blur(0.01px);
+  transform: none;
+  transition:
+    opacity 380ms cubic-bezier(0.23, 1, 0.32, 1),
+    filter 560ms cubic-bezier(0.23, 1, 0.32, 1),
+    visibility 0s linear 0s;
+}
+
+.motion-instance-card:active:not([data-card-motion-managed]):not([data-card-motion-managed] .motion-instance-card) {
+  transform: scale(0.985) translate3d(0, 0, 0);
 }
 
 /* 高度未知的内容使用 grid 行连续展开，允许中途反向。 */
@@ -1268,14 +1460,15 @@ header span[class*="truncate"] {
     inset 0 1px 0 oklch(1 0 0 / 0.25),
     inset 0 -1px 0 oklch(0 0 0 / 0.08),
     0 0.5px 0 oklch(1 0 0 / 0.08);
-  transition: transform var(--motion-fast) var(--motion-ease-out), box-shadow var(--motion-fast) ease, background-color var(--motion-fast) ease;
+  transition:
+    color 500ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform var(--motion-fast) var(--motion-ease-out),
+    box-shadow var(--motion-fast) ease,
+    background-color var(--motion-fast) ease;
 }
 
 .ios-glass-btn:hover {
-  box-shadow:
-    inset 0 1px 0 oklch(1 0 0 / 0.35),
-    inset 0 -1px 0 oklch(0 0 0 / 0.06),
-    0 0.5px 0 oklch(1 0 0 / 0.12);
+  /* 底不动，只提亮字和图标。 */
 }
 
 .ios-glass-btn:active {
@@ -1294,6 +1487,8 @@ header span[class*="truncate"] {
   .animate-popover-exit,
   .animate-clone-panel,
   .animate-clone-panel-exit,
+  .animate-manage-panel,
+  .animate-manage-panel-exit,
   .animate-modal-dialog,
   .animate-modal-dialog-exit,
   .animate-dropdown,
@@ -1320,6 +1515,10 @@ header span[class*="truncate"] {
     transition-duration: 1ms !important;
   }
 
+  .overlay-backdrop {
+    animation-duration: 1ms !important;
+  }
+
   .motion-panel-stack {
     transition: none;
   }
@@ -1335,6 +1534,11 @@ header span[class*="truncate"] {
 
   .motion-panel-face.is-active {
     transition-delay: 0s;
+  }
+
+  .ios-choice-track > .ios-choice-control::before {
+    filter: none;
+    transition-duration: 120ms;
   }
 
   .carousel-pagination,
@@ -1418,6 +1622,28 @@ header span[class*="truncate"] {
 @keyframes shimmer {
   0% { transform: translateX(-100%); }
   100% { transform: translateX(100%); }
+}
+
+/* 删除没有逐项百分比，条只往前走，停在完成前，避免假装已经删完。 */
+@keyframes delete-progress-fill {
+  0% { width: 8%; }
+  100% { width: 92%; }
+}
+
+.delete-progress-fill {
+  width: 8%;
+  animation: delete-progress-fill 16s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .delete-progress-fill,
+  .delete-progress-fill > div {
+    animation: none;
+  }
+
+  .delete-progress-fill {
+    width: 46%;
+  }
 }
 
 /* 全局表单元素 — 去除浏览器默认样式 */
@@ -1564,11 +1790,13 @@ select option {
 
 @media (hover: hover) and (pointer: fine) {
   .ios-floating-menu .motion-menu-item:hover {
-    background: rgba(255, 255, 255, 0.05);
+    background: transparent !important;
+    box-shadow: none !important;
   }
 
   .ios-floating-menu.is-light .motion-menu-item:hover {
-    background: rgba(28, 18, 24, 0.045);
+    background: transparent !important;
+    box-shadow: none !important;
   }
 }
 
@@ -1691,6 +1919,25 @@ select option {
   transform: none;
 }
 
+/* 管理面板 Tab 行：整排内凹槽。
+   槽底 rgba(0,0,0,.32)/.04 取自 LaunchConsoleModal 日志区；内凹阴影取自
+   .ios-task-surface .ios-choice-control[aria-pressed="true"]。 */
+.manage-tab-strip {
+  background: rgba(0, 0, 0, 0.32);
+  box-shadow:
+    inset 0 1px 3px rgba(0, 0, 0, 0.11),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.035);
+}
+.ios-task-surface.is-light .manage-tab-strip {
+  background: rgba(0, 0, 0, 0.04);
+  box-shadow:
+    inset 0 1px 3px rgba(28, 18, 24, 0.065),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.6);
+}
+.manage-tab-strip .ios-choice-control[aria-pressed="false"] {
+  box-shadow: none;
+}
+
 .ios-task-surface .ios-choice-control[aria-pressed="false"] {
   box-shadow:
     inset 0 0.5px 0 rgba(255, 255, 255, 0.07),
@@ -1775,17 +2022,132 @@ select option {
 @media (hover: hover) and (pointer: fine) {
   .ios-floating-menu .ios-choice-control[aria-pressed="false"]:hover,
   .ios-task-surface .ios-choice-control[aria-pressed="false"]:hover {
-    background-color: rgba(255, 255, 255, 0.055) !important;
-    box-shadow:
-      inset 0 0.5px 0 rgba(255, 255, 255, 0.085),
-      inset 0 -0.5px 0 rgba(0, 0, 0, 0.1),
-      0 2px 5px rgba(0, 0, 0, 0.055);
+    color: rgba(255, 255, 255, 0.85) !important;
   }
 
   .ios-floating-menu.is-light .ios-choice-control[aria-pressed="false"]:hover,
   .ios-task-surface.is-light .ios-choice-control[aria-pressed="false"]:hover {
-    background-color: rgba(255, 255, 255, 0.46) !important;
+    color: rgba(26, 22, 37, 0.85) !important;
   }
+}
+
+/* 首页搜索：轻微内凹。沟槽做在外层，输入框本身继续禁止外发光。 */
+.home-search {
+  position: relative;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.22),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.06);
+}
+
+.home-search.is-light {
+  background: rgba(26, 22, 37, 0.04);
+  box-shadow:
+    inset 0 1px 2px rgba(28, 18, 24, 0.1),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.7);
+}
+
+.home-search input,
+.home-search input:focus,
+.home-search input:focus-visible {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+/* 状态切换：多个按钮接成一条。整条是浅沟槽，选中项沿用原来的内凹，只是更深。
+   选中材质和面板溶解同一条曲线：780ms，两端减速，模糊 3px 淡入淡出，文字保持清晰。
+   外圆角 = 内边距 3px + 内圆角 18px。 */
+.ios-choice-track {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 21px;
+  background: rgba(255, 255, 255, 0.03);
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.12),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.045);
+}
+
+.ios-task-surface.is-light .ios-choice-track,
+.ios-floating-menu.is-light .ios-choice-track {
+  background: rgba(28, 18, 24, 0.03);
+  box-shadow:
+    inset 0 1px 2px rgba(28, 18, 24, 0.07),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.72);
+}
+
+.ios-choice-track > .ios-choice-control {
+  position: relative;
+  isolation: isolate;
+  flex: 1 1 0;
+  min-width: 0;
+  border-radius: 18px !important;
+  background-color: transparent !important;
+  box-shadow: none !important;
+}
+
+.ios-task-surface .ios-choice-track > .ios-choice-control,
+.ios-floating-menu .ios-choice-track > .ios-choice-control,
+.ios-task-surface .ios-choice-track > .ios-choice-control[aria-pressed="false"],
+.ios-floating-menu .ios-choice-track > .ios-choice-control[aria-pressed="false"],
+.ios-task-surface .ios-choice-track > .ios-choice-control[aria-pressed="true"],
+.ios-floating-menu .ios-choice-track > .ios-choice-control[aria-pressed="true"],
+.ios-task-surface.is-light .ios-choice-track > .ios-choice-control,
+.ios-floating-menu.is-light .ios-choice-track > .ios-choice-control,
+.ios-task-surface.is-light .ios-choice-track > .ios-choice-control[aria-pressed="false"],
+.ios-floating-menu.is-light .ios-choice-track > .ios-choice-control[aria-pressed="false"],
+.ios-task-surface.is-light .ios-choice-track > .ios-choice-control[aria-pressed="true"],
+.ios-floating-menu.is-light .ios-choice-track > .ios-choice-control[aria-pressed="true"] {
+  background-color: transparent !important;
+  box-shadow: none !important;
+}
+
+.ios-choice-track > .ios-choice-control::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background-color: transparent;
+  box-shadow: none;
+  opacity: 0;
+  filter: blur(3px);
+  pointer-events: none;
+  transition:
+    opacity var(--motion-dissolve) var(--motion-dissolve-ease),
+    filter var(--motion-dissolve) var(--motion-dissolve-ease),
+    background-color var(--motion-dissolve) var(--motion-dissolve-ease),
+    box-shadow var(--motion-dissolve) var(--motion-dissolve-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ios-choice-track > .ios-choice-control::before {
+    filter: none;
+    transition-duration: 120ms;
+  }
+}
+
+.ios-task-surface .ios-choice-track > .ios-choice-control[aria-pressed="true"]::before,
+.ios-floating-menu .ios-choice-track > .ios-choice-control[aria-pressed="true"]::before {
+  opacity: 1;
+  filter: blur(0);
+  background-color: rgba(0, 0, 0, 0.16);
+  box-shadow:
+    inset 0 1.5px 3.5px rgba(0, 0, 0, 0.22),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.04);
+}
+
+.ios-task-surface.is-light .ios-choice-track > .ios-choice-control[aria-pressed="true"]::before,
+.ios-floating-menu.is-light .ios-choice-track > .ios-choice-control[aria-pressed="true"]::before {
+  opacity: 1;
+  filter: blur(0);
+  background-color: rgba(28, 18, 24, 0.07);
+  box-shadow:
+    inset 0 1.5px 3px rgba(28, 18, 24, 0.12),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.55);
 }
 
 .ios-task-surface input.border:focus,
@@ -1887,8 +2249,9 @@ select option {
 
 .app-settings-action {
   min-width: 55px;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.5);
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.62);
 }
 
 .ios-task-surface.is-light .app-settings-action {
@@ -1896,13 +2259,11 @@ select option {
 }
 
 .app-settings-action.is-warning {
-  background: rgba(255, 255, 255, 0.045);
-  color: rgba(235, 182, 108, 0.62);
+  color: rgba(235, 182, 108, 0.72);
 }
 
 .app-settings-action.is-danger {
-  background: rgba(255, 255, 255, 0.045);
-  color: rgba(238, 127, 151, 0.64);
+  color: rgba(238, 127, 151, 0.74);
 }
 
 .app-settings-row.is-pending {
@@ -1938,6 +2299,51 @@ select option {
   display: block;
 }
 
+.setting-label,
+.setting-desc,
+.setting-value {
+  transition: color 500ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .setting-row:hover .setting-label {
+    color: rgba(255, 255, 255, 0.96) !important;
+  }
+
+  .is-light .setting-row:hover .setting-label {
+    color: #1a1625 !important;
+  }
+
+  .setting-row:hover .setting-desc {
+    color: rgba(255, 255, 255, 0.68) !important;
+  }
+
+  .is-light .setting-row:hover .setting-desc {
+    color: rgba(26, 22, 37, 0.68) !important;
+  }
+
+  .setting-row:hover .setting-value {
+    color: rgba(255, 255, 255, 0.96) !important;
+  }
+
+  .is-light .setting-row:hover .setting-value {
+    color: #1a1625 !important;
+  }
+
+  .ios-choice-control[aria-pressed="true"]:hover {
+    color: #fff !important;
+  }
+
+  .is-light .ios-choice-control[aria-pressed="true"]:hover {
+    color: #1a1625 !important;
+  }
+
+  button[role="switch"]:hover,
+  .ios-toggle:hover .ios-toggle-track {
+    filter: brightness(1.08);
+  }
+}
+
 @media (hover: hover) and (pointer: fine) {
   .app-settings-link-row:hover .app-settings-label {
     color: rgba(255, 255, 255, 0.9);
@@ -1956,28 +2362,20 @@ select option {
   }
 
   .app-settings-action:hover {
-    background: rgba(255, 255, 255, 0.04);
-    color: rgba(255, 255, 255, 0.68);
+    color: rgba(255, 255, 255, 0.9);
   }
 
   .ios-task-surface.is-light .app-settings-action:hover {
-    background: rgba(0, 0, 0, 0.04);
-    color: rgba(26, 22, 37, 0.68);
+    color: rgba(26, 22, 37, 0.9);
   }
 
   .app-settings-action.is-warning:hover {
-    background: rgba(226, 170, 98, 0.11);
-    color: rgba(244, 194, 124, 0.94);
+    color: rgba(244, 194, 124, 0.98);
   }
 
   .app-settings-action.is-danger:hover {
-    background: rgba(232, 113, 139, 0.11);
-    color: rgba(246, 145, 166, 0.95);
+    color: rgba(246, 145, 166, 0.98);
   }
-}
-
-.app-settings-action:active:not(:disabled) {
-  transform: scale(0.97);
 }
 
 @media (max-width: 420px) {
@@ -2001,4 +2399,542 @@ select option {
 
 .animate-modal-shake {
   animation: modal-shake 0.35s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
+
+/* ==========================================================================
+   轻拟物胶囊滑块组件 (Skeuomorphic Capsule Slider)
+   同构官网 .sc-platform-toggle 结构，融合 SillyClient 物理轻拟物光影
+   ========================================================================== */
+.skeuo-capsule-track {
+  position: relative;
+  display: grid;
+  padding: 3px;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 0.5px solid rgba(255, 255, 255, 0.07);
+  box-shadow:
+    inset 0 1.5px 3px rgba(0, 0, 0, 0.35),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.03),
+    0 1px 2px rgba(0, 0, 0, 0.15);
+  user-select: none;
+}
+
+.skeuo-capsule-track.is-light {
+  background: rgba(28, 18, 24, 0.04);
+  border: 0.5px solid rgba(28, 18, 24, 0.06);
+  box-shadow:
+    inset 0 1px 2.5px rgba(28, 18, 24, 0.07),
+    inset 0 -0.5px 0 rgba(255, 255, 255, 0.7),
+    0 0.5px 1px rgba(255, 255, 255, 0.5);
+}
+
+.skeuo-capsule-thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.10);
+  box-shadow:
+    0 2px 7px rgba(0, 0, 0, 0.32),
+    0 1px 2px rgba(0, 0, 0, 0.22),
+    inset 0 0.5px 0 rgba(255, 255, 255, 0.25),
+    inset 0 -0.5px 0 rgba(0, 0, 0, 0.22);
+  transform: translateX(calc(var(--active-index, 0) * 100%));
+  transition: transform 280ms cubic-bezier(0.22, 0.68, 0, 1), box-shadow 200ms ease;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.skeuo-capsule-thumb.is-light {
+  background: #ffffff;
+  box-shadow:
+    0 1.5px 4px rgba(28, 18, 24, 0.09),
+    0 3px 10px rgba(28, 18, 24, 0.045),
+    inset 0 0.5px 0 rgba(255, 255, 255, 1),
+    inset 0 -0.5px 0 rgba(28, 18, 24, 0.06);
+}
+
+.skeuo-capsule-btn {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  height: 100%;
+  padding: 0 8px;
+  border-radius: 11px;
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.45);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  outline: none;
+  white-space: nowrap;
+  transition: color 180ms ease, transform 120ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.skeuo-capsule-btn:active {
+  transform: scale(0.97);
+}
+
+.skeuo-capsule-btn[aria-pressed="true"],
+.skeuo-capsule-btn[aria-checked="true"],
+.skeuo-capsule-btn[aria-selected="true"] {
+  color: rgba(255, 255, 255, 0.95);
+  font-weight: 600;
+}
+
+.skeuo-capsule-track.is-light .skeuo-capsule-btn {
+  color: rgba(26, 22, 37, 0.45);
+}
+
+.skeuo-capsule-track.is-light .skeuo-capsule-btn[aria-pressed="true"],
+.skeuo-capsule-track.is-light .skeuo-capsule-btn[aria-checked="true"],
+.skeuo-capsule-track.is-light .skeuo-capsule-btn[aria-selected="true"] {
+  color: #1a1625;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .skeuo-capsule-btn:hover:not([aria-pressed="true"]):not([aria-checked="true"]):not([aria-selected="true"]) {
+    color: rgba(255, 255, 255, 0.75);
+  }
+  .skeuo-capsule-track.is-light .skeuo-capsule-btn:hover:not([aria-pressed="true"]):not([aria-checked="true"]):not([aria-selected="true"]) {
+    color: rgba(26, 22, 37, 0.75);
+  }
+}
+
+/* 管理菜单只有一层控制岛玻璃。任务面板的渐变描边不再叠上来。 */
+.manage-panel-surface.ios-task-surface,
+.manage-panel-surface.ios-task-surface.is-light {
+  border: 0;
+  box-shadow:
+    rgba(13, 7, 12, 0.17) 0 14px 30px,
+    rgba(13, 7, 12, 0.055) 0 2px 8px,
+    rgba(255, 255, 255, 0.06) 0 0.5px 0 0 inset;
+}
+
+.manage-panel-surface.ios-task-surface.is-light {
+  box-shadow:
+    rgba(30, 18, 25, 0.1) 0 14px 30px,
+    rgba(30, 18, 25, 0.04) 0 2px 8px,
+    rgba(255, 255, 255, 0.65) 0 0.5px 0 0 inset;
+}
+
+.manage-panel-surface.ios-task-surface::before {
+  content: none;
+}
+
+/* 搜索和顶栏按钮用浅内凹。文字很多的设置项不走这里。 */
+.manage-recess {
+  background: rgba(0, 0, 0, 0.20);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.24);
+}
+
+.manage-panel-surface.is-light .manage-recess {
+  background: rgba(26, 22, 37, 0.045);
+  box-shadow: inset 0 1px 2px rgba(28, 18, 24, 0.07);
+}
+
+.manage-recess input {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* 高阅读设置项保持扁平。边界只靠极轻的色差，不描实线，也不做内凹。 */
+.manage-panel-surface .manage-flat {
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.03) !important;
+  box-shadow: none !important;
+}
+
+.manage-panel-surface.is-light .manage-flat {
+  background: rgba(26, 22, 37, 0.04);
+  border-color: rgba(26, 22, 37, 0.04) !important;
+}
+
+/* 交互扁平胶囊：满圆，边缘只留控制岛那种 0.5px 发丝，不画实线。
+   悬停仍以提亮文字为主，底色只跟着同一条 500ms 曲线轻轻抬一点。按下不缩放。 */
+.manage-panel-surface button.manage-flat,
+.app-settings-action,
+button.flat-capsule {
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.15) !important;
+  border: 0 !important;
+  box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.07) !important;
+  transition-property: color, background-color, box-shadow;
+  transition-duration: 500ms;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.manage-panel-surface.is-light button.manage-flat,
+.ios-task-surface.is-light .app-settings-action,
+.is-light button.flat-capsule {
+  background: rgba(26, 22, 37, 0.07) !important;
+  box-shadow: 0 0 0 0.5px rgba(26, 22, 37, 0.08) !important;
+}
+
+button.flat-capsule[aria-pressed="true"] {
+  background: rgba(255, 255, 255, 0.24) !important;
+}
+
+.is-light button.flat-capsule[aria-pressed="true"] {
+  background: rgba(26, 22, 37, 0.12) !important;
+}
+
+.manage-panel-surface button.manage-flat:hover,
+.app-settings-action:hover,
+button.flat-capsule:hover,
+.manage-panel-surface button.manage-flat:active:not(:disabled),
+.app-settings-action:active:not(:disabled),
+button.flat-capsule:active:not(:disabled) {
+  transform: none;
+  filter: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .manage-panel-surface button.manage-flat:hover,
+  .app-settings-action:hover,
+  button.flat-capsule:hover {
+    background-color: rgba(255, 255, 255, 0.22) !important;
+    box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.12) !important;
+  }
+
+  .manage-panel-surface.is-light button.manage-flat:hover,
+  .ios-task-surface.is-light .app-settings-action:hover,
+  .is-light button.flat-capsule:hover {
+    background-color: rgba(26, 22, 37, 0.11) !important;
+    box-shadow: 0 0 0 0.5px rgba(26, 22, 37, 0.12) !important;
+  }
+}
+
+.manage-panel-surface button.manage-flat:active:not(:disabled),
+.app-settings-action:active:not(:disabled),
+button.flat-capsule:active:not(:disabled) {
+  background-color: rgba(255, 255, 255, 0.08) !important;
+  box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.05) !important;
+  transition-duration: 140ms;
+}
+
+.manage-panel-surface.is-light button.manage-flat:active:not(:disabled),
+.ios-task-surface.is-light .app-settings-action:active:not(:disabled),
+.is-light button.flat-capsule:active:not(:disabled) {
+  background-color: rgba(26, 22, 37, 0.14) !important;
+  box-shadow: 0 0 0 0.5px rgba(26, 22, 37, 0.1) !important;
+}
+
+.reading-flat-surface input,
+.reading-flat-surface textarea,
+.reading-flat-surface .ios-field-control,
+.reading-flat-surface button.border:not(.ios-choice-control):not(.rounded-full):not(.flat-capsule) {
+  background: rgba(255, 255, 255, 0.045) !important;
+  background-color: rgba(255, 255, 255, 0.045) !important;
+  border-style: solid !important;
+  border-width: 1px !important;
+  border-color: rgba(255, 255, 255, 0.03) !important;
+  box-shadow: none !important;
+}
+
+.reading-flat-surface.is-light input,
+.reading-flat-surface.is-light textarea,
+.reading-flat-surface.is-light .ios-field-control,
+.reading-flat-surface.is-light button.border:not(.ios-choice-control):not(.rounded-full):not(.flat-capsule) {
+  background: rgba(26, 22, 37, 0.04) !important;
+  background-color: rgba(26, 22, 37, 0.04) !important;
+  border-color: rgba(26, 22, 37, 0.04) !important;
+}
+
+/* 管理分类沿用控制岛 / App 设置的连体沟槽。高度跟顶栏走，所以做成满圆胶囊。 */
+.manage-panel-surface .manage-choice-track {
+  border-radius: 9999px;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+.manage-panel-surface.is-light .manage-choice-track {
+  box-shadow: inset 0 1px 2px rgba(28, 18, 24, 0.06);
+}
+
+.manage-panel-surface .ios-choice-track > .ios-choice-control[aria-pressed="true"]::before {
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.18);
+}
+
+.manage-panel-surface.is-light .ios-choice-track > .ios-choice-control[aria-pressed="true"]::before {
+  box-shadow: inset 0 1px 2px rgba(28, 18, 24, 0.1);
+}
+
+.manage-panel-surface .manage-choice-track > .ios-choice-control {
+  flex: 0 0 auto;
+  align-self: stretch;
+  border-radius: 9999px !important;
+}
+
+.manage-panel-surface .manage-choice-track.is-portrait > .ios-choice-control {
+  flex: 1 1 0;
+}
+
+.manage-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow: none;
+}
+
+.manage-panel-surface.is-light .manage-thumb {
+  background: rgba(255, 255, 255, 0.78);
+}
+
+/* 管理菜单悬停跟控制岛、实例菜单一样：只走字色，500ms，不缩放、不改底。 */
+.manage-panel-surface button.motion-control:not(.flat-capsule):not(.manage-flat) {
+  transition-property: color;
+  transition-duration: 500ms;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.manage-panel-surface button.motion-control:hover,
+.manage-panel-surface button.motion-control:active:not(:disabled) {
+  transform: none;
+  filter: none;
+}
+
+/* 管理菜单缩小时，字号跟面板字号同比例缩小。基准 16px = 1em。 */
+
+.manage-panel-surface .text-xs {
+  font-size: 0.75em;
+}
+
+.manage-panel-surface .text-sm {
+  font-size: 0.875em;
+}
+
+.manage-panel-surface .text-\[10px\] {
+  font-size: 0.625em;
+}
+
+.manage-panel-surface .text-\[11px\] {
+  font-size: 0.6875em;
+}
+
+.manage-panel-surface .text-\[11\.5px\] {
+  font-size: 0.71875em;
+}
+
+.manage-panel-surface .text-\[11px\].leading-\[18px\] {
+  line-height: calc(18 / 11);
+}
+
+/* 管理菜单卡片只由 overflow 裁圆角。
+   zoom 0.67 时 mask-image 会把圆角光栅化成毛边，所以这里明确关掉遮罩。
+   子元素也不要再 scale，合成层会让圆角失去抗锯齿。 */
+.manage-panel-surface aside .motion-instance-card,
+.manage-panel-surface aside .motion-instance-card:hover,
+.manage-panel-surface aside .motion-instance-card:active,
+.manage-panel-surface aside .motion-instance-card.is-expanded {
+  overflow: hidden;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background-color: transparent;
+  filter: none;
+  transform: none !important;
+  box-shadow:
+    0 10px 22px rgba(7, 5, 10, 0.14),
+    0 2px 5px rgba(7, 5, 10, 0.08);
+  outline: none;
+  border: 0;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+
+.manage-panel-surface.is-light aside .motion-instance-card,
+.manage-panel-surface.is-light aside .motion-instance-card:hover,
+.manage-panel-surface.is-light aside .motion-instance-card:active,
+.manage-panel-surface.is-light aside .motion-instance-card.is-expanded {
+  background-color: transparent;
+}
+
+.manage-panel-surface aside .motion-instance-card.is-expanded,
+.manage-panel-surface aside .motion-instance-card.is-expanded:hover,
+.manage-panel-surface aside .motion-instance-card.is-expanded:active {
+  box-shadow:
+    0 14px 28px rgba(0, 0, 0, 0.18),
+    0 3px 8px rgba(0, 0, 0, 0.1);
+}
+
+.manage-panel-surface aside .motion-instance-card {
+  transition:
+    width 500ms cubic-bezier(0.4, 0, 0.2, 1),
+    height 500ms cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.motion-slot {
+  --slot-gap: 0px;
+  display: grid;
+  grid-template-columns: 0fr;
+  min-width: 0;
+  transition:
+    grid-template-columns var(--motion-dissolve) var(--motion-dissolve-ease),
+    margin var(--motion-dissolve) var(--motion-dissolve-ease);
+}
+
+.motion-slot.is-before {
+  margin-right: calc(var(--slot-gap) * -1);
+}
+
+.motion-slot.is-after {
+  margin-left: calc(var(--slot-gap) * -1);
+}
+
+.motion-slot.is-open {
+  grid-template-columns: 1fr;
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.motion-slot:not(.is-open) {
+  pointer-events: none;
+}
+
+.motion-slot-clip {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.motion-slot-face {
+  width: max-content;
+  opacity: 0;
+  filter: blur(3px);
+  transform: translate3d(0, 6px, 0);
+  transition:
+    opacity var(--motion-dissolve) var(--motion-dissolve-ease),
+    filter var(--motion-dissolve) var(--motion-dissolve-ease),
+    transform var(--motion-dissolve) var(--motion-dissolve-ease);
+}
+
+.motion-slot.is-open .motion-slot-face {
+  opacity: 1;
+  filter: blur(0);
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .motion-slot,
+  .motion-slot-face,
+  .motion-slot.is-open .motion-slot-face,
+  .manage-panel-surface .motion-panel-face,
+  .manage-panel-surface .motion-panel-face.is-active {
+    filter: none;
+    transform: none;
+    animation: none;
+    transition:
+      opacity 120ms var(--motion-ease-out),
+      visibility 0s linear 120ms;
+  }
+
+  .manage-panel-surface .motion-panel-face.is-active {
+    transition-delay: 0s;
+  }
+}
+
+.manage-card-veil {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  transition: opacity 500ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* 管理页未选中加重底边，名字压在更实的遮罩上。选中仍收短。 */
+.manage-card-scrim {
+  background: linear-gradient(
+    to top,
+    rgba(var(--sf-grad-rgb, 30 15 24) / max(0.9, var(--sf-grad-bc, 0.55))) 0%,
+    rgba(var(--sf-grad-rgb, 30 15 24) / calc(max(0.9, var(--sf-grad-bc, 0.55)) * 0.66)) calc(var(--sf-grad-hc, 40%) * 0.9),
+    rgba(var(--sf-grad-rgb, 30 15 24) / calc(max(0.9, var(--sf-grad-bc, 0.55)) * 0.26)) min(70%, calc(var(--sf-grad-hc, 40%) * 1.6)),
+    transparent min(78%, calc(var(--sf-grad-hc, 40%) * 2))
+  );
+}
+
+/* 选中收短，封面成为焦点。不用首页展开高度。 */
+.manage-card-scrim.is-focus {
+  background: linear-gradient(
+    to top,
+    rgba(var(--sf-grad-rgb, 30 15 24) / calc(var(--sf-grad-bc, 0.55) * 0.78)) 0%,
+    rgba(var(--sf-grad-rgb, 30 15 24) / calc(var(--sf-grad-bc, 0.55) * 0.28)) calc(var(--sf-grad-hc, 40%) * 0.36),
+    transparent calc(var(--sf-grad-hc, 40%) * 0.66)
+  );
+}
+
+.manage-panel-surface.is-light .manage-card-scrim {
+  background: linear-gradient(
+    to top,
+    rgba(var(--sf-lg-rgb, 244 240 237) / max(0.94, var(--sf-lg-bc, 0.86))) 0%,
+    rgba(var(--sf-lg-rgb, 244 240 237) / calc(max(0.94, var(--sf-lg-bc, 0.86)) * 0.7)) calc(var(--sf-lg-hc, 28%) * 1.15),
+    rgba(var(--sf-lg-rgb, 244 240 237) / calc(max(0.94, var(--sf-lg-bc, 0.86)) * 0.3)) min(56%, calc(var(--sf-lg-hc, 28%) * 2.15)),
+    transparent min(66%, calc(var(--sf-lg-hc, 28%) * 2.7))
+  );
+}
+
+.manage-panel-surface.is-light .manage-card-scrim.is-focus {
+  background: linear-gradient(
+    to top,
+    rgba(var(--sf-lg-rgb, 244 240 237) / calc(var(--sf-lg-bc, 0.86) * 0.78)) 0%,
+    rgba(var(--sf-lg-rgb, 244 240 237) / calc(var(--sf-lg-bc, 0.86) * 0.3)) calc(var(--sf-lg-hc, 28%) * 0.46),
+    transparent calc(var(--sf-lg-hc, 28%) * 0.92)
+  );
+}
+
+/* 动态模式管理卡底边仍是中性灰，只把这一层加实。菜单底色不动。 */
+body:has(.ambient-glow-container) .manage-panel-surface:not(.is-light) .manage-card-scrim {
+  background: linear-gradient(
+    to top,
+    rgba(78, 78, 84, 0.97) 0%,
+    rgba(78, 78, 84, 0.74) calc(var(--sf-grad-hc, 40%) * 0.9),
+    rgba(78, 78, 84, 0.32) min(70%, calc(var(--sf-grad-hc, 40%) * 1.6)),
+    transparent min(78%, calc(var(--sf-grad-hc, 40%) * 2))
+  );
+}
+
+body:has(.ambient-glow-container) .manage-panel-surface:not(.is-light) .manage-card-scrim.is-focus {
+  background: linear-gradient(
+    to top,
+    rgba(78, 78, 84, 0.86) 0%,
+    rgba(78, 78, 84, 0.34) calc(var(--sf-grad-hc, 40%) * 0.36),
+    transparent calc(var(--sf-grad-hc, 40%) * 0.66)
+  );
+}
+
+.manage-card-clip {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.manage-card-plate {
+  position: absolute;
+  inset: -1px;
+}
+
+.manage-panel-surface aside .motion-instance-card img {
+  display: block;
+  position: absolute;
+  top: -1px;
+  right: auto;
+  bottom: auto;
+  left: -1px;
+  width: calc(100% + 2px);
+  height: calc(100% + 2px);
+  max-width: none;
+  object-fit: cover;
+  transform: none !important;
+  filter: none;
+  border-radius: 0;
+}
+
+.manage-panel-surface aside .motion-instance-card > .absolute,
+.manage-card-clip > .absolute {
+  border-radius: 0;
 }

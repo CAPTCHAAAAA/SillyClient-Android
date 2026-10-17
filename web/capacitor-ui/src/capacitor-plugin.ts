@@ -172,6 +172,11 @@ export interface TarvenEnvPlugin {
     instanceName?: string
     operationId?: string
     version: string
+    /**
+     * 创建意图仅创建向导声明为 true，且安装源只允许在创建时携带。
+     * 启动既有实例绝不携带——后端据此在实例目录丢失/损坏时拒绝静默全新安装顶替用户数据。
+     */
+    createIntent?: boolean
     zipballUrl?: string
     localZipPath?: string
     /** Complete native installation path; unsupported locations fail without fallback. */
@@ -183,7 +188,8 @@ export interface TarvenEnvPlugin {
   }): Promise<{ ready: boolean }>
 
   enterImmersive(options: {
-    url: string
+    /** 可选：缺省时按 instanceId 切换到该实例的存活会话（多开前台切换）。 */
+    url?: string
     instanceId?: string
     showGestureHint?: boolean
   }): Promise<void>
@@ -192,7 +198,18 @@ export interface TarvenEnvPlugin {
   exitImmersive(): Promise<void>
   returnToTavern(): Promise<void>
   closeTavern(options?: { instanceId?: string; operationId?: string }): Promise<void>
-  getStatus(): Promise<{ serverReady: boolean; mode: string; url?: string; instanceId?: string; operationId?: string }>
+  /** 多开：返回全部存活会话清单；携带 instanceId 时附带该实例的就绪态。 */
+  getStatus(options?: {
+    instanceId?: string
+  }): Promise<{
+    serverReady: boolean
+    mode: string
+    url?: string
+    instanceId?: string
+    operationId?: string
+    runningInstances?: string[]
+    instanceReady?: boolean
+  }>
 
   /** 拉取 GitHub SillyTavern releases 列表。 */
   fetchReleases(): Promise<{ releases: GithubRelease[]; warning?: string }>
@@ -359,8 +376,12 @@ export interface TarvenEnvPlugin {
     operationId?: string
   }): Promise<{ imported: number; bytes: number; skipped: number }>
 
-  /** 导出实例为 ZIP 到 Download/SillyClient-导出，返回保存路径与字节数。 */
-  exportInstance(options: { instanceId: string; installPath?: string }): Promise<{ path: string; bytes: number }>
+  /** 导出实例为 ZIP（支持可选 targetPath；未指定时调起系统文件保存器让用户选择保存位置，返回保存路径与字节数） */
+  exportInstance(options: {
+    instanceId: string
+    installPath?: string
+    targetPath?: string
+  }): Promise<{ path: string; bytes: number; uri?: string }>
 
   /** 设置或更新实例访问密码（本地安全开关） */
   setInstancePassword(options: {
@@ -399,7 +420,7 @@ export interface TarvenEnvPlugin {
   listInstancePasswordStatus(): Promise<Record<string, boolean>>
 
   addListener(
-    eventName: 'log' | 'progress' | 'ready' | 'mode' | 'error',
+    eventName: 'log' | 'progress' | 'ready' | 'mode' | 'error' | 'exit',
     listenerFunc: (data: TarvenEvent) => void,
   ): Promise<PluginListenerHandle>
 }
@@ -419,6 +440,8 @@ export interface TarvenEvent {
   port?: number
   mode?: string
   tavernRunning?: boolean
+  /** 多开：exit 事件的进程退出码。 */
+  code?: number
   lastUsedAt?: string
   totalUsageMs?: number
 }

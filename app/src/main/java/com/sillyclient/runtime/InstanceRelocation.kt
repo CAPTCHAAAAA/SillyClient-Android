@@ -229,9 +229,8 @@ class InstanceRelocation(
 
     private fun localDependenciesComplete(directory: File): Boolean =
         !exists(File(directory, InstanceInstaller.DEPENDENCY_MARKER)) &&
-            (DependencyInstaller.hasRequiredPackages(directory) ||
-                DependencyBank.covers(directory, DependencyArchive(File(paths.tarvenHome, "dependency-archives"))
-                    .lockKey(File(directory, "package-lock.json"))))
+            // 实例自持：只看实例目录自身的 node_modules，共享依赖库已退役。
+            DependencyInstaller.hasRequiredPackages(directory)
 
     companion object {
         internal const val STAGING_PREFIX = ".sillyclient-relocate-"

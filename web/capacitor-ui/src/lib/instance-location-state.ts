@@ -29,11 +29,20 @@ export async function relocateLegacyItems(
   relocate: (item: LegacyInstanceLocation) => Promise<InstanceRelocationResult>,
   onCommitted: (item: LegacyInstanceLocation, result: InstanceRelocationResult) => void,
   ensureCurrent: () => void = () => {},
+  onFailure?: (item: LegacyInstanceLocation, message: string) => void,
 ): Promise<void> {
   for (const item of items) {
     ensureCurrent();
     if (completedIds.has(item.instanceId)) continue;
-    const result = requireRelocationResult(await relocate(item));
+    // 逐项独立迁移：提供 onFailure 时单项失败不阻断其余实例，失败项保留原状并汇总原因。
+    let result: InstanceRelocationResult;
+    try {
+      result = requireRelocationResult(await relocate(item));
+    } catch (error) {
+      if (!onFailure) throw error;
+      onFailure(item, error instanceof Error ? error.message : String(error));
+      continue;
+    }
     onCommitted(item, result);
     ensureCurrent();
   }
