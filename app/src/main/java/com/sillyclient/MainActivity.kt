@@ -19,6 +19,7 @@ import android.view.View
 import com.sillyclient.render.ChameleonController
 import com.sillyclient.render.HapticController
 import com.sillyclient.render.RenderEngineManager
+import com.sillyclient.ui.FileChooserMimeTypes
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
@@ -1186,32 +1187,29 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    /** 为酒馆 WebView 创建兼容 Android 文件管理器的选择 Intent。 */
+    /**
+     * 为酒馆 WebView 创建兼容 Android 文件管理器的选择 Intent。
+     *
+     * `params.createIntent()` 会把 HTML accept 里的扩展名（如 `.json`）原样当成
+     * MIME 类型，系统选择器因此把所有文件判为不可选。这里统一改写成规范化后的
+     * MIME 过滤；只要 accept 出现扩展名或无法识别的项，就放弃过滤，由页面校验。
+     */
     private fun createFileChooserIntent(params: WebChromeClient.FileChooserParams): Intent {
-        return try {
-            params.createIntent().apply {
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                if (params.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE) {
-                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-                }
-            }
+        val filter = FileChooserMimeTypes.resolve(params.acceptTypes)
+        val intent = try {
+            params.createIntent()
         } catch (_: Exception) {
-            val acceptedMimeTypes = params.acceptTypes
-                .flatMap { it.split(',') }
-                .map { it.trim() }
-                .filter { it.contains('/') }
-                .distinct()
-            Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = acceptedMimeTypes.singleOrNull() ?: "*/*"
-                if (acceptedMimeTypes.size > 1) {
-                    putExtra(Intent.EXTRA_MIME_TYPES, acceptedMimeTypes.toTypedArray())
-                }
-                putExtra(
-                    Intent.EXTRA_ALLOW_MULTIPLE,
-                    params.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE
-                )
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE) }
+        }
+        return intent.apply {
+            type = filter.type
+            removeExtra(Intent.EXTRA_MIME_TYPES)
+            if (filter.extraMimeTypes.isNotEmpty()) {
+                putExtra(Intent.EXTRA_MIME_TYPES, filter.extraMimeTypes.toTypedArray())
+            }
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            if (params.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE) {
+                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
             }
         }
     }
