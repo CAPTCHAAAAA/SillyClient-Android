@@ -77,6 +77,7 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.documentfile)
     implementation(libs.capacitor.android)
+    implementation("org.apache.commons:commons-compress:1.28.0")
 
     testImplementation(libs.junit)
     testImplementation("org.json:json:20240303")

@@ -1,7 +1,9 @@
 package com.sillyclient.runtime
 
 import java.io.File
+import java.nio.channels.FileChannel
 import java.nio.file.Files
+import java.nio.file.StandardOpenOption
 import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -171,5 +173,63 @@ class InstanceDataImportTest {
         assertThrows(IllegalArgumentException::class.java) {
             InstanceDataImport.import(backup, File(root, "not-an-instance"), false, {}, { _, _ -> })
         }
+    }
+
+    @Test
+    fun fiveGigabyteBackupGetsDataImportSpecificLimits() {
+        val limits = InstanceDataImport.limitsForArchiveBytes(5_000_000_000L)
+
+        assertTrue(limits.archiveBytes >= 5_000_000_000L)
+        assertTrue(limits.expandedBytes >= 50_000_000_000L)
+        assertTrue(limits.fileBytes >= 5_000_000_000L)
+    }
+
+    @Test
+    fun emptyArchiveIsReportedAsDamagedInsteadOfLinked() = withRoot { root ->
+        val empty = File(root, "empty.zip").apply { writeBytes(ByteArray(0)) }
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            InstanceDataImport.inspect(empty)
+        }
+
+        assertTrue(error.message.orEmpty().contains("为空或已损坏"))
+    }
+
+    @Test
+    fun oversizedArchiveReportsTheConfiguredLimit() = withRoot { root ->
+        val backup = archive(root, entries = arrayOf("data/settings.json" to "x"))
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            InstanceDataImport.inspectBounded(
+                backup,
+                SourceArchive.Limits(archiveBytes = backup.length() - 1)
+            )
+        }
+
+        assertTrue(error.message.orEmpty().contains("上限"))
+    }
+
+    @Test
+    fun seekableChannelCanInspectAndImportWithoutPathConversion() = withRoot { root ->
+        val backup = archive(root, entries = arrayOf(
+            "data/default-user/settings.json" to "settings",
+            "public/scripts/extensions/third-party/plugin/index.js" to "plugin"
+        ))
+        val target = instance(root)
+        val size = backup.length()
+
+        FileChannel.open(backup.toPath(), StandardOpenOption.READ).use { channel ->
+            val summary = InstanceDataImport.inspectChannel(channel, size)
+            assertEquals(2, summary.importEntries)
+            assertTrue(summary.importable)
+        }
+        FileChannel.open(backup.toPath(), StandardOpenOption.READ).use { channel ->
+            val outcome = InstanceDataImport.importChannel(
+                channel, size, target, includeOptional = false,
+                ensureActive = {}, onProgress = { _, _ -> }
+            )
+            assertEquals(2, outcome.imported)
+        }
+
+        assertEquals("settings", File(target, "data/default-user/settings.json").readText())
+        assertEquals("plugin", File(target, "public/scripts/extensions/third-party/plugin/index.js").readText())
     }
 }

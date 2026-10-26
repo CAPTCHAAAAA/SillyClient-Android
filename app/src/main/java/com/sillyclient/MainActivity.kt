@@ -97,6 +97,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.channels.SeekableByteChannel
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebResourceError
@@ -2704,6 +2705,49 @@ body:has(.popup[opening]) #chat {
     ): Triple<Int, Long, Int> {
         val archive = File(archivePath)
         require(archive.isFile) { "压缩包不存在，请重新选择" }
+        return importInstanceDataWith(instanceId, installPath, includeOptional, operationId) {
+                directory, ensureActive, onProgress ->
+            InstanceDataImport.import(
+                archive = archive,
+                instanceDir = directory,
+                includeOptional = includeOptional,
+                ensureActive = ensureActive,
+                onProgress = onProgress
+            )
+        }
+    }
+
+    internal fun importInstanceDataChannel(
+        instanceId: String,
+        installPath: String?,
+        channel: SeekableByteChannel,
+        archiveBytes: Long,
+        includeOptional: Boolean,
+        operationId: String? = null
+    ): Triple<Int, Long, Int> =
+        importInstanceDataWith(instanceId, installPath, includeOptional, operationId) {
+                directory, ensureActive, onProgress ->
+            InstanceDataImport.importChannel(
+                channel = channel,
+                archiveBytes = archiveBytes,
+                instanceDir = directory,
+                includeOptional = includeOptional,
+                ensureActive = ensureActive,
+                onProgress = onProgress
+            )
+        }
+
+    private fun importInstanceDataWith(
+        instanceId: String,
+        installPath: String?,
+        includeOptional: Boolean,
+        operationId: String?,
+        importer: (
+            directory: File,
+            ensureActive: () -> Unit,
+            onProgress: (Int, Long) -> Unit
+        ) -> InstanceDataImport.Outcome
+    ): Triple<Int, Long, Int> {
         val paths = RuntimePaths.from(this)
         return runInstanceMaintenance(instanceId, operationId) { id ->
             val directory = paths.serverDirFor(id, installPath, create = false)
@@ -2711,15 +2755,11 @@ body:has(.popup[opening]) #chat {
                 "实例目录不存在或尚未安装"
             }
             pushLog("> 正在从备份导入用户数据…")
-            val outcome = InstanceDataImport.import(
-                archive = archive,
-                instanceDir = directory,
-                includeOptional = includeOptional,
-                ensureActive = { ensureOperationActive() },
-                onProgress = { count, bytes ->
-                    if (count % 200 == 0) pushLog("正在导入数据 · $count 项 · ${bytes / 1024 / 1024} MB")
-                }
-            )
+            val ensureActive = { ensureOperationActive() }
+            val onProgress = { count: Int, bytes: Long ->
+                if (count % 200 == 0) pushLog("正在导入数据 · $count 项 · ${bytes / 1024 / 1024} MB")
+            }
+            val outcome = importer(directory, ensureActive, onProgress)
             pushLog("[OK] 数据导入完成：${outcome.imported} 项（忽略依赖与程序文件 ${outcome.skippedEntries} 项）")
             runtimeDiagnostic("import.done imported=${outcome.imported} skipped=${outcome.skippedEntries} bytes=${outcome.bytes}")
             Triple(outcome.imported, outcome.bytes, outcome.skippedEntries)

@@ -1,15 +1,20 @@
 package com.sillyclient.runtime
 
 import java.io.File
+import java.io.InputStream
+import java.nio.channels.SeekableByteChannel
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
+import java.util.Collections
 import java.util.Locale
 import java.util.UUID
 import java.util.zip.CRC32
-import java.util.zip.ZipEntry
-import java.util.zip.ZipFile
+import java.util.zip.ZipEntry as JavaZipEntry
+import java.util.zip.ZipFile as JavaZipFile
+import org.apache.commons.compress.archivers.zip.ZipArchiveEntry
+import org.apache.commons.compress.archivers.zip.ZipFile as CommonsZipFile
 
 /**
  * 把完整压缩包（应用导出的实例 ZIP、SillyTavern 自带备份或其它环境的备份）里的
@@ -34,6 +39,13 @@ object InstanceDataImport {
     private const val WEBPACK_CACHE = "data/_webpack"
     private val OPTIONAL_FILES = listOf("secrets.json", "config.yaml", "config.yml")
     private const val TMP_PREFIX = ".sc-import-tmp-"
+    private const val GIB = 1024L * 1024L * 1024L
+    private const val MAX_ARCHIVE_BYTES = 32L * GIB
+    private const val MIN_EXPANDED_BYTES = 16L * GIB
+    private const val MAX_EXPANDED_BYTES = 128L * GIB
+    private const val MAX_FILE_BYTES = 16L * GIB
+    private const val MAX_ENTRIES = 1_000_000
+    private const val STORAGE_RESERVE_BYTES = 256L * 1024 * 1024
 
     data class Summary(
         val importEntries: Int,
@@ -49,19 +61,53 @@ object InstanceDataImport {
 
     data class Outcome(val imported: Int, val bytes: Long, val skippedEntries: Int)
 
+    private interface ArchiveEntry {
+        val name: String
+        val isDirectory: Boolean
+        val size: Long
+        val method: Int
+        val crc: Long
+        val readable: Boolean
+    }
+
+    private interface ArchiveSession : AutoCloseable {
+        val entries: List<ArchiveEntry>
+        fun open(entry: ArchiveEntry): InputStream
+    }
+
+    private data class ArchiveItem(val entry: ArchiveEntry, val path: String)
+
     private data class Plan(
         val summary: Summary,
-        val included: List<SourceArchive.Item>
+        val included: List<ArchiveItem>
     )
 
     /**
      * 只读中央目录，不写任何文件；用于导入前告知用户会覆盖什么、忽略什么。
      * 按默认口径统计（不含 secrets.json / config.yaml），另用 hasSecrets/hasConfig 提示存在性。
      */
-    fun inspect(archive: File): Summary = inspectBounded(archive, SourceArchive.Limits())
+    fun inspect(archive: File): Summary {
+        val limits = limitsForArchiveBytes(archive.length())
+        requireArchiveFile(archive, limits)
+        return JavaArchiveSession(archive).use { session ->
+            plan(session, limits, includeOptional = false) { }.summary
+        }
+    }
 
-    internal fun inspectBounded(archive: File, limits: SourceArchive.Limits): Summary =
-        plan(archive, limits, includeOptional = false) { }.summary
+    internal fun inspectBounded(archive: File, limits: SourceArchive.Limits): Summary {
+        requireArchiveFile(archive, limits)
+        return JavaArchiveSession(archive).use { session ->
+            plan(session, limits, includeOptional = false) { }.summary
+        }
+    }
+
+    internal fun inspectChannel(channel: SeekableByteChannel, archiveBytes: Long): Summary {
+        val limits = limitsForArchiveBytes(archiveBytes)
+        requireArchiveSize(archiveBytes, limits)
+        return CommonsArchiveSession(channel).use { session ->
+            plan(session, limits, includeOptional = false) { }.summary
+        }
+    }
 
     /**
      * 执行导入。[includeOptional] 为 true 时才导入 `secrets.json`/`config.yaml`。
@@ -73,11 +119,42 @@ object InstanceDataImport {
         includeOptional: Boolean,
         ensureActive: () -> Unit,
         onProgress: (Int, Long) -> Unit
-    ): Outcome = importBounded(archive, instanceDir, includeOptional, ensureActive, onProgress,
-        SourceArchive.Limits())
+    ): Outcome = importBounded(
+        archive, instanceDir, includeOptional, ensureActive, onProgress,
+        limitsForArchiveBytes(archive.length())
+    )
 
     internal fun importBounded(
         archive: File,
+        instanceDir: File,
+        includeOptional: Boolean,
+        ensureActive: () -> Unit,
+        onProgress: (Int, Long) -> Unit,
+        limits: SourceArchive.Limits
+    ): Outcome {
+        requireArchiveFile(archive, limits)
+        return JavaArchiveSession(archive).use { session ->
+            importSession(session, instanceDir, includeOptional, ensureActive, onProgress, limits)
+        }
+    }
+
+    internal fun importChannel(
+        channel: SeekableByteChannel,
+        archiveBytes: Long,
+        instanceDir: File,
+        includeOptional: Boolean,
+        ensureActive: () -> Unit,
+        onProgress: (Int, Long) -> Unit
+    ): Outcome {
+        val limits = limitsForArchiveBytes(archiveBytes)
+        requireArchiveSize(archiveBytes, limits)
+        return CommonsArchiveSession(channel).use { session ->
+            importSession(session, instanceDir, includeOptional, ensureActive, onProgress, limits)
+        }
+    }
+
+    private fun importSession(
+        session: ArchiveSession,
         instanceDir: File,
         includeOptional: Boolean,
         ensureActive: () -> Unit,
@@ -88,55 +165,54 @@ object InstanceDataImport {
             "实例目录不存在或尚未安装"
         }
         require(ManagedFiles.isUnlinked(instanceDir)) { "实例目录不能是符号链接" }
-        val planned = plan(archive, limits, includeOptional, ensureActive)
+        val planned = plan(session, limits, includeOptional, ensureActive)
         val summary = planned.summary
         check(summary.importable) { "压缩包里没有可导入的实例数据（$NO_DATA_MESSAGE）" }
+        ensureImportSpace(instanceDir, planned.included)
         val buffer = ByteArray(65_536)
         var imported = 0
         var bytes = 0L
-        ZipFile(archive).use { zip ->
-            for ((entry, path) in planned.included) {
-                ensureActive()
-                val target = File(instanceDir, path)
-                require(ManagedFiles.isWithin(target, instanceDir)) { "导入路径逃逸实例目录" }
-                val parent = requireNotNull(target.parentFile)
-                check(parent.isDirectory || parent.mkdirs()) { "无法创建导入目录" }
-                if (entry.isDirectory) {
-                    if (!target.isDirectory) check(target.mkdirs()) { "无法创建导入目录" }
-                    continue
-                }
-                require(!(target.exists() && target.isDirectory)) { "目标中存在同名目录：$path" }
-                val temporary = File(parent, TMP_PREFIX + UUID.randomUUID().toString())
-                val crc = CRC32()
-                var written = 0L
-                try {
-                    zip.getInputStream(entry).use { input ->
-                        Files.newOutputStream(temporary.toPath(), StandardOpenOption.CREATE_NEW,
-                            StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS).use { sink ->
-                            while (true) {
-                                ensureActive()
-                                val count = input.read(buffer)
-                                if (count < 0) break
-                                require(count.toLong() <= entry.size - written) {
-                                    "压缩包展开超过声明大小"
-                                }
-                                written += count
-                                crc.update(buffer, 0, count)
-                                sink.write(buffer, 0, count)
+        for ((entry, path) in planned.included) {
+            ensureActive()
+            val target = File(instanceDir, path)
+            require(ManagedFiles.isWithin(target, instanceDir)) { "导入路径逃逸实例目录" }
+            val parent = requireNotNull(target.parentFile)
+            check(parent.isDirectory || parent.mkdirs()) { "无法创建导入目录" }
+            if (entry.isDirectory) {
+                if (!target.isDirectory) check(target.mkdirs()) { "无法创建导入目录" }
+                continue
+            }
+            require(!(target.exists() && target.isDirectory)) { "目标中存在同名目录：$path" }
+            val temporary = File(parent, TMP_PREFIX + UUID.randomUUID().toString())
+            val crc = CRC32()
+            var written = 0L
+            try {
+                session.open(entry).use { input ->
+                    Files.newOutputStream(temporary.toPath(), StandardOpenOption.CREATE_NEW,
+                        StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS).use { sink ->
+                        while (true) {
+                            ensureActive()
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            require(count.toLong() <= entry.size - written) {
+                                "压缩包展开超过声明大小"
                             }
+                            written += count
+                            crc.update(buffer, 0, count)
+                            sink.write(buffer, 0, count)
                         }
                     }
-                    require(written == entry.size && crc.value == entry.crc) { "压缩包文件校验失败：$path" }
-                    ensureActive()
-                    publish(temporary, target)
-                } catch (error: Throwable) {
-                    runCatching { temporary.delete() }
-                    throw error
                 }
-                imported++
-                bytes += written
-                onProgress(imported, bytes)
+                require(written == entry.size && crc.value == entry.crc) { "压缩包文件校验失败：$path" }
+                ensureActive()
+                publish(temporary, target)
+            } catch (error: Throwable) {
+                runCatching { temporary.delete() }
+                throw error
             }
+            imported++
+            bytes += written
+            onProgress(imported, bytes)
         }
         return Outcome(imported, bytes, summary.skippedEntries)
     }
@@ -152,76 +228,143 @@ object InstanceDataImport {
     }
 
     private fun plan(
-        archive: File,
+        session: ArchiveSession,
         limits: SourceArchive.Limits,
         includeOptional: Boolean,
         ensureActive: () -> Unit
     ): Plan {
         ensureActive()
-        require(archive.isFile && ManagedFiles.isUnlinked(archive) && archive.length() in 22..limits.archiveBytes) {
-            "压缩包缺失、为符号链接或超过大小上限"
-        }
-        ZipFile(archive).use { zip ->
-            require(zip.size() in 1..limits.entries) { "压缩包条目数量异常" }
-            val entries = ArrayList<SourceArchive.Item>(zip.size())
-            val names = HashSet<String>()
-            var declaredBytes = 0L
-            val enumeration = zip.entries()
-            while (enumeration.hasMoreElements()) {
-                ensureActive()
-                val entry = enumeration.nextElement()
-                val path = SourceArchive.validatedPath(entry)
-                require(names.add(path.lowercase(Locale.ROOT))) { "压缩包包含重复路径" }
-                require(entry.method == ZipEntry.STORED || entry.method == ZipEntry.DEFLATED) {
-                    "压缩包使用了不支持的压缩方式"
-                }
-                require(entry.size in 0..limits.fileBytes && entry.crc in 0..0xffffffffL) {
-                    "压缩包条目大小或校验位无效"
-                }
-                require(!entry.isDirectory || entry.size == 0L) { "压缩包目录条目包含数据" }
-                require(entry.size <= limits.expandedBytes - declaredBytes) { "压缩包超过展开体积上限" }
-                declaredBytes += entry.size
-                entries.add(SourceArchive.Item(entry, path))
+        val rawEntries = session.entries
+        require(rawEntries.size in 1..limits.entries) { "压缩包条目数量异常" }
+        val entries = ArrayList<ArchiveItem>(rawEntries.size)
+        val names = HashSet<String>()
+        var declaredBytes = 0L
+        for (entry in rawEntries) {
+            ensureActive()
+            val path = SourceArchive.validatedPath(entry.name, entry.isDirectory)
+            require(names.add(path.lowercase(Locale.ROOT))) { "压缩包包含重复路径" }
+            require(entry.method == JavaZipEntry.STORED || entry.method == JavaZipEntry.DEFLATED) {
+                "压缩包使用了不支持的压缩方式"
             }
-            val prefix = SourceArchive.wrapperPrefix(entries)
-            var importEntries = 0
-            var importBytes = 0L
-            var skippedEntries = 0
-            var skippedBytes = 0L
-            var hasSecrets = false
-            var hasConfig = false
-            val included = ArrayList<SourceArchive.Item>()
-            for (item in entries) {
-                if (item.entry.isDirectory && prefix.isNotEmpty() && item.path == prefix.removeSuffix("/")) continue
-                val path = item.path.removePrefix(prefix)
-                if (path.isEmpty()) continue
-                if (SourceArchive.isHostMetadata(path)) continue
-                val optional = path in OPTIONAL_FILES
-                if (optional) {
-                    if (path == "secrets.json") hasSecrets = true else hasConfig = true
-                    if (includeOptional) {
-                        included.add(SourceArchive.Item(item.entry, path))
-                        importEntries++
-                        importBytes += item.entry.size
-                    } else {
-                        skippedEntries++
-                        skippedBytes += item.entry.size
-                    }
-                    continue
-                }
-                if (isUserData(path)) {
-                    included.add(SourceArchive.Item(item.entry, path))
+            require(entry.readable) { "压缩包使用了不受支持的加密或压缩数据" }
+            require(entry.size in 0..limits.fileBytes && entry.crc in 0..0xffffffffL) {
+                "压缩包条目大小或校验位无效"
+            }
+            require(!entry.isDirectory || entry.size == 0L) { "压缩包目录条目包含数据" }
+            require(entry.size <= limits.expandedBytes - declaredBytes) { "压缩包超过展开体积上限" }
+            declaredBytes += entry.size
+            entries.add(ArchiveItem(entry, path))
+        }
+        val prefix = wrapperPrefix(entries)
+        var importEntries = 0
+        var importBytes = 0L
+        var skippedEntries = 0
+        var skippedBytes = 0L
+        var hasSecrets = false
+        var hasConfig = false
+        val included = ArrayList<ArchiveItem>()
+        for (item in entries) {
+            if (item.entry.isDirectory && prefix.isNotEmpty() && item.path == prefix.removeSuffix("/")) continue
+            val path = item.path.removePrefix(prefix)
+            if (path.isEmpty()) continue
+            if (SourceArchive.isHostMetadata(path)) continue
+            val optional = path in OPTIONAL_FILES
+            if (optional) {
+                if (path == "secrets.json") hasSecrets = true else hasConfig = true
+                if (includeOptional) {
+                    included.add(ArchiveItem(item.entry, path))
                     importEntries++
                     importBytes += item.entry.size
                 } else {
                     skippedEntries++
                     skippedBytes += item.entry.size
                 }
+                continue
             }
-            return Plan(
-                Summary(importEntries, importBytes, skippedEntries, skippedBytes, hasSecrets, hasConfig, prefix),
-                included
-            )
+            if (isUserData(path)) {
+                included.add(ArchiveItem(item.entry, path))
+                importEntries++
+                importBytes += item.entry.size
+            } else {
+                skippedEntries++
+                skippedBytes += item.entry.size
+            }
+        }
+        return Plan(
+            Summary(importEntries, importBytes, skippedEntries, skippedBytes, hasSecrets, hasConfig, prefix),
+            included
+        )
+    }
+
+    private data class JavaEntry(val source: JavaZipEntry) : ArchiveEntry {
+        override val name: String get() = source.name
+        override val isDirectory: Boolean get() = source.isDirectory
+        override val size: Long get() = source.size
+        override val method: Int get() = source.method
+        override val crc: Long get() = source.crc
+        override val readable: Boolean get() = true
+    }
+
+    private class JavaArchiveSession(file: File) : ArchiveSession {
+        private val zip = JavaZipFile(file)
+        override val entries: List<ArchiveEntry> = Collections.list(zip.entries()).map(::JavaEntry)
+
+        override fun open(entry: ArchiveEntry): InputStream =
+            zip.getInputStream((entry as JavaEntry).source)
+
+        override fun close() = zip.close()
+    }
+
+    private data class CommonsEntry(val source: ZipArchiveEntry, override val readable: Boolean) : ArchiveEntry {
+        override val name: String get() = source.name
+        override val isDirectory: Boolean get() = source.isDirectory
+        override val size: Long get() = source.size
+        override val method: Int get() = source.method
+        override val crc: Long get() = source.crc
+    }
+
+    private class CommonsArchiveSession(channel: SeekableByteChannel) : ArchiveSession {
+        private val zip = CommonsZipFile.builder()
+            .setSeekableByteChannel(channel)
+            .setCharset(Charsets.UTF_8)
+            .setUseUnicodeExtraFields(false)
+            .setIgnoreLocalFileHeader(false)
+            .setMaxNumberOfDisks(1)
+            .get()
+        override val entries: List<ArchiveEntry> = Collections.list(zip.entries)
+            .map { CommonsEntry(it, zip.canReadEntryData(it)) }
+
+        override fun open(entry: ArchiveEntry): InputStream =
+            zip.getInputStream((entry as CommonsEntry).source)
+
+        override fun close() = zip.close()
+    }
+
+    private fun wrapperPrefix(entries: List<ArchiveItem>): String {
+        val root = entries.first().path.substringBefore('/')
+        if (root in setOf("data", "public", "src", "node_modules", "plugins", "default-user")) return ""
+        val prefix = "$root/"
+        if (entries.any { it.path != root && !it.path.startsWith(prefix) } ||
+            entries.any { it.path == root && !it.entry.isDirectory }
+        ) return ""
+        val hasInstanceRoot = entries.any {
+            val path = it.path.removePrefix(prefix)
+            path in setOf("server.js", "package.json", "config.yaml") || path.startsWith("data/") ||
+                (path == "data" && it.entry.isDirectory)
+        }
+        return if (hasInstanceRoot) prefix else ""
+    }
+
+    private fun requireArchiveFile(archive: File, limits: SourceArchive.Limits) {
+        require(archive.isFile) { "压缩包不存在，请重新选择" }
+        require(ManagedFiles.isUnlinked(archive)) { "压缩包不能是符号链接" }
+        requireArchiveSize(archive.length(), limits)
+    }
+
+    private fun requireArchiveSize(archiveBytes: Long, limits: SourceArchive.Limits) {
+        require(archiveBytes >= 22) { "压缩包为空或已损坏" }
+        require(archiveBytes <= limits.archiveBytes) {
+            "压缩包超过 ${formatBytes(limits.archiveBytes)} 上限"
         }
     }
 
@@ -235,6 +378,46 @@ object InstanceDataImport {
         if (path == EXTENSIONS_ROOT || path.startsWith("$EXTENSIONS_ROOT/")) return true
         if (path in setOf("public", "public/scripts", "public/scripts/extensions")) return true
         return false
+    }
+
+    internal fun limitsForArchiveBytes(archiveBytes: Long): SourceArchive.Limits {
+        val safeArchiveBytes = archiveBytes.coerceAtLeast(0)
+        val scaledExpandedBytes = if (safeArchiveBytes > MAX_EXPANDED_BYTES / 16) {
+            MAX_EXPANDED_BYTES
+        } else {
+            safeArchiveBytes * 16
+        }
+        val expandedBytes = maxOf(MIN_EXPANDED_BYTES, scaledExpandedBytes)
+            .coerceAtMost(MAX_EXPANDED_BYTES)
+        return SourceArchive.Limits(
+            archiveBytes = MAX_ARCHIVE_BYTES,
+            expandedBytes = expandedBytes,
+            fileBytes = minOf(MAX_FILE_BYTES, expandedBytes),
+            entries = MAX_ENTRIES
+        )
+    }
+
+    private fun ensureImportSpace(instanceDir: File, entries: List<ArchiveItem>) {
+        var netAdditionalBytes = 0L
+        var largestTemporaryFileBytes = 0L
+        for ((entry, path) in entries) {
+            if (entry.isDirectory) continue
+            val target = File(instanceDir, path)
+            require(ManagedFiles.isWithin(target, instanceDir)) { "导入路径逃逸实例目录" }
+            val existingBytes = if (target.isFile && ManagedFiles.isUnlinked(target)) target.length() else 0L
+            if (entry.size > existingBytes) netAdditionalBytes += entry.size - existingBytes
+            largestTemporaryFileBytes = maxOf(largestTemporaryFileBytes, entry.size)
+        }
+        val requiredBytes = maxOf(netAdditionalBytes, largestTemporaryFileBytes)
+        val availableBytes = (instanceDir.usableSpace - STORAGE_RESERVE_BYTES).coerceAtLeast(0)
+        check(requiredBytes <= availableBytes) {
+            "设备可用空间不足：预计需要 ${formatBytes(requiredBytes)}，当前可用 ${formatBytes(availableBytes)}"
+        }
+    }
+
+    private fun formatBytes(bytes: Long): String {
+        if (bytes >= GIB) return String.format(Locale.ROOT, "%.1f GB", bytes.toDouble() / GIB)
+        return String.format(Locale.ROOT, "%.1f MB", bytes.toDouble() / (1024 * 1024))
     }
 
     private const val NO_DATA_MESSAGE = "需要包含 data/ 或 public/scripts/extensions/third-party/ 的备份"
