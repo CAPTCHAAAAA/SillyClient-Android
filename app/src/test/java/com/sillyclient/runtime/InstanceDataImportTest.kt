@@ -172,4 +172,36 @@ class InstanceDataImportTest {
             InstanceDataImport.import(backup, File(root, "not-an-instance"), false, {}, { _, _ -> })
         }
     }
+
+    @Test
+    fun fiveGigabyteBackupGetsDataImportSpecificLimits() {
+        val limits = InstanceDataImport.limitsForArchiveBytes(5_000_000_000L)
+
+        assertTrue(limits.archiveBytes >= 5_000_000_000L)
+        assertTrue(limits.expandedBytes >= 50_000_000_000L)
+        assertTrue(limits.fileBytes >= 5_000_000_000L)
+    }
+
+    @Test
+    fun emptyArchiveIsReportedAsDamagedInsteadOfLinked() = withRoot { root ->
+        val empty = File(root, "empty.zip").apply { writeBytes(ByteArray(0)) }
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            InstanceDataImport.inspect(empty)
+        }
+
+        assertTrue(error.message.orEmpty().contains("为空或已损坏"))
+    }
+
+    @Test
+    fun oversizedArchiveReportsTheConfiguredLimit() = withRoot { root ->
+        val backup = archive(root, entries = arrayOf("data/settings.json" to "x"))
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            InstanceDataImport.inspectBounded(
+                backup,
+                SourceArchive.Limits(archiveBytes = backup.length() - 1)
+            )
+        }
+
+        assertTrue(error.message.orEmpty().contains("上限"))
+    }
 }

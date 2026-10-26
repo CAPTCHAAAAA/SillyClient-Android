@@ -34,6 +34,13 @@ object InstanceDataImport {
     private const val WEBPACK_CACHE = "data/_webpack"
     private val OPTIONAL_FILES = listOf("secrets.json", "config.yaml", "config.yml")
     private const val TMP_PREFIX = ".sc-import-tmp-"
+    private const val GIB = 1024L * 1024L * 1024L
+    private const val MAX_ARCHIVE_BYTES = 32L * GIB
+    private const val MIN_EXPANDED_BYTES = 16L * GIB
+    private const val MAX_EXPANDED_BYTES = 128L * GIB
+    private const val MAX_FILE_BYTES = 16L * GIB
+    private const val MAX_ENTRIES = 1_000_000
+    private const val STORAGE_RESERVE_BYTES = 256L * 1024 * 1024
 
     data class Summary(
         val importEntries: Int,
@@ -58,7 +65,7 @@ object InstanceDataImport {
      * 只读中央目录，不写任何文件；用于导入前告知用户会覆盖什么、忽略什么。
      * 按默认口径统计（不含 secrets.json / config.yaml），另用 hasSecrets/hasConfig 提示存在性。
      */
-    fun inspect(archive: File): Summary = inspectBounded(archive, SourceArchive.Limits())
+    fun inspect(archive: File): Summary = inspectBounded(archive, limitsForArchiveBytes(archive.length()))
 
     internal fun inspectBounded(archive: File, limits: SourceArchive.Limits): Summary =
         plan(archive, limits, includeOptional = false) { }.summary
@@ -74,7 +81,7 @@ object InstanceDataImport {
         ensureActive: () -> Unit,
         onProgress: (Int, Long) -> Unit
     ): Outcome = importBounded(archive, instanceDir, includeOptional, ensureActive, onProgress,
-        SourceArchive.Limits())
+        limitsForArchiveBytes(archive.length()))
 
     internal fun importBounded(
         archive: File,
@@ -91,6 +98,7 @@ object InstanceDataImport {
         val planned = plan(archive, limits, includeOptional, ensureActive)
         val summary = planned.summary
         check(summary.importable) { "压缩包里没有可导入的实例数据（$NO_DATA_MESSAGE）" }
+        ensureImportSpace(instanceDir, planned.included)
         val buffer = ByteArray(65_536)
         var imported = 0
         var bytes = 0L
@@ -158,8 +166,11 @@ object InstanceDataImport {
         ensureActive: () -> Unit
     ): Plan {
         ensureActive()
-        require(archive.isFile && ManagedFiles.isUnlinked(archive) && archive.length() in 22..limits.archiveBytes) {
-            "压缩包缺失、为符号链接或超过大小上限"
+        require(archive.isFile) { "压缩包不存在，请重新选择" }
+        require(ManagedFiles.isUnlinked(archive)) { "压缩包不能是符号链接" }
+        require(archive.length() >= 22) { "压缩包为空或已损坏" }
+        require(archive.length() <= limits.archiveBytes) {
+            "压缩包超过 ${formatBytes(limits.archiveBytes)} 上限"
         }
         ZipFile(archive).use { zip ->
             require(zip.size() in 1..limits.entries) { "压缩包条目数量异常" }
@@ -235,6 +246,46 @@ object InstanceDataImport {
         if (path == EXTENSIONS_ROOT || path.startsWith("$EXTENSIONS_ROOT/")) return true
         if (path in setOf("public", "public/scripts", "public/scripts/extensions")) return true
         return false
+    }
+
+    internal fun limitsForArchiveBytes(archiveBytes: Long): SourceArchive.Limits {
+        val safeArchiveBytes = archiveBytes.coerceAtLeast(0)
+        val scaledExpandedBytes = if (safeArchiveBytes > MAX_EXPANDED_BYTES / 16) {
+            MAX_EXPANDED_BYTES
+        } else {
+            safeArchiveBytes * 16
+        }
+        val expandedBytes = maxOf(MIN_EXPANDED_BYTES, scaledExpandedBytes)
+            .coerceAtMost(MAX_EXPANDED_BYTES)
+        return SourceArchive.Limits(
+            archiveBytes = MAX_ARCHIVE_BYTES,
+            expandedBytes = expandedBytes,
+            fileBytes = minOf(MAX_FILE_BYTES, expandedBytes),
+            entries = MAX_ENTRIES
+        )
+    }
+
+    private fun ensureImportSpace(instanceDir: File, entries: List<SourceArchive.Item>) {
+        var netAdditionalBytes = 0L
+        var largestTemporaryFileBytes = 0L
+        for ((entry, path) in entries) {
+            if (entry.isDirectory) continue
+            val target = File(instanceDir, path)
+            require(ManagedFiles.isWithin(target, instanceDir)) { "导入路径逃逸实例目录" }
+            val existingBytes = if (target.isFile && ManagedFiles.isUnlinked(target)) target.length() else 0L
+            if (entry.size > existingBytes) netAdditionalBytes += entry.size - existingBytes
+            largestTemporaryFileBytes = maxOf(largestTemporaryFileBytes, entry.size)
+        }
+        val requiredBytes = maxOf(netAdditionalBytes, largestTemporaryFileBytes)
+        val availableBytes = (instanceDir.usableSpace - STORAGE_RESERVE_BYTES).coerceAtLeast(0)
+        check(requiredBytes <= availableBytes) {
+            "设备可用空间不足：预计需要 ${formatBytes(requiredBytes)}，当前可用 ${formatBytes(availableBytes)}"
+        }
+    }
+
+    private fun formatBytes(bytes: Long): String {
+        if (bytes >= GIB) return String.format(Locale.ROOT, "%.1f GB", bytes.toDouble() / GIB)
+        return String.format(Locale.ROOT, "%.1f MB", bytes.toDouble() / (1024 * 1024))
     }
 
     private const val NO_DATA_MESSAGE = "需要包含 data/ 或 public/scripts/extensions/third-party/ 的备份"
