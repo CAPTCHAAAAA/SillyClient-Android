@@ -219,15 +219,18 @@ class InstallLocationRegistryTest {
     }
 
     @Test
-    fun registryContainingForeignPathsFailsWithoutRecursiveFallback() = withRoot { root, paths ->
+    fun foreignPathRecordIsSkippedWithoutRecursiveFallbackOrDataLoss() = withRoot { root, paths ->
         val target = complete(File(paths.installationsDir, "registered"))
         paths.installLocations.registerCommitted("stable-id", target)
         val registryFile = File(paths.tarvenHome, "install-locations.json")
         val document = JSONObject(registryFile.readText())
         document.getJSONArray("locations").getJSONObject(0).put("path", File(root, "outside/instance").path)
         registryFile.writeText(document.toString())
-        assertThrows(IllegalArgumentException::class.java) { paths.installLocations.entries() }
-        assertThrows(IllegalArgumentException::class.java) { paths.launchDirectoryFor("stable-id", null) }
+        assertTrue(paths.installLocations.entries().isEmpty())
+        assertEquals("server source", File(target, "server.js").readText())
+        val preserved = JSONObject(registryFile.readText()).getJSONArray("locations")
+        assertEquals(1, preserved.length())
+        assertEquals(File(root, "outside/instance").path, preserved.getJSONObject(0).getString("path"))
     }
 
     @Test
@@ -480,7 +483,7 @@ class InstallLocationRegistryTest {
             val records = getJSONArray("locations")
             records.put(JSONObject(records.getJSONObject(0).toString()))
         }.toString()
-        for (corruption in listOf("broken json", duplicate, JSONObject(original).put("revision", 2).toString())) {
+        for (corruption in listOf("broken json", JSONObject(original).put("revision", 2).toString())) {
             file.writeText(corruption)
             assertThrows(Exception::class.java) { paths(root).serverDirFor("stable-id", create = false) }
             assertThrows(Exception::class.java) {
@@ -488,6 +491,45 @@ class InstallLocationRegistryTest {
             }
             assertFalse(File(paths.serversDir, "stable-id").exists())
             assertEquals("server source", File(target, "server.js").readText())
+        }
+        file.writeText(duplicate)
+        assertEquals(target, paths(root).launchDirectoryFor("stable-id", null))
+        assertEquals(setOf("stable-id"), paths(root).installLocations.entries().keys)
+        assertEquals("server source", File(target, "server.js").readText())
+    }
+
+    @Test
+    fun legacyNestedRegistrationRemainsUsableWithoutRelaxingNewTargets() = withRoot { root, paths ->
+        val outer = complete(File(paths.serversDir, "legacy"))
+        val nested = complete(File(outer, "root/instance"))
+        val registryFile = File(paths.tarvenHome, "install-locations.json")
+        requireNotNull(registryFile.parentFile).mkdirs()
+        val records = JSONArray()
+            .put(JSONObject()
+                .put("instanceId", "legacy-id")
+                .put("path", nested.path)
+                .put("fileKey", JSONObject.NULL)
+                .put("createdAt", 1L)
+                .put("retainedPaths", JSONArray()))
+            .put(JSONObject()
+                .put("instanceId", "overlapping-id")
+                .put("path", outer.path)
+                .put("fileKey", JSONObject.NULL)
+                .put("createdAt", 2L)
+                .put("retainedPaths", JSONArray()))
+        registryFile.writeText(JSONObject()
+            .put("revision", 1)
+            .put("owner", "sillyclient")
+            .put("locations", records)
+            .put("retiredSources", JSONArray())
+            .toString())
+
+        val reloaded = paths(root)
+        assertEquals(nested, reloaded.installLocations.entries()["legacy-id"])
+        assertEquals(setOf("legacy-id"), reloaded.installLocations.entries().keys)
+        assertEquals(nested, reloaded.launchDirectoryFor("legacy-id", null))
+        assertThrows(IllegalArgumentException::class.java) {
+            reloaded.launchDirectoryFor("new-id", File(paths.serversDir, "new/root/instance").path)
         }
     }
 

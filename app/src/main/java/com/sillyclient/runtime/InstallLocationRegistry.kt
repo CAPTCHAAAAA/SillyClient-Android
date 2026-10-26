@@ -31,7 +31,8 @@ class InstallLocationRegistry(
         val retainedDirectories: List<File> = emptyList())
     private data class RegistryState(
         val locations: MutableMap<String, Location> = linkedMapOf(),
-        val retiredSources: MutableSet<File> = linkedSetOf()
+        val retiredSources: MutableSet<File> = linkedSetOf(),
+        val ignoredLocationRecords: MutableList<Any> = mutableListOf()
     ) {
         fun retainedCount(): Int = retiredSources.size + locations.values.sumOf { it.retainedDirectories.size }
     }
@@ -667,34 +668,48 @@ class InstallLocationRegistry(
         val locations = document.getJSONArray("locations")
         require(locations.length() <= MAX_LOCATIONS) { "Installation registry exceeds its entry limit" }
         val records = linkedMapOf<String, Location>()
+        val rawById = linkedMapOf<String, Any>()
+        val ignored = mutableListOf<Any>()
         for (index in 0 until locations.length()) {
-            val record = locations.getJSONObject(index)
-            val id = record.getString("instanceId")
-            require(id == normalizeInstanceId(id) && id !in records) { "Invalid or duplicate registered instance identity" }
-            val path = record.getString("path")
-            val directory = normalized(File(path))
-            require(File(path).isAbsolute && path == directory.path) { "Invalid registered installation path" }
-            allowedRootFor(directory)
-            val key = record.get("fileKey")
-            require(key == JSONObject.NULL || key is String) { "Invalid registered installation directory identity" }
-            val createdAt = record.get("createdAt")
-            require((createdAt is Long || createdAt is Int) && (createdAt as Number).toLong() >= 0) {
-                "Invalid registered installation creation time"
+            val raw = try {
+                locations.get(index)
+            } catch (_: RuntimeException) {
+                ignored.add(JSONObject.NULL)
+                continue
             }
-            require(!ManagedFiles.isWithin(directory, serversRoot) ||
-                directory.parentFile?.canonicalFile == serversRoot.canonicalFile) { "Nested default installation directory" }
-            require(!record.has("retainedPaths") || record.get("retainedPaths") is JSONArray) { "Invalid retained relocation paths" }
-            val retained = record.optJSONArray("retainedPaths")?.let { paths ->
-                readRetainedPaths(paths, 32)
-            }.orEmpty()
-            records[id] = Location(directory, if (key == JSONObject.NULL) null else key as String,
-                (createdAt as Number).toLong(), retained)
+            if (raw !is JSONObject) {
+                ignored.add(raw)
+                continue
+            }
+            val parsed = try {
+                readLocationRecord(raw)
+            } catch (_: RuntimeException) {
+                null
+            }
+            if (parsed == null || parsed.first in records) {
+                ignored.add(raw)
+                continue
+            }
+            val (id, location) = parsed
+            records[id] = location
+            rawById[id] = raw
         }
         require(!document.has("retiredSources") || document.get("retiredSources") is JSONArray) { "Invalid retired relocation sources" }
         val retired = document.optJSONArray("retiredSources")?.let { readRetainedPaths(it, MAX_RETAINED_PATHS) }.orEmpty()
-        val state = RegistryState(records, retired.toMutableSet())
+        val accepted = linkedMapOf<String, Location>()
+        val acceptedPaths = mutableListOf<File>()
+        for ((id, location) in records) {
+            val paths = listOf(location.directory) + location.retainedDirectories
+            if (paths.any { candidate -> acceptedPaths.any { overlaps(candidate, it) } }) {
+                rawById[id]?.let(ignored::add)
+                continue
+            }
+            accepted[id] = location
+            acceptedPaths.addAll(paths)
+        }
+        val state = RegistryState(accepted, retired.toMutableSet(), ignored)
         require(state.retainedCount() <= MAX_RETAINED_PATHS) { "Too many retained relocation sources" }
-        val allPaths = (records.values.flatMap { listOf(it.directory) + it.retainedDirectories } + retired)
+        val allPaths = (state.locations.values.flatMap { listOf(it.directory) + it.retainedDirectories } + retired)
             .map { it.canonicalFile.toPath() }
         allPaths.forEachIndexed { index, path ->
             for (other in index + 1 until allPaths.size) {
@@ -704,6 +719,37 @@ class InstallLocationRegistry(
             }
         }
         return state
+    }
+
+    private fun readLocationRecord(record: JSONObject): Pair<String, Location> {
+        val id = record.getString("instanceId")
+        require(id == normalizeInstanceId(id)) { "Invalid registered instance identity" }
+        val path = record.getString("path")
+        val directory = normalized(File(path))
+        require(File(path).isAbsolute && path == directory.path) { "Invalid registered installation path" }
+        allowedRootFor(directory)
+        val key = record.get("fileKey")
+        require(key == JSONObject.NULL || key is String) { "Invalid registered installation directory identity" }
+        val createdAt = record.get("createdAt")
+        require((createdAt is Long || createdAt is Int) && (createdAt as Number).toLong() >= 0) {
+            "Invalid registered installation creation time"
+        }
+        // Existing registries may contain legacy instances nested below the
+        // currently configured root after the user changed roots. They remain
+        // readable and launchable; new creation/relocation targets are still
+        // required to be direct children by validateNewTarget/validateRelocationTarget.
+        require(!record.has("retainedPaths") || record.get("retainedPaths") is JSONArray) {
+            "Invalid retained relocation paths"
+        }
+        val retained = record.optJSONArray("retainedPaths")?.let { paths ->
+            readRetainedPaths(paths, 32)
+        }.orEmpty()
+        return id to Location(
+            directory,
+            if (key == JSONObject.NULL) null else key as String,
+            (createdAt as Number).toLong(),
+            retained
+        )
     }
 
     private fun readRetainedPaths(paths: JSONArray, maximum: Int): List<File> {
@@ -740,6 +786,7 @@ class InstallLocationRegistry(
                 .put("fileKey", location.fileKey ?: JSONObject.NULL).put("createdAt", location.createdAt)
                 .put("retainedPaths", JSONArray(location.retainedDirectories.map { it.path })))
         }
+        state.ignoredLocationRecords.forEach { locations.put(it) }
         val bytes = JSONObject().put("revision", 1).put("owner", "sillyclient")
             .put("locations", locations).put("retiredSources", JSONArray(state.retiredSources.map { it.path }))
             .toString(2).toByteArray(Charsets.UTF_8)
