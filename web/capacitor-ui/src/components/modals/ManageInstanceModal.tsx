@@ -1623,17 +1623,13 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                     >
                       <button
                         type="button"
-                        disabled={importStatus?.startsWith("正在") ?? false}
+                        disabled={importStatus === "正在导入…"}
                         onClick={async () => {
                           try {
-                            setImportStatus("正在读取压缩包…");
-                            const picked = await TarvenEnv.pickZipFile({ purpose: "dataImport" });
-                            if (!picked?.path && !picked?.uri) return;
-                            setImportStatus("正在预检压缩包…");
-                            const summary = await TarvenEnv.inspectImportArchive({
-                              archivePath: picked.path || undefined,
-                              archiveUri: picked.uri,
-                            });
+                            setImportStatus(null);
+                            const picked = await TarvenEnv.pickZipFile();
+                            if (!picked?.path) return;
+                            const summary = await TarvenEnv.inspectImportArchive({ archivePath: picked.path });
                             if (!summary.importable) {
                               setImportStatus("该压缩包里没有可导入的实例数据（需要 data/ 或第三方扩展）");
                               return;
@@ -1644,8 +1640,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                             const res = await TarvenEnv.importInstanceData({
                               instanceId: mp.installDir || mp.id,
                               installPath: mp.installPath,
-                              archivePath: picked.path || undefined,
-                              archiveUri: picked.uri,
+                              archivePath: picked.path,
                               includeOptional: false,
                             });
                             setImportStatus(`已导入 ${res.imported} 项（忽略 ${res.skipped} 项依赖与程序文件）`);

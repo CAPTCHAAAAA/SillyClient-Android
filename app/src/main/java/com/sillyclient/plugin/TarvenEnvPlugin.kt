@@ -6,7 +6,6 @@ import android.net.Uri
 import android.os.Build
 import android.Manifest
 import android.provider.DocumentsContract
-import android.provider.OpenableColumns
 import android.provider.Settings
 import android.util.Base64
 import android.util.Log
@@ -37,7 +36,6 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.zip.ZipFile
 import org.json.JSONObject
 
 /**
@@ -691,7 +689,7 @@ class TarvenEnvPlugin : Plugin() {
         }
     }
 
-    /** 系统文件选择器；实例安装默认复制到 tmp，数据导入优先使用可随机读取的 content URI。 */
+    /** 系统文件选择器,选择 SillyTavern zip 文件,复制到 tmp 目录并返回路径。 */
     @PluginMethod
     fun pickZipFile(call: PluginCall) {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -707,10 +705,7 @@ class TarvenEnvPlugin : Plugin() {
                     "*/*"
                 )
             )
-            addFlags(
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
-            )
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         startActivityForResult(call, intent, "pickZipFile")
     }
@@ -729,26 +724,9 @@ class TarvenEnvPlugin : Plugin() {
         val act = activity as? MainActivity
         if (act == null) { call.reject("Not MainActivity"); return }
         val uri = data.data ?: run { call.reject("No file data"); return }
-        if (call.getString("purpose", "instanceSource") == "dataImport") {
-            runCatching {
-                act.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            }
-        }
 
         Thread {
             try {
-                if (call.getString("purpose", "instanceSource") == "dataImport" && canReadDescriptorArchive(uri)) {
-                    val ret = JSObject()
-                    ret.put("path", "")
-                    ret.put("uri", uri.toString())
-                    ret.put("sizeBytes", selectedFileSize(uri))
-                    ret.put("direct", true)
-                    call.resolve(ret)
-                    return@Thread
-                }
                 val tmpDir = File(act.cacheDir, "sillyclient-tmp").apply { mkdirs() }
                 val destFile = File(tmpDir, "sillytavern-import-${System.currentTimeMillis()}.zip")
                 val input = act.contentResolver.openInputStream(uri)
@@ -758,39 +736,13 @@ class TarvenEnvPlugin : Plugin() {
                 }
                 val ret = JSObject()
                 ret.put("path", destFile.absolutePath)
-                ret.put("uri", uri.toString())
                 ret.put("sizeBytes", destFile.length())
-                ret.put("direct", false)
                 call.resolve(ret)
             } catch (e: Exception) {
                 android.util.Log.e(TAG, "pickZipFile error", e)
                 call.reject("pickZipFile: ${e.message}")
             }
         }.start()
-    }
-
-    private fun canReadDescriptorArchive(uri: Uri): Boolean {
-        val descriptor = context.contentResolver.openFileDescriptor(uri, "r") ?: return false
-        return descriptor.use {
-            val archive = File("/proc/self/fd/${it.fd}")
-            runCatching {
-                require(archive.isFile && archive.length() >= 22)
-                ZipFile(archive).use { zip -> zip.size() > 0 }
-            }.getOrDefault(false)
-        }
-    }
-
-    private fun selectedFileSize(uri: Uri): Long = try {
-        context.contentResolver.query(
-            uri, arrayOf(OpenableColumns.SIZE), null, null, null
-        )?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                val index = cursor.getColumnIndex(OpenableColumns.SIZE)
-                if (index >= 0 && !cursor.isNull(index)) cursor.getLong(index) else -1L
-            } else -1L
-        } ?: -1L
-    } catch (_: Exception) {
-        -1L
     }
 
     @PluginMethod
@@ -1218,21 +1170,11 @@ class TarvenEnvPlugin : Plugin() {
     /** 只读预检：压缩包里有多少用户数据会被导入、多少依赖/程序文件会被忽略。 */
     @PluginMethod
     fun inspectImportArchive(call: PluginCall) {
-        val archivePath = call.getString("archivePath")
-        val archiveUri = call.getString("archiveUri")
-        if (archivePath == null && archiveUri == null) {
-            call.reject("archivePath or archiveUri required")
-            return
-        }
+        val archivePath = call.getString("archivePath") ?: run { call.reject("archivePath required"); return }
         Thread {
             try {
-                val summary = withSelectedArchive(archivePath, archiveUri) { archive, trustedDescriptor ->
-                    if (trustedDescriptor) {
-                        com.sillyclient.runtime.InstanceDataImport.inspectDescriptor(archive)
-                    } else {
-                        com.sillyclient.runtime.InstanceDataImport.inspect(archive)
-                    }
-                }
+                val archive = java.io.File(archivePath)
+                val summary = com.sillyclient.runtime.InstanceDataImport.inspect(archive)
                 call.resolve(JSObject()
                     .put("importEntries", summary.importEntries)
                     .put("importBytes", summary.importBytes)
@@ -1256,12 +1198,7 @@ class TarvenEnvPlugin : Plugin() {
     fun importInstanceData(call: PluginCall) {
         val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
         val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
-        val archivePath = call.getString("archivePath")
-        val archiveUri = call.getString("archiveUri")
-        if (archivePath == null && archiveUri == null) {
-            call.reject("archivePath or archiveUri required")
-            return
-        }
+        val archivePath = call.getString("archivePath") ?: run { call.reject("archivePath required"); return }
         val includeOptional = call.getBoolean("includeOptional", false) ?: false
         act.runOnUiThread {
             val paths = act.runtimePaths
@@ -1278,17 +1215,9 @@ class TarvenEnvPlugin : Plugin() {
                 try {
                     com.sillyclient.runtime.KeepAlive.acquire(act)
                     try {
-                        val (imported, bytes, skipped) = withSelectedArchive(archivePath, archiveUri) {
-                                archive, trustedDescriptor ->
-                            act.importInstanceDataArchive(
-                                instanceId = instanceId,
-                                installPath = call.getString("installPath"),
-                                archive = archive,
-                                includeOptional = includeOptional,
-                                operationId = call.getString("operationId"),
-                                trustedFileDescriptor = trustedDescriptor
-                            )
-                        }
+                        val (imported, bytes, skipped) = act.importInstanceData(
+                            instanceId, call.getString("installPath"), archivePath,
+                            includeOptional, call.getString("operationId"))
                         call.resolve(JSObject().put("imported", imported).put("bytes", bytes).put("skipped", skipped))
                     } finally {
                         act.runOnUiThread { com.sillyclient.runtime.KeepAlive.release(act.applicationContext) }
@@ -1299,26 +1228,6 @@ class TarvenEnvPlugin : Plugin() {
                 }
             }.start()
         }
-    }
-
-    private fun <T> withSelectedArchive(
-        archivePath: String?,
-        archiveUri: String?,
-        action: (archive: File, trustedDescriptor: Boolean) -> T
-    ): T {
-        if (!archiveUri.isNullOrBlank()) {
-            val uri = Uri.parse(archiveUri)
-            require(uri.scheme == "content") { "archiveUri must be a content URI" }
-            val descriptor = context.contentResolver.openFileDescriptor(uri, "r")
-                ?: throw IOException("无法打开所选压缩包")
-            return descriptor.use { open ->
-                action(File("/proc/self/fd/${open.fd}"), true)
-            }
-        }
-        return action(
-            File(requireNotNull(archivePath) { "archivePath or archiveUri required" }),
-            false
-        )
     }
 
     /** 卸载实例:删除安装目录 + 封面图。 */

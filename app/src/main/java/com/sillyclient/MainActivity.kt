@@ -2702,20 +2702,7 @@ body:has(.popup[opening]) #chat {
         includeOptional: Boolean,
         operationId: String? = null
     ): Triple<Int, Long, Int> {
-        return importInstanceDataArchive(
-            instanceId, installPath, File(archivePath), includeOptional, operationId,
-            trustedFileDescriptor = false
-        )
-    }
-
-    internal fun importInstanceDataArchive(
-        instanceId: String,
-        installPath: String?,
-        archive: File,
-        includeOptional: Boolean,
-        operationId: String? = null,
-        trustedFileDescriptor: Boolean
-    ): Triple<Int, Long, Int> {
+        val archive = File(archivePath)
         require(archive.isFile) { "压缩包不存在，请重新选择" }
         val paths = RuntimePaths.from(this)
         return runInstanceMaintenance(instanceId, operationId) { id ->
@@ -2724,19 +2711,15 @@ body:has(.popup[opening]) #chat {
                 "实例目录不存在或尚未安装"
             }
             pushLog("> 正在从备份导入用户数据…")
-            val ensureActive = { ensureOperationActive() }
-            val onProgress = { count: Int, bytes: Long ->
-                if (count % 200 == 0) pushLog("正在导入数据 · $count 项 · ${bytes / 1024 / 1024} MB")
-            }
-            val outcome = if (trustedFileDescriptor) {
-                InstanceDataImport.importDescriptor(
-                    archive, directory, includeOptional, ensureActive, onProgress
-                )
-            } else {
-                InstanceDataImport.import(
-                    archive, directory, includeOptional, ensureActive, onProgress
-                )
-            }
+            val outcome = InstanceDataImport.import(
+                archive = archive,
+                instanceDir = directory,
+                includeOptional = includeOptional,
+                ensureActive = { ensureOperationActive() },
+                onProgress = { count, bytes ->
+                    if (count % 200 == 0) pushLog("正在导入数据 · $count 项 · ${bytes / 1024 / 1024} MB")
+                }
+            )
             pushLog("[OK] 数据导入完成：${outcome.imported} 项（忽略依赖与程序文件 ${outcome.skippedEntries} 项）")
             runtimeDiagnostic("import.done imported=${outcome.imported} skipped=${outcome.skippedEntries} bytes=${outcome.bytes}")
             Triple(outcome.imported, outcome.bytes, outcome.skippedEntries)
