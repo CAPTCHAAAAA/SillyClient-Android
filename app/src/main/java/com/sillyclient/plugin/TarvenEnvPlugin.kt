@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.Manifest
 import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import android.provider.Settings
 import android.util.Base64
 import android.util.Log
@@ -32,10 +33,13 @@ import com.sillyclient.runtime.InstanceMaintenance
 import com.sillyclient.runtime.RuntimePaths
 import com.sillyclient.storage.InstanceStorageAccess
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.channels.SeekableByteChannel
+import org.apache.commons.compress.archivers.zip.ZipFile as CommonsZipFile
 import org.json.JSONObject
 
 /**
@@ -689,7 +693,7 @@ class TarvenEnvPlugin : Plugin() {
         }
     }
 
-    /** 系统文件选择器,选择 SillyTavern zip 文件,复制到 tmp 目录并返回路径。 */
+    /** 系统文件选择器；实例安装默认复制到 tmp，数据导入优先保留可寻址的 content URI。 */
     @PluginMethod
     fun pickZipFile(call: PluginCall) {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -705,7 +709,10 @@ class TarvenEnvPlugin : Plugin() {
                     "*/*"
                 )
             )
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+            )
         }
         startActivityForResult(call, intent, "pickZipFile")
     }
@@ -724,9 +731,27 @@ class TarvenEnvPlugin : Plugin() {
         val act = activity as? MainActivity
         if (act == null) { call.reject("Not MainActivity"); return }
         val uri = data.data ?: run { call.reject("No file data"); return }
+        val purpose = call.getString("purpose", "instanceSource")
+        if (purpose == "dataImport") {
+            runCatching {
+                act.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+        }
 
         Thread {
             try {
+                if (purpose == "dataImport" && canUseDirectArchiveChannel(uri)) {
+                    val ret = JSObject()
+                    ret.put("path", "")
+                    ret.put("uri", uri.toString())
+                    ret.put("sizeBytes", selectedFileSize(uri))
+                    ret.put("direct", true)
+                    call.resolve(ret)
+                    return@Thread
+                }
                 val tmpDir = File(act.cacheDir, "sillyclient-tmp").apply { mkdirs() }
                 val destFile = File(tmpDir, "sillytavern-import-${System.currentTimeMillis()}.zip")
                 val input = act.contentResolver.openInputStream(uri)
@@ -737,12 +762,51 @@ class TarvenEnvPlugin : Plugin() {
                 val ret = JSObject()
                 ret.put("path", destFile.absolutePath)
                 ret.put("sizeBytes", destFile.length())
+                ret.put("direct", false)
                 call.resolve(ret)
             } catch (e: Exception) {
                 android.util.Log.e(TAG, "pickZipFile error", e)
                 call.reject("pickZipFile: ${e.message}")
             }
         }.start()
+    }
+
+    private fun canUseDirectArchiveChannel(uri: Uri): Boolean = runCatching {
+        withArchiveChannel(uri) { channel, archiveBytes ->
+            require(archiveBytes >= 22)
+            CommonsZipFile.builder()
+                .setSeekableByteChannel(channel)
+                .setCharset(Charsets.UTF_8)
+                .setUseUnicodeExtraFields(false)
+                .setIgnoreLocalFileHeader(false)
+                .setMaxNumberOfDisks(1)
+                .get()
+                .use { it.entries.hasMoreElements() }
+        }
+    }.getOrDefault(false)
+
+    private fun <T> withArchiveChannel(uri: Uri, action: (SeekableByteChannel, Long) -> T): T {
+        val descriptor = context.contentResolver.openFileDescriptor(uri, "r")
+            ?: throw IOException("无法打开所选压缩包")
+        return descriptor.use {
+            FileInputStream(it.fileDescriptor).use { input ->
+                val channel = input.channel
+                action(channel, channel.size())
+            }
+        }
+    }
+
+    private fun selectedFileSize(uri: Uri): Long = try {
+        context.contentResolver.query(
+            uri, arrayOf(OpenableColumns.SIZE), null, null, null
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val index = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (index >= 0 && !cursor.isNull(index)) cursor.getLong(index) else -1L
+            } else -1L
+        } ?: -1L
+    } catch (_: Exception) {
+        -1L
     }
 
     @PluginMethod
@@ -1170,11 +1234,25 @@ class TarvenEnvPlugin : Plugin() {
     /** 只读预检：压缩包里有多少用户数据会被导入、多少依赖/程序文件会被忽略。 */
     @PluginMethod
     fun inspectImportArchive(call: PluginCall) {
-        val archivePath = call.getString("archivePath") ?: run { call.reject("archivePath required"); return }
+        val archivePath = call.getString("archivePath")
+        val archiveUri = call.getString("archiveUri")
+        if (archivePath == null && archiveUri == null) {
+            call.reject("archivePath or archiveUri required")
+            return
+        }
         Thread {
             try {
-                val archive = java.io.File(archivePath)
-                val summary = com.sillyclient.runtime.InstanceDataImport.inspect(archive)
+                val summary = if (archiveUri != null) {
+                    val uri = Uri.parse(archiveUri)
+                    require(uri.scheme == "content") { "archiveUri must be a content URI" }
+                    withArchiveChannel(uri) { channel, archiveBytes ->
+                        com.sillyclient.runtime.InstanceDataImport.inspectChannel(channel, archiveBytes)
+                    }
+                } else {
+                    com.sillyclient.runtime.InstanceDataImport.inspect(
+                        java.io.File(requireNotNull(archivePath))
+                    )
+                }
                 call.resolve(JSObject()
                     .put("importEntries", summary.importEntries)
                     .put("importBytes", summary.importBytes)
@@ -1198,7 +1276,12 @@ class TarvenEnvPlugin : Plugin() {
     fun importInstanceData(call: PluginCall) {
         val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
         val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
-        val archivePath = call.getString("archivePath") ?: run { call.reject("archivePath required"); return }
+        val archivePath = call.getString("archivePath")
+        val archiveUri = call.getString("archiveUri")
+        if (archivePath == null && archiveUri == null) {
+            call.reject("archivePath or archiveUri required")
+            return
+        }
         val includeOptional = call.getBoolean("includeOptional", false) ?: false
         act.runOnUiThread {
             val paths = act.runtimePaths
@@ -1215,9 +1298,28 @@ class TarvenEnvPlugin : Plugin() {
                 try {
                     com.sillyclient.runtime.KeepAlive.acquire(act)
                     try {
-                        val (imported, bytes, skipped) = act.importInstanceData(
-                            instanceId, call.getString("installPath"), archivePath,
-                            includeOptional, call.getString("operationId"))
+                        val (imported, bytes, skipped) = if (archiveUri != null) {
+                            val uri = Uri.parse(archiveUri)
+                            require(uri.scheme == "content") { "archiveUri must be a content URI" }
+                            withArchiveChannel(uri) { channel, archiveBytes ->
+                                act.importInstanceDataChannel(
+                                    instanceId = instanceId,
+                                    installPath = call.getString("installPath"),
+                                    channel = channel,
+                                    archiveBytes = archiveBytes,
+                                    includeOptional = includeOptional,
+                                    operationId = call.getString("operationId")
+                                )
+                            }
+                        } else {
+                            act.importInstanceData(
+                                instanceId,
+                                call.getString("installPath"),
+                                requireNotNull(archivePath),
+                                includeOptional,
+                                call.getString("operationId")
+                            )
+                        }
                         call.resolve(JSObject().put("imported", imported).put("bytes", bytes).put("skipped", skipped))
                     } finally {
                         act.runOnUiThread { com.sillyclient.runtime.KeepAlive.release(act.applicationContext) }

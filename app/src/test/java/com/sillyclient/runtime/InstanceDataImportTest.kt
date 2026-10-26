@@ -1,7 +1,9 @@
 package com.sillyclient.runtime
 
 import java.io.File
+import java.nio.channels.FileChannel
 import java.nio.file.Files
+import java.nio.file.StandardOpenOption
 import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
@@ -203,5 +205,31 @@ class InstanceDataImportTest {
         }
 
         assertTrue(error.message.orEmpty().contains("上限"))
+    }
+
+    @Test
+    fun seekableChannelCanInspectAndImportWithoutPathConversion() = withRoot { root ->
+        val backup = archive(root, entries = arrayOf(
+            "data/default-user/settings.json" to "settings",
+            "public/scripts/extensions/third-party/plugin/index.js" to "plugin"
+        ))
+        val target = instance(root)
+        val size = backup.length()
+
+        FileChannel.open(backup.toPath(), StandardOpenOption.READ).use { channel ->
+            val summary = InstanceDataImport.inspectChannel(channel, size)
+            assertEquals(2, summary.importEntries)
+            assertTrue(summary.importable)
+        }
+        FileChannel.open(backup.toPath(), StandardOpenOption.READ).use { channel ->
+            val outcome = InstanceDataImport.importChannel(
+                channel, size, target, includeOptional = false,
+                ensureActive = {}, onProgress = { _, _ -> }
+            )
+            assertEquals(2, outcome.imported)
+        }
+
+        assertEquals("settings", File(target, "data/default-user/settings.json").readText())
+        assertEquals("plugin", File(target, "public/scripts/extensions/third-party/plugin/index.js").readText())
     }
 }

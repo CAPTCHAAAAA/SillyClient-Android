@@ -122,7 +122,11 @@ object SourceArchive {
     }
 
     internal fun validatedPath(entry: ZipEntry): String {
-        val path = if (entry.isDirectory) entry.name.removeSuffix("/") else entry.name
+        return validatedPath(entry.name, entry.isDirectory)
+    }
+
+    internal fun validatedPath(name: String, isDirectory: Boolean): String {
+        val path = if (isDirectory) name.removeSuffix("/") else name
         require(path.isNotEmpty() && path.length <= 4096 && !path.startsWith('/') &&
             path.none { it == '\\' || it == ':' || it.code < 32 || it.code == 127 } &&
             path.split('/').none { it.isEmpty() || it == "." || it == ".." }) {
