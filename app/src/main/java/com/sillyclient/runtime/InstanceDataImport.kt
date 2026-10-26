@@ -67,8 +67,17 @@ object InstanceDataImport {
      */
     fun inspect(archive: File): Summary = inspectBounded(archive, limitsForArchiveBytes(archive.length()))
 
+    internal fun inspectDescriptor(archive: File): Summary =
+        inspectBounded(archive, limitsForArchiveBytes(archive.length()), trustedFileDescriptor = true)
+
     internal fun inspectBounded(archive: File, limits: SourceArchive.Limits): Summary =
-        plan(archive, limits, includeOptional = false) { }.summary
+        inspectBounded(archive, limits, trustedFileDescriptor = false)
+
+    private fun inspectBounded(
+        archive: File,
+        limits: SourceArchive.Limits,
+        trustedFileDescriptor: Boolean
+    ): Summary = plan(archive, limits, includeOptional = false, trustedFileDescriptor = trustedFileDescriptor) { }.summary
 
     /**
      * 执行导入。[includeOptional] 为 true 时才导入 `secrets.json`/`config.yaml`。
@@ -83,19 +92,31 @@ object InstanceDataImport {
     ): Outcome = importBounded(archive, instanceDir, includeOptional, ensureActive, onProgress,
         limitsForArchiveBytes(archive.length()))
 
+    internal fun importDescriptor(
+        archive: File,
+        instanceDir: File,
+        includeOptional: Boolean,
+        ensureActive: () -> Unit,
+        onProgress: (Int, Long) -> Unit
+    ): Outcome = importBounded(
+        archive, instanceDir, includeOptional, ensureActive, onProgress,
+        limitsForArchiveBytes(archive.length()), trustedFileDescriptor = true
+    )
+
     internal fun importBounded(
         archive: File,
         instanceDir: File,
         includeOptional: Boolean,
         ensureActive: () -> Unit,
         onProgress: (Int, Long) -> Unit,
-        limits: SourceArchive.Limits
+        limits: SourceArchive.Limits,
+        trustedFileDescriptor: Boolean = false
     ): Outcome {
         require(instanceDir.isDirectory && File(instanceDir, "server.js").isFile) {
             "实例目录不存在或尚未安装"
         }
         require(ManagedFiles.isUnlinked(instanceDir)) { "实例目录不能是符号链接" }
-        val planned = plan(archive, limits, includeOptional, ensureActive)
+        val planned = plan(archive, limits, includeOptional, trustedFileDescriptor, ensureActive)
         val summary = planned.summary
         check(summary.importable) { "压缩包里没有可导入的实例数据（$NO_DATA_MESSAGE）" }
         ensureImportSpace(instanceDir, planned.included)
@@ -163,11 +184,12 @@ object InstanceDataImport {
         archive: File,
         limits: SourceArchive.Limits,
         includeOptional: Boolean,
+        trustedFileDescriptor: Boolean,
         ensureActive: () -> Unit
     ): Plan {
         ensureActive()
         require(archive.isFile) { "压缩包不存在，请重新选择" }
-        require(ManagedFiles.isUnlinked(archive)) { "压缩包不能是符号链接" }
+        require(trustedFileDescriptor || ManagedFiles.isUnlinked(archive)) { "压缩包不能是符号链接" }
         require(archive.length() >= 22) { "压缩包为空或已损坏" }
         require(archive.length() <= limits.archiveBytes) {
             "压缩包超过 ${formatBytes(limits.archiveBytes)} 上限"

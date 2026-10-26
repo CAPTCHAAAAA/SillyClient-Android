@@ -9,6 +9,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 class InstanceDataImportTest {
@@ -203,5 +204,20 @@ class InstanceDataImportTest {
         }
 
         assertTrue(error.message.orEmpty().contains("上限"))
+    }
+
+    @Test
+    fun trustedDescriptorArchiveCanBeReadThroughThePlatformLink() = withRoot { root ->
+        val backup = archive(root, entries = arrayOf("data/settings.json" to "x"))
+        val descriptorLink = File(root, "descriptor.zip")
+        val linked = runCatching {
+            Files.createSymbolicLink(descriptorLink.toPath(), backup.toPath())
+        }.isSuccess
+        assumeTrue("Symbolic links are unavailable on this host", linked)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            InstanceDataImport.inspect(descriptorLink)
+        }
+        assertEquals(1, InstanceDataImport.inspectDescriptor(descriptorLink).importEntries)
     }
 }

@@ -230,8 +230,13 @@ export interface TarvenEnvPlugin {
   /** 调用系统图片选择器,把图片复制到 covers/{instanceId},返回可加载的文件路径。 */
   pickImage(options: { instanceId: string }): Promise<{ path: string; url?: string }>
 
-  /** 调用系统文件选择器,选择 SillyTavern zip 文件,复制到 tmp 并返回路径。 */
-  pickZipFile(): Promise<{ path: string; sizeBytes: number }>
+  /** 调用系统文件选择器,选择 SillyTavern zip 文件。dataImport 可返回可直接读取的 content URI。 */
+  pickZipFile(options?: { purpose?: "instanceSource" | "dataImport" }): Promise<{
+    path: string
+    uri?: string
+    sizeBytes: number
+    direct?: boolean
+  }>
 
   /** 调用系统保存位置选择器,写入文本/JSON 文件。 */
   saveTextFile(options: { fileName: string; mimeType: string; content: string }): Promise<void>
@@ -357,7 +362,7 @@ export interface TarvenEnvPlugin {
   }>
 
   /** 只读预检：压缩包里有多少用户数据会被导入、多少依赖/程序文件会被忽略。 */
-  inspectImportArchive(options: { archivePath: string }): Promise<{
+  inspectImportArchive(options: { archivePath?: string; archiveUri?: string }): Promise<{
     importEntries: number
     importBytes: number
     skippedEntries: number
@@ -371,7 +376,8 @@ export interface TarvenEnvPlugin {
   importInstanceData(options: {
     instanceId: string
     installPath?: string
-    archivePath: string
+    archivePath?: string
+    archiveUri?: string
     includeOptional?: boolean
     operationId?: string
   }): Promise<{ imported: number; bytes: number; skipped: number }>
