@@ -904,6 +904,29 @@ class TarvenEnvPlugin : Plugin() {
     }
 
     @PluginMethod
+    fun setRenderEngineSettings(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val colorEnabled = call.data.optBoolean("immersiveColor", true)
+        val mode = call.getString("colorExtractionMode") ?: "realtime"
+        val clickEffect = call.data.optBoolean("clickEffect", true)
+        act.runOnUiThread {
+            act.setRenderEngineSettings(colorEnabled, mode, clickEffect)
+            call.resolve()
+        }
+    }
+
+    @PluginMethod
+    fun getRenderEngineSettings(call: PluginCall) {
+        val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
+        val settings = act.getRenderEngineSettings()
+        val ret = JSObject()
+        ret.put("immersiveColor", settings.colorEnabled)
+        ret.put("colorExtractionMode", settings.mode)
+        ret.put("clickEffect", settings.clickEffect)
+        call.resolve(ret)
+    }
+
+    @PluginMethod
     fun setRemoteBasicAuth(call: PluginCall) {
         val instanceId = call.getString("instanceId") ?: run { call.reject("instanceId required"); return }
         val username = call.getString("username") ?: ""

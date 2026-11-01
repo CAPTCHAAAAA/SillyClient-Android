@@ -15,6 +15,26 @@ class RenderEngineManager(
     private val onColorChangedListener: (Int) -> Unit
 ) {
     private var cachedScript: String? = null
+    private var colorExtractionEnabled = true
+    private var colorExtractionMode = "realtime"
+    private var clickEffectEnabled = true
+
+    fun setSettings(colorEnabled: Boolean, mode: String, clickEffect: Boolean) {
+        colorExtractionEnabled = colorEnabled
+        colorExtractionMode = if (mode == "once") "once" else "realtime"
+        clickEffectEnabled = clickEffect
+    }
+
+    fun applySettingsToWebView(webView: WebView) {
+        val js = "(function(){ try { if (window.__scUpdateRenderSettings) { window.__scUpdateRenderSettings($colorExtractionEnabled, '$colorExtractionMode', $clickEffectEnabled); } } catch(_) {} })();"
+        webView.post {
+            try {
+                webView.evaluateJavascript(js, null)
+            } catch (e: Throwable) {
+                android.util.Log.w("SC_RenderEngine", "Failed to apply render settings to webview", e)
+            }
+        }
+    }
 
     /** 注册暴露给前端 JS 的 Native 桥接接口 */
     fun attachBridges(webView: WebView) {
@@ -36,7 +56,15 @@ class RenderEngineManager(
                 .use { it.readText() }
                 .also { cachedScript = it }
 
-            webView.evaluateJavascript(script, null)
+            webView.post {
+                try {
+                    webView.evaluateJavascript(script) {
+                        applySettingsToWebView(webView)
+                    }
+                } catch (e: Throwable) {
+                    android.util.Log.w("SC_RenderEngine", "Failed to evaluate script in injectEngine", e)
+                }
+            }
         } catch (e: Exception) {
             android.util.Log.w("SC_RenderEngine", "Failed to inject sc-render-engine.js", e)
         }
@@ -45,19 +73,32 @@ class RenderEngineManager(
     /** 切换 Performance Monitor HUD 并弹出 Toast */
     fun togglePerformanceMonitor(webView: WebView) {
         injectEngine(webView)
-        webView.evaluateJavascript("window.__scTogglePerfHud ? window.__scTogglePerfHud() : false;") { res ->
-            val active = res == "true"
-            val msg = if (active) "⚡ SC Performance Engine 监控已开启" else "性能监控已关闭"
-            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+        webView.post {
+            try {
+                webView.evaluateJavascript("window.__scTogglePerfHud ? window.__scTogglePerfHud() : false;") { res ->
+                    val active = res == "true"
+                    val msg = if (active) "⚡ SC Performance Engine 监控已开启" else "性能监控已关闭"
+                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Throwable) {
+                android.util.Log.w("SC_RenderEngine", "Failed to toggle perf HUD", e)
+            }
         }
     }
 
     /** 强制前端变色龙引擎重新采样并上报 (退出重进或切回前台时唤醒) */
     fun forceChameleonSample(webView: WebView) {
-        webView.evaluateJavascript(
-            "(function(){ try { if (window.__scChameleonEngine) { window.__scChameleonEngine.lastReportedColor = null; window.__scChameleonEngine.sampleAndReport(true); } } catch(_) {} })();",
-            null
-        )
+        if (!colorExtractionEnabled) return
+        webView.post {
+            try {
+                webView.evaluateJavascript(
+                    "(function(){ try { if (window.__scChameleonEngine) { window.__scChameleonEngine.lastReportedColor = null; window.__scChameleonEngine.sampleAndReport(true); } } catch(_) {} })();",
+                    null
+                )
+            } catch (e: Throwable) {
+                android.util.Log.w("SC_RenderEngine", "Failed to force chameleon sample", e)
+            }
+        }
     }
 
     inner class HapticBridge {
