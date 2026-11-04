@@ -14,7 +14,9 @@ import { Capacitor } from "@capacitor/core";
 import { TarvenEnv, DEFAULT_CONFIG, normalizeRenderEngineSettings } from "@/capacitor-plugin";
 import { openExternalUrl } from "@/lib/external-links";
 import type { AppUpdateInfo, CompanionPresetSelection, ContentOpenMode, InstanceConfig, InstallPathMode, GithubRelease, GarbageItem, TarvenEvent, PreinstalledExtensionId, RenderEngineSettings, InstanceRelocationResult } from "@/capacitor-plugin";
-import { buildInstanceSubfolder, cleanInstallPath, installationSelection, sanitizeFolderName } from "@/lib/install-location";
+import { buildInstanceSubfolder, cleanInstallPath, installationSelection, instanceParentPath, sanitizeFolderName } from "@/lib/install-location";
+import { humanizeNativeError } from "@/lib/native-errors";
+import { selectTavernRelease } from "@/lib/tavern-release";
 import { applyInstanceLocation } from "@/lib/instance-location-state";
 import { normalizeStoredInstances, serializeInstanceRecords, parseInstanceBackup, type StoredInstance } from "@/lib/instance-persistence";
 import { GLOBAL_LOG_KEY, instanceLogs, type LogLine } from "@/lib/log-store";
@@ -80,6 +82,11 @@ function mergeInstanceBackup(existing: TavernInstance[], incoming: StoredInstanc
 }
 
 /** 从 localStorage 读取已持久化的实例列表;版本不匹配时清空旧数据。 */
+function stripOneShotCreationParams(instance: TavernInstance): TavernInstance {
+  const { zipballUrl: _zipballUrl, localZipPath: _localZipPath, preinstall: _preinstall, companionPreset: _companionPreset, ...rest } = instance;
+  return rest as TavernInstance;
+}
+
 function loadInstances(): TavernInstance[] {
   // 版本不匹配说明是旧版残留数据,清空
   const savedVersion = localStorage.getItem(INSTANCES_VERSION_KEY);
@@ -91,7 +98,9 @@ function loadInstances(): TavernInstance[] {
   try {
     const raw = localStorage.getItem(INSTANCES_KEY);
     if (raw) {
-      return normalizeStoredInstances(JSON.parse(raw), { resetStatus: true }).map(hydrateInstance);
+      return normalizeStoredInstances(JSON.parse(raw), { resetStatus: true })
+        .map(hydrateInstance)
+        .map(stripOneShotCreationParams);
     }
   } catch {
     /* ignore */
@@ -728,12 +737,45 @@ function SillyClientLauncher() {
     return () => { directoryPickerGeneration.current += 1; };
   }, [showNewInstancePanel, newInstanceMode, migrationAccessMode]);
 
+  useEffect(() => {
+    if (!showNewInstancePanel) return;
+    let cancelled = false;
+    TarvenEnv.getAppSettings()
+      .then(settings => {
+        if (cancelled) return;
+        const saved = settings.configuredInstancesRoot?.trim();
+        if (!saved) return;
+        setNewInstanceDir(current => (current.trim() ? current : saved));
+        setNewInstancePathMode(current => (current === "exact" ? "root" : current));
+      })
+      .catch(() => { /* 读取失败时保持必选流程 */ });
+    return () => { cancelled = true; };
+  }, [showNewInstancePanel]);
+
   const handleSetNewInstanceDir = useCallback((value: string) => {
     const clean = value.replace(/^["']|["']$/g, "").trim();
     setNewInstanceDir(clean);
-    setNewInstancePathMode("exact");
+    // 手输与「浏览」同一条语义：这个文件夹就是实例的存放位置（实例根），
+    // 实例永远是它的一级子目录 —— 不再有把整条路径当作实例目录本身的模式。
+    setNewInstancePathMode("root");
     setNewInstanceError(null);
     directoryPickerGeneration.current += 1;
+  }, []);
+
+  // 向导中的存放位置一律是"实例存放文件夹"（父目录）：先落成实例根；
+  // 再取它的一级子目录作为实例目录。根更新失败时抛中文原因，绝不静默继续。
+  const resolveInstanceParent = useCallback(async (
+    rawValue: string, emptyMessage: string, instanceName: string,
+  ): Promise<string> => {
+    const parent = instanceParentPath(rawValue);
+    if (!parent) throw new Error(emptyMessage);
+    try {
+      await TarvenEnv.setInstancesRoot({ path: parent });
+    } catch (error) {
+      const reason = humanizeNativeError(error instanceof Error ? error.message : String(error));
+      throw new Error(`该文件夹不能作为实例存放位置：${reason}`);
+    }
+    return buildInstanceSubfolder(parent, instanceName);
   }, []);
 
   const handlePickInstallFolder = useCallback(async () => {
@@ -744,6 +786,16 @@ function SillyClientLauncher() {
       setNewInstanceDir(selection.path);
       setNewInstancePathMode(selection.mode);
       setNewInstanceError(null);
+      // 向导中选择的存放文件夹就是用户选定的默认路径：保存后，
+      // 下次打开向导自动预填，文件管理器里也始终能看到实例目录。
+      // 保存被拒时当场说明原因（例如选到了某个实例目录里面），不再静默继续。
+      try {
+        await TarvenEnv.setInstancesRoot({ path: selection.path });
+      } catch (error) {
+        const reason = humanizeNativeError(error instanceof Error ? error.message : String(error));
+        setNewInstanceDir("");
+        setNewInstanceError(`该文件夹不能作为实例存放位置：${reason}`);
+      }
     } catch (error) {
       if (generation !== directoryPickerGeneration.current) return;
       const message = error instanceof Error ? error.message : String(error);
@@ -965,18 +1017,27 @@ function SillyClientLauncher() {
 
   useEffect(() => () => { operations.cancel(); }, [operations]);
 
-  // 配置并启动本地实例。创建流程只在确认服务可访问后写入卡片。
-  const doLaunch = useCallback(async (instance: TavernInstance, operation: OperationContext, enterWhenReady = true) => {
+  // 配置并启动本地实例。创建流程只在确认服务可访问后写入卡片；
+  // createIntent 仅创建向导为 true：安装源与预装项只随创建下发，启动既有实例绝不携带，
+  // 后端据此在目录丢失/损坏时拒绝静默重装顶替用户数据。
+  const lastLaunchCreateIntentRef = useRef(false);
+  const doLaunch = useCallback(async (
+    instance: TavernInstance,
+    operation: OperationContext,
+    enterWhenReady = true,
+    createIntent = false
+  ) => {
     operation.assertCurrent();
+    lastLaunchCreateIntentRef.current = createIntent;
     const port = instance.port ?? 8000;
     const instanceId = instance.installDir || instance.id;
     const version = instance.version || "stable";
     const config = instance.config ?? DEFAULT_CONFIG;
-    const zipballUrl = instance.zipballUrl;
-    const localZipPath = instance.localZipPath;
+    const zipballUrl = createIntent ? instance.zipballUrl : undefined;
+    const localZipPath = createIntent ? instance.localZipPath : undefined;
     const installPath = instance.installPath;
-    const companionPreset = instance.companionPreset;
-    const preinstall = instance.preinstall;
+    const companionPreset = createIntent ? instance.companionPreset : undefined;
+    const preinstall = createIntent ? instance.preinstall : undefined;
 
     setLaunchProgress({ pct: 0, text: "初始化" });
     setLaunchError(null);
@@ -1026,8 +1087,19 @@ function SillyClientLauncher() {
 
       // 调用原生 provision
       const provisionResult = await operation.wait(TarvenEnv.provisionAndStart({
-        port, instanceId, operationId: operation.id, version, zipballUrl, localZipPath,
-        installPath, installPathMode: instance.installPathMode, companionPreset, preinstall, config,
+        port,
+        instanceId,
+        instanceName: instance.subtitle || instance.name,
+        operationId: operation.id,
+        version,
+        createIntent,
+        zipballUrl,
+        localZipPath,
+        installPath,
+        installPathMode: instance.installPathMode,
+        companionPreset,
+        preinstall,
+        config,
       }));
       if (provisionResult?.ready === false) {
         throw new Error(errorMsg || "实例未能启动，请检查安装日志");
@@ -1238,18 +1310,21 @@ function SillyClientLauncher() {
       return;
     }
 
-    const result = await doLaunch(instance, operation, false);
+    const result = await doLaunch(instance, operation, false, true);
     const info = await operation.wait(TarvenEnv.getInstanceInfo({
       instanceId: instance.installDir || instance.id,
       installPath: instance.installPathMode === "root" ? undefined : instance.installPath,
       port: result.port,
     }));
     if (!info.path) throw new Error("原生未确认实例的实际安装目录，创建未完成");
-    setLastLaunchParams({ ...instance, installPath: info.path, installPathMode: "exact", port: result.port });
+    // 安装源（zipballUrl/localZipPath）与预装项是一次性创建参数，绝不持久化到卡片。
+    // 后端以 createIntent 区分创建与启动意图，卡片残留安装源会导致数据丢失时被静默重装顶替。
+    const { zipballUrl: _zipballUrl, localZipPath: _localZipPath, preinstall: _preinstall, companionPreset: _companionPreset, ...persistedInstance } = instance;
+    setLastLaunchParams({ ...persistedInstance, installPath: info.path, installPathMode: "exact", port: result.port });
     setInstances(prev => prev.some(t => t.id === instance.id)
       ? prev
       : [...prev, {
-          ...instance,
+          ...persistedInstance,
           status: "running",
           port: result.port,
           version: info.version && info.version !== "unknown" ? normalizeStoredVersion(info.version) : instance.version,
@@ -1286,7 +1361,16 @@ function SillyClientLauncher() {
   }, [setLaunchLogs]);
 
   const createInstance = useCallback(async () => {
-    if (operations.busy) return;
+    if (operations.busy) {
+      setNewInstanceError("请先等待当前任务完成，再创建新实例");
+      return;
+    }
+    // 存放位置一律由用户在向导中选定且为必选项（创建与迁移同一条规则）。
+    // 没有用户选定的位置，应用不会退回任何"软件默认路径"。
+    if (newInstanceMode === "local" && !newInstanceDir.trim()) {
+      setNewInstanceError("请先选择实例存放文件夹（必选）：点击「浏览」选择后，实例会创建在该文件夹下");
+      return;
+    }
     const rawGivenName = newInstanceName.trim();
     let instanceDisplayName: string;
     let safeCandidateId: string;
@@ -1336,12 +1420,11 @@ function SillyClientLauncher() {
     try {
       const installDir = instanceId;
       pendingInstanceId = instanceId;
-      const customParentDir = cleanInstallPath(newInstanceDir);
-      let resolvedCustomPath: string | undefined = undefined;
-      if (customParentDir) {
-        // 统一在指定父目录下生成以实例名命名的子文件夹
-        resolvedCustomPath = buildInstanceSubfolder(customParentDir, instanceDisplayName);
-      }
+      // 存放文件夹（父目录）先落成实例根，再取它的一级子目录作为实例目录。
+      // 根更新失败会在这里就报出中文原因，而不是让嵌套路径去撞原生注册表规则。
+      const resolvedCustomPath = newInstanceMode === "local"
+        ? await resolveInstanceParent(newInstanceDir, "请先选择实例存放文件夹（必选）：点击「浏览」选择后，实例会创建在该文件夹下", instanceDisplayName)
+        : undefined;
       let selectedVersion = newInstanceVersion;
       let selectedZipballUrl: string | undefined;
 
@@ -1354,16 +1437,12 @@ function SillyClientLauncher() {
             setReleases(availableReleases);
           } catch (error) {
             if (error instanceof OperationCancelledError) throw error;
-            availableReleases = [{ tag: "1.12.0", prerelease: false, zipballUrl: "" }];
-            setReleases(availableReleases);
+            throw new Error("无法获取 SillyTavern 版本，请重新获取列表或导入本地 ZIP");
           }
         }
-        const selectedRelease = selectedVersion === "stable"
-          ? availableReleases.find(release => !release.prerelease) || availableReleases[0]
-          : availableReleases.find(release => release.tag === selectedVersion) || availableReleases[0];
-        if (!selectedRelease && !isWeb) throw new Error("无法获取当前 SillyTavern 版本，请检查网络后重试");
-        selectedVersion = selectedRelease?.tag || "1.12.0";
-        selectedZipballUrl = selectedRelease?.zipballUrl;
+        const selectedRelease = selectTavernRelease(availableReleases, selectedVersion);
+        selectedVersion = selectedRelease.tag;
+        selectedZipballUrl = selectedRelease.zipballUrl;
       }
 
       let port = 8000;
@@ -1575,6 +1654,7 @@ function SillyClientLauncher() {
     migrationIncludeSecrets,
     provisionCreatedInstance,
     migrateCreatedInstance,
+    resolveInstanceParent,
     setLaunchLogs,
     releases,
   ]);
@@ -1602,7 +1682,7 @@ function SillyClientLauncher() {
         setInstances(prev => prev.map(t => t.id === lastLaunchParams.id ? { ...t, status: "online" } : t));
         operation.schedule(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 500);
       } else {
-        const result = await doLaunch(lastLaunchParams, operation);
+        const result = await doLaunch(lastLaunchParams, operation, true, lastLaunchCreateIntentRef.current);
         setInstances(prev => prev.map(t => t.id === lastLaunchParams.id ? { ...t, status: "running", port: result.port } : t));
         operation.schedule(() => { setShowLaunchPanel(false); setLaunchProgress(null); }, 800);
       }
