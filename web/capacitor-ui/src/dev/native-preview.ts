@@ -4,7 +4,6 @@ import { normalizeRenderEngineSettings } from "../lib/render-settings";
 import { exactInstallTarget, sanitizeFolderName } from "../lib/install-location";
 import type { LegacyInstanceLocation } from "../capacitor-plugin";
 import { validateExternalUrl } from "../lib/external-url";
-import { APP_VERSION } from "../constants/app-version";
 
 type EventName = Parameters<TarvenEnvPlugin["addListener"]>[0];
 const listeners = new Map<EventName, Set<(event: TarvenEvent) => void>>();
@@ -483,7 +482,6 @@ export function installNativePreview() {
     listeners: () => Object.fromEntries(Array.from(listeners, ([name, group]) => [name, group.size])),
   };
   localStorage.setItem("sillyclient.onboarding.version", "3");
-  localStorage.setItem("sillyclient.whatsnew.version", APP_VERSION);
   localStorage.setItem("sillyclient.instances.version", "2");
   if (!localStorage.getItem("sillyclient.instances")) {
     localStorage.setItem("sillyclient.instances", JSON.stringify(["preview-local", "preview-second"].map((id, index) => ({
