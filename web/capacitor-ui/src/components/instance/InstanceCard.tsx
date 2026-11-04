@@ -8,18 +8,18 @@ import { FlipCard } from "../common/FlipCard";
 export interface InstanceCardProps {
   instance: TavernInstance;
   index: number;
+  slotIndex?: number;
   isLight: boolean;
   isDynamic?: boolean;
   glassBg?: string;
   hoveredCard: string | null;
   setHoveredCard: (id: string | null) => void;
-  activeCardMenu: string | null;
   launchingId: string | null;
   onLaunch: (instance: TavernInstance) => void;
   onReturnToTavern?: (instance: TavernInstance) => void;
   onStopInstance?: (instance: TavernInstance) => void;
   onOpenMenu: (instance: TavernInstance, rect: DOMRect) => void;
-  onRenameSave?: (instanceId: string, newName: string) => void | boolean | Promise<void | boolean>;
+  onRenameSave?: (instanceId: string, newName: string) => void;
   isExternallyRenaming?: boolean;
   onClearExternalRenaming?: () => void;
   isWindows?: boolean;
@@ -44,12 +44,15 @@ export interface InstanceCardProps {
 export const InstanceCard = React.memo<InstanceCardProps>((props) => {
   const isRunning = props.instance.status === "running";
   const isExpanded = props.hoveredCard === props.instance.id;
-  const isMenuOpen = props.activeCardMenu === props.instance.id;
+  const toggleExpand = React.useCallback(
+    () => props.setHoveredCard(isExpanded ? null : props.instance.id),
+    [isExpanded, props.instance.id, props.setHoveredCard]
+  );
 
   return (
     <FlipCard
       data-instance-id={props.instance.id}
-      data-card-index={String(props.index + 1)}
+      data-slot={String(props.slotIndex ?? props.index + 1)}
       data-card-running={isRunning ? "true" : "false"}
       data-reordering={props.isReordering ? "true" : undefined}
       data-dropping={props.isDropping ? "true" : undefined}
@@ -91,25 +94,26 @@ export const InstanceCard = React.memo<InstanceCardProps>((props) => {
           isDynamic={props.isDynamic}
           glassBg={props.glassBg}
           isExpanded={isExpanded}
-          isMenuOpen={isMenuOpen}
           launchingId={props.launchingId}
-          onToggleExpand={() => props.setHoveredCard(isExpanded ? null : props.instance.id)}
+          onToggleExpand={toggleExpand}
           onLaunch={props.onLaunch}
           onOpenMenu={props.onOpenMenu}
           onRenameSave={props.onRenameSave || (() => {})}
           isExternallyRenaming={props.isExternallyRenaming}
           onClearExternalRenaming={props.onClearExternalRenaming}
+          isReordering={props.isReordering}
         />
       }
       back={
         <RunningConsoleCard
           instance={props.instance}
-          index={props.index}
           isLight={props.isLight}
           glassBg={props.glassBg}
           onReturnToTavern={props.onReturnToTavern}
           onStopInstance={props.onStopInstance}
           onOpenMenu={props.onOpenMenu}
+          isExpanded={isExpanded}
+          onToggleExpand={toggleExpand}
           active={isRunning}
           isWindows={props.isWindows}
         />

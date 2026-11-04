@@ -13,8 +13,8 @@ android {
         applicationId = "com.sillyclient"
         minSdk = 26
         targetSdk = 37
-        versionCode = 74
-        versionName = "1.13.2"
+        versionCode = 75
+        versionName = "1.14.0"
     }
 
     buildTypes {

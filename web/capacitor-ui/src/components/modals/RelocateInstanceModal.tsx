@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useLayoutEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   X,
   AlertCircle,
@@ -42,7 +42,7 @@ export const RelocateInstanceModal: React.FC<RelocateInstanceModalProps> = ({
   onClose,
   isLight,
   glassBg,
-  isWindows = false,
+  isWindows: _isWindows = false,
   onBusyChange,
   onRelocated,
 }) => {

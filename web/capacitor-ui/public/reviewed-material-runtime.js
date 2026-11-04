@@ -371,6 +371,8 @@
             user-select: none;
             max-height: calc(100vh - 32px);
             overflow-y: auto;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
             opacity: 1;
             visibility: visible;
             pointer-events: auto;
@@ -597,7 +599,8 @@
             max-height: 144px;
             margin-top: 5px;
             overflow-y: auto;
-            scrollbar-width: thin;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
           }
 
           .preview-tuning-history-empty {
@@ -752,144 +755,128 @@
           .preview-tuning-panel.preview-tuning-panel--draggable {
             max-height: calc(100vh - 48px);
             overflow-y: auto;
-            scrollbar-width: thin;
-            scrollbar-color: rgba(255, 255, 255, 0.12) transparent;
+            scrollbar-width: none;
+            -ms-overflow-style: none;
           }
 
           .preview-tuning-panel.preview-tuning-panel--draggable::-webkit-scrollbar {
-            width: 4px;
+            display: none;
+            width: 0;
+            height: 0;
           }
 
-          .preview-tuning-panel.preview-tuning-panel--draggable::-webkit-scrollbar-thumb {
-            border-radius: 9999px;
-            background: rgba(255, 255, 255, 0.12);
+          /* 磨砂强度：内凹轨道不动。进度溶进轨道，滑杆是细环，拖动无极跟手。 */
+          @property --blur-t {
+            syntax: "<number>";
+            inherits: true;
+            initial-value: 0;
           }
 
-          /* 磨砂强度滑块：恢复原点纹凹槽，保留当前扁平拨杆。 */
+          .preview-blur-field {
+            position: relative;
+            height: 32px;
+            touch-action: none;
+            cursor: grab;
+            user-select: none;
+            -webkit-user-select: none;
+            transition: --blur-t 220ms cubic-bezier(0.22, 1, 0.36, 1);
+          }
+
+          .preview-blur-field.is-dragging {
+            cursor: grabbing;
+            transition: none;
+          }
+
+          .preview-blur-field:focus-visible {
+            outline: none;
+          }
+
+          .preview-blur-track {
+            position: relative;
+            height: 32px;
+            border-radius: 999px;
+            overflow: hidden;
+            background:
+              linear-gradient(100deg, rgba(255, 255, 255, 0.07), transparent 42%, rgba(0, 0, 0, 0.08) 100%),
+              linear-gradient(180deg, rgba(255, 255, 255, 0.09), rgba(255, 255, 255, 0.035));
+            -webkit-backdrop-filter: blur(12.9px) saturate(1.35);
+            backdrop-filter: blur(12.9px) saturate(1.35);
+            box-shadow:
+              inset 0 2px 4px rgba(0, 0, 0, 0.28),
+              inset 1.11px 1.67px 4.45px rgba(0, 0, 0, 0.10),
+              inset 1.11px 1.67px 4.45px rgba(0, 0, 0, 0.08),
+              inset 0 -0.7px 1px rgba(255, 255, 255, 0.16);
+          }
+
+          .preview-blur-fill {
+            position: absolute;
+            z-index: 0;
+            inset: 0 auto 0 0;
+            width: calc(29px + (100% - 32px) * var(--blur-t, 0));
+            max-width: 100%;
+            border-radius: inherit;
+            pointer-events: none;
+            background:
+              linear-gradient(90deg, rgba(255, 255, 255, 0.2), rgba(255, 255, 255, 0.08) calc(100% - 26px), rgba(255, 255, 255, 0));
+          }
+
+          .preview-blur-knob {
+            --t: var(--blur-t, 0);
+            position: absolute;
+            z-index: 2;
+            top: 50%;
+            left: calc(16px + (100% - 32px) * var(--t, 0));
+            width: 26px;
+            height: 26px;
+            border: 2px solid rgba(255, 255, 255, 0.72);
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.82);
+            box-shadow: 0 0.5px 1.5px rgba(0, 0, 0, 0.16);
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+          }
+
+          .preview-blur-field:active .preview-blur-knob,
+          .preview-blur-field.is-dragging .preview-blur-knob {
+            border-color: rgba(255, 255, 255, 0.86);
+          }
+
           .preview-blur-slider {
+            position: absolute;
+            inset: 0;
+            z-index: 3;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            opacity: 0.001;
+            cursor: pointer;
+            pointer-events: none;
             -webkit-appearance: none;
             appearance: none;
-            width: 100%;
-            height: 24px;
             background: transparent;
             outline: none;
-            cursor: pointer;
           }
 
-          .preview-blur-slider::-webkit-slider-runnable-track {
-            height: 13px;
-            border-radius: 9999px;
-            border: 1px solid rgba(255, 255, 255, 0.07);
-            background-image:
-              radial-gradient(circle at 50% 50%,
-                rgba(255, 255, 255, 0.17) 0 0.9px,
-                rgba(255, 255, 255, 0.17) 0.9px,
-                transparent 1.9px),
-              linear-gradient(to right,
-                rgba(255, 255, 255, 0.10) var(--pct, 44%),
-                rgba(255, 255, 255, 0.03) calc(var(--pct, 44%) + 8px));
-            background-size:
-              14px 100%,
-              100% 100%;
-            background-repeat: repeat-x, no-repeat;
+          body[data-preview-light] .preview-blur-track {
+            background:
+              linear-gradient(100deg, rgba(255, 255, 255, 0.34), transparent 46%, rgba(28, 18, 24, 0.05) 100%),
+              linear-gradient(180deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.28));
             box-shadow:
-              inset 0 1.5px 3px rgba(0, 0, 0, 0.16),
-              inset 0 -0.5px 0 rgba(255, 255, 255, 0.045);
+              inset 0 2px 4px rgba(28, 18, 24, 0.12),
+              inset 1.11px 1.67px 4.45px rgba(28, 18, 24, 0.10),
+              inset 1.11px 1.67px 4.45px rgba(28, 18, 24, 0.06),
+              inset 0 -0.56px 1.11px rgba(255, 255, 255, 0.45);
           }
 
-          .preview-blur-slider::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            width: 18px;
-            height: 10px;
-            margin-top: 1.5px;
-            border: 0;
-            border-radius: 5px;
-            background: rgba(232, 229, 235, 0.94);
-            box-shadow:
-              0 1px 2px rgba(7, 5, 10, 0.24),
-              inset 0 0 0 0.5px rgba(28, 23, 34, 0.16),
-              inset 0 0.5px 0 rgba(255, 255, 255, 0.48);
-            cursor: pointer;
+          body[data-preview-light] .preview-blur-knob {
+            border-color: rgba(26, 22, 37, 0.78);
+            background: rgba(255, 255, 255, 0.62);
+            box-shadow: 0 0.5px 1px rgba(28, 18, 24, 0.16);
           }
 
-          .preview-blur-slider::-moz-range-track {
-            height: 13px;
-            border-radius: 9999px;
-            border: 1px solid rgba(255, 255, 255, 0.07);
-            background-image:
-              radial-gradient(circle at 50% 50%,
-                rgba(255, 255, 255, 0.17) 0 0.9px,
-                rgba(255, 255, 255, 0.17) 0.9px,
-                transparent 1.9px),
-              linear-gradient(to right,
-                rgba(255, 255, 255, 0.10) var(--pct, 44%),
-                rgba(255, 255, 255, 0.03) calc(var(--pct, 44%) + 8px));
-            background-size:
-              14px 100%,
-              100% 100%;
-            background-repeat: repeat-x, no-repeat;
-            box-shadow:
-              inset 0 1.5px 3px rgba(0, 0, 0, 0.16),
-              inset 0 -0.5px 0 rgba(255, 255, 255, 0.045);
-          }
-
-          .preview-blur-slider::-moz-range-thumb {
-            width: 18px;
-            height: 10px;
-            border: 0;
-            border-radius: 5px;
-            background: rgba(232, 229, 235, 0.94);
-            box-shadow:
-              0 1px 2px rgba(7, 5, 10, 0.24),
-              inset 0 0 0 0.5px rgba(28, 23, 34, 0.16),
-              inset 0 0.5px 0 rgba(255, 255, 255, 0.48);
-            cursor: pointer;
-          }
-
-          body[data-preview-light] .preview-blur-slider::-webkit-slider-runnable-track {
-            border-color: rgba(36, 30, 43, 0.10);
-            background-image:
-              radial-gradient(circle at 50% 50%,
-                rgba(36, 30, 43, 0.18) 0 0.9px,
-                rgba(36, 30, 43, 0.18) 0.9px,
-                transparent 1.9px),
-              linear-gradient(to right,
-                rgba(36, 30, 43, 0.12) var(--pct, 44%),
-                rgba(36, 30, 43, 0.045) calc(var(--pct, 44%) + 8px));
-            box-shadow:
-              inset 0 1.5px 3px rgba(36, 30, 43, 0.10),
-              inset 0 -0.5px 0 rgba(255, 255, 255, 0.5);
-          }
-
-          body[data-preview-light] .preview-blur-slider::-webkit-slider-thumb {
-            background: rgba(255, 255, 255, 0.94);
-            box-shadow:
-              0 1px 2px rgba(36, 30, 43, 0.15),
-              inset 0 0 0 0.5px rgba(36, 30, 43, 0.11),
-              inset 0 0.5px 0 rgba(255, 255, 255, 0.64);
-          }
-
-          body[data-preview-light] .preview-blur-slider::-moz-range-track {
-            border-color: rgba(36, 30, 43, 0.10);
-            background-image:
-              radial-gradient(circle at 50% 50%,
-                rgba(36, 30, 43, 0.18) 0 0.9px,
-                rgba(36, 30, 43, 0.18) 0.9px,
-                transparent 1.9px),
-              linear-gradient(to right,
-                rgba(36, 30, 43, 0.12) var(--pct, 44%),
-                rgba(36, 30, 43, 0.045) calc(var(--pct, 44%) + 8px));
-            box-shadow:
-              inset 0 1.5px 3px rgba(36, 30, 43, 0.10),
-              inset 0 -0.5px 0 rgba(255, 255, 255, 0.5);
-          }
-
-          body[data-preview-light] .preview-blur-slider::-moz-range-thumb {
-            background: rgba(255, 255, 255, 0.94);
-            box-shadow:
-              0 1px 2px rgba(36, 30, 43, 0.15),
-              inset 0 0 0 0.5px rgba(36, 30, 43, 0.11),
-              inset 0 0.5px 0 rgba(255, 255, 255, 0.64);
+          body[data-preview-light] .preview-blur-fill {
+            background:
+              linear-gradient(90deg, rgba(26, 22, 37, 0.16), rgba(26, 22, 37, 0.07) calc(100% - 26px), rgba(26, 22, 37, 0));
           }
 
           /* 4b — 壁纸导入组块：中性玻璃材质，替换原有大红大绿状态色 */
@@ -1181,7 +1168,7 @@
           /* 5 — 实例卡片：保持原透明玻璃底 + 轻微柔焦边缘。
              全部可调项走 CSS 变量，由右侧调试面板实时驱动（初值=v6）。
              圆角率 22px + background-clip: border-box 保证真圆角渲染。 */
-          .motion-instance-card {
+          .motion-instance-card:not(.flip-card__face *) {
             border-radius: var(--sf-radius, 22px) !important;
             background-clip: border-box !important;
             background-color: rgba(var(--sf-fog-rgb, 255 250 252) / var(--sf-fog, 0)) !important;
@@ -1192,6 +1179,27 @@
               inset 0 0 var(--sf-glow2-spread, 40px) 0 rgba(var(--sf-glow2-rgb, 196 120 142) / var(--sf-glow2, 0.01)),
               0 var(--sf-sh-y, 3px) var(--sf-sh-blur, 12px) rgba(var(--sf-sh-rgb, 7 5 10) / var(--sf-sh-a, 0.075)) !important;
             transition: box-shadow 400ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+          }
+
+          .flip-card__face .motion-instance-card,
+          .flip-card__face .motion-instance-card > div,
+          .flip-card__face .motion-instance-card > .relative,
+          .flip-card__face .motion-instance-card .relative.h-full.flex-col,
+          .flip-card__face .preview-card-noise,
+          .flip-card__face .ios-task-surface {
+            border-radius: 26px !important;
+            box-shadow: none !important;
+            border: none !important;
+            outline: none !important;
+          }
+
+          .flip-card__face .motion-instance-card::before,
+          .flip-card__face .motion-instance-card::after,
+          .flip-card__face .motion-instance-card > .relative::before,
+          .flip-card__face .motion-instance-card > .relative::after,
+          .flip-card__face .motion-instance-card .relative.h-full.flex-col::before,
+          .flip-card__face .motion-instance-card .relative.h-full.flex-col::after {
+            border-radius: 26px !important;
           }
 
           /* 噪点层：强度由 --sf-noise 驱动（调试面板） */
@@ -1234,12 +1242,12 @@
             /* transform 过渡只用于离开卡片时的回正（400ms 平滑归零）；
                指针在卡上时 JS 把 --tilt-dur 切到 0ms 实现即时跟随，
                避免缓动滞后带来的"整排晃动"观感。 */
-            transition: box-shadow 400ms cubic-bezier(0.22, 1, 0.36, 1),
-              transform var(--tilt-dur, 400ms) cubic-bezier(0.2, 0.8, 0.2, 1) !important;
+            transition: box-shadow 200ms ease,
+              transform var(--tilt-dur, 150ms) cubic-bezier(0.16, 1, 0.3, 1) !important;
           }
 
-          .carousel-scrollbar-hidden > [data-card-motion-managed]:not(.motion-instance-card) {
-            transition: transform var(--tilt-dur, 400ms) cubic-bezier(0.2, 0.8, 0.2, 1) !important;
+          .carousel-scrollbar-hidden:not([data-carousel-committing]) > [data-card-motion-managed]:not(.flip-card):not(.motion-instance-card):not([data-reordering]):not([data-dropping]):not([data-reorder-committing]) {
+            transition: transform var(--tilt-dur, 150ms) cubic-bezier(0.16, 1, 0.3, 1) !important;
           }
 
           [data-card-motion-managed][data-card-pressure] > [aria-hidden="false"] > .ios-task-surface {
@@ -1261,14 +1269,14 @@
           }
 
           /* 主题模式差异仅剩发光色；浓度/雾/遮罩统一由调试面板全局变量控制 */
-          body[data-preview-light] .motion-instance-card {
+          body[data-preview-light] .motion-instance-card:not(.flip-card__face *) {
             box-shadow:
               inset 0 0 var(--sf-glow1-spread, 18px) 0 rgba(var(--sf-glow1-rgb, 96 84 76) / var(--sf-glow1, 0.11)),
               inset 0 0 var(--sf-glow2-spread, 40px) 0 rgba(var(--sf-glow2-rgb, 110 96 86) / var(--sf-glow2, 0.01)),
               0 var(--sf-sh-y, 3px) var(--sf-sh-blur, 12px) rgba(var(--sf-sh-rgb, 120 100 80) / var(--sf-sh-a, 0.075)) !important;
           }
 
-          body[data-preview-light] .motion-instance-card:hover {
+          body[data-preview-light] .motion-instance-card:not(.flip-card__face *):hover {
             box-shadow:
               inset 0 0 var(--sf-glow1-spread, 18px) 0 rgba(var(--sf-glow1-rgb, 96 84 76) / var(--sf-glow1, 0.11)),
               inset 0 0 var(--sf-glow2-spread, 40px) 0 rgba(var(--sf-glow2-rgb, 110 96 86) / var(--sf-glow2, 0.01)),
@@ -1276,14 +1284,14 @@
           }
 
           /* 黑夜模式（indigo 系，与源码暗夜按钮 indigo-500 同族） */
-          body[data-preview-dark-mode] .motion-instance-card {
+          body[data-preview-dark-mode] .motion-instance-card:not(.flip-card__face *) {
             box-shadow:
               inset 0 0 var(--sf-glow1-spread, 18px) 0 rgba(var(--sf-glow1-rgb, 151 171 255) / var(--sf-glow1, 0.11)),
               inset 0 0 var(--sf-glow2-spread, 40px) 0 rgba(var(--sf-glow2-rgb, 120 140 230) / var(--sf-glow2, 0.01)),
               0 var(--sf-sh-y, 3px) var(--sf-sh-blur, 12px) rgba(var(--sf-sh-rgb, 7 5 10) / var(--sf-sh-a, 0.075)) !important;
           }
 
-          body[data-preview-dark-mode] .motion-instance-card:hover {
+          body[data-preview-dark-mode] .motion-instance-card:not(.flip-card__face *):hover {
             box-shadow:
               inset 0 0 var(--sf-glow1-spread, 18px) 0 rgba(var(--sf-glow1-rgb, 151 171 255) / var(--sf-glow1, 0.11)),
               inset 0 0 var(--sf-glow2-spread, 40px) 0 rgba(var(--sf-glow2-rgb, 120 140 230) / var(--sf-glow2, 0.01)),
@@ -1292,22 +1300,24 @@
 
           /* 已创建实例卡：去掉源码内联的灰/黑遮罩盖层与 blur 磨砂，
              遮罩统一由内容层的酒红渐变（下方规则）承担 */
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]) > div:first-child > div[style*="background"] {
+          .motion-instance-card:not([data-create-card]) > div:first-child > div[style*="background"],
+          .motion-instance-card:not([data-create-card]) > div.absolute.inset-0 > div[style*="background"] {
             background: transparent !important;
             -webkit-backdrop-filter: none !important;
             backdrop-filter: none !important;
           }
 
           /* 源码里 hover 前后的黑色渐变遮罩层（bg-gradient-to-t from-black/...）压成透明 */
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]) > div[class*="from-black"] {
+          .motion-instance-card:not([data-create-card]) > div[class*="from-black"],
+          .motion-instance-card:not([data-create-card]) > div[class*="from-white"] {
             background-image: none !important;
             background: transparent !important;
           }
 
           /* 收起/展开遮罩各自独立成固定合成层，只交叉淡入淡出；
              遮罩不再参与详情内容的弹性位移。 */
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]) > .relative,
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]) .relative.h-full.flex-col {
+          .motion-instance-card:not([data-create-card]) > .relative,
+          .motion-instance-card:not([data-create-card]) .relative.h-full.flex-col {
             --card-reveal-ease: cubic-bezier(0.2, 0, 0, 1);
             --card-focus-ease: cubic-bezier(0.25, 0.1, 0.25, 1);
             --card-fade-ease: cubic-bezier(0.4, 0, 0.2, 1);
@@ -1316,10 +1326,10 @@
             background: transparent !important;
           }
 
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]) > .relative::before,
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]) > .relative::after,
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]) .relative.h-full.flex-col::before,
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]) .relative.h-full.flex-col::after {
+          .motion-instance-card:not([data-create-card]) > .relative::before,
+          .motion-instance-card:not([data-create-card]) > .relative::after,
+          .motion-instance-card:not([data-create-card]) .relative.h-full.flex-col::before,
+          .motion-instance-card:not([data-create-card]) .relative.h-full.flex-col::after {
             content: "";
             position: absolute;
             z-index: 0;
@@ -1330,8 +1340,8 @@
             will-change: opacity;
           }
 
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]) > .relative::before,
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]) .relative.h-full.flex-col::before {
+          .motion-instance-card:not([data-create-card]) > .relative::before,
+          .motion-instance-card:not([data-create-card]) .relative.h-full.flex-col::before {
             opacity: 1;
             transition: opacity 460ms var(--card-fade-ease);
             background: linear-gradient(
@@ -1343,8 +1353,8 @@
             );
           }
 
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]) > .relative::after,
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]) .relative.h-full.flex-col::after {
+          .motion-instance-card:not([data-create-card]) > .relative::after,
+          .motion-instance-card:not([data-create-card]) .relative.h-full.flex-col::after {
             opacity: 0;
             transition: opacity 460ms var(--card-fade-ease);
             background: linear-gradient(
@@ -1356,25 +1366,25 @@
             );
           }
 
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]) > .relative > *,
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]) .relative.h-full.flex-col > * {
+          .motion-instance-card:not([data-create-card]) > .relative > *,
+          .motion-instance-card:not([data-create-card]) .relative.h-full.flex-col > * {
             position: relative;
             z-index: 1;
           }
 
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]).is-expanded > .relative::before,
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]).is-expanded .relative.h-full.flex-col::before {
+          .motion-instance-card:not([data-create-card]).is-expanded > .relative::before,
+          .motion-instance-card:not([data-create-card]).is-expanded .relative.h-full.flex-col::before {
             opacity: 0;
           }
 
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]).is-expanded > .relative::after,
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]).is-expanded .relative.h-full.flex-col::after {
+          .motion-instance-card:not([data-create-card]).is-expanded > .relative::after,
+          .motion-instance-card:not([data-create-card]).is-expanded .relative.h-full.flex-col::after {
             opacity: 1;
           }
 
           /* 浅色模式沿用独立浅色参数，只替换两张遮罩层的填充。 */
-          body[data-preview-light] .motion-instance-card[data-card-index]:not([data-card-index="0"]) > .relative::before,
-          body[data-preview-light] .motion-instance-card[data-card-index]:not([data-card-index="0"]) .relative.h-full.flex-col::before {
+          body[data-preview-light] .motion-instance-card:not([data-create-card]) > .relative::before,
+          body[data-preview-light] .motion-instance-card:not([data-create-card]) .relative.h-full.flex-col::before {
             background: linear-gradient(
               to top,
               rgba(var(--sf-lg-rgb, 244 240 237) / var(--sf-lg-bc, 0.92)) 0%,
@@ -1385,8 +1395,8 @@
             );
           }
 
-          body[data-preview-light] .motion-instance-card[data-card-index]:not([data-card-index="0"]) > .relative::after,
-          body[data-preview-light] .motion-instance-card[data-card-index]:not([data-card-index="0"]) .relative.h-full.flex-col::after {
+          body[data-preview-light] .motion-instance-card:not([data-create-card]) > .relative::after,
+          body[data-preview-light] .motion-instance-card:not([data-create-card]) .relative.h-full.flex-col::after {
             background: linear-gradient(
               to top,
               rgba(var(--sf-lg-rgb, 244 240 237) / var(--sf-lg-be, 0.96)) 0%,
@@ -1399,7 +1409,7 @@
 
           /* System focus transition：旧信息先退场，标题与详情沿同一条缓入曲线交接。
              不拆字、不弹跳，也不使用前段过快、看似瞬切的减速曲线。 */
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]) .preview-card-subtitle {
+          .motion-instance-card:not([data-create-card]) .preview-card-subtitle {
             align-self: flex-start;
             width: fit-content;
             max-width: 100%;
@@ -1415,7 +1425,7 @@
               filter 260ms var(--card-fade-ease) 90ms !important;
           }
 
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]).is-expanded .preview-card-subtitle {
+          .motion-instance-card:not([data-create-card]).is-expanded .preview-card-subtitle {
             opacity: 1;
             filter: brightness(1.06);
             transform: translate3d(0, var(--card-title-lift), 0) scale(1.07);
@@ -1425,7 +1435,7 @@
               filter 300ms var(--card-fade-ease) !important;
           }
 
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]) .preview-card-status {
+          .motion-instance-card:not([data-create-card]) .preview-card-status {
             opacity: 1;
             transform: translate3d(0, 0, 0);
             transform-origin: left center;
@@ -1435,7 +1445,7 @@
               transform 320ms var(--card-focus-ease) 90ms !important;
           }
 
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]).is-expanded .preview-card-status {
+          .motion-instance-card:not([data-create-card]).is-expanded .preview-card-status {
             opacity: 0;
             transform: translate3d(0, -8px, 0);
             transition:
@@ -1443,7 +1453,7 @@
               transform 260ms var(--card-focus-ease) !important;
           }
 
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]) .motion-accordion {
+          .motion-instance-card:not([data-create-card]) .motion-accordion {
             position: absolute !important;
             left: 14px;
             right: 14px;
@@ -1461,7 +1471,7 @@
               visibility 0s linear 300ms !important;
           }
 
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]) .motion-accordion.is-open {
+          .motion-instance-card:not([data-create-card]) .motion-accordion.is-open {
             opacity: 1;
             visibility: visible;
             pointer-events: auto;
@@ -1472,7 +1482,7 @@
               visibility 0s linear 0s !important;
           }
 
-          .motion-instance-card[data-card-index]:not([data-card-index="0"]) .motion-accordion-inner {
+          .motion-instance-card:not([data-create-card]) .motion-accordion-inner {
             min-height: 0;
             overflow: visible;
             opacity: 1 !important;
@@ -1484,20 +1494,20 @@
           }
 
           @media (prefers-reduced-motion: reduce) {
-            .motion-instance-card[data-card-index]:not([data-card-index="0"]) > .relative::before,
-            .motion-instance-card[data-card-index]:not([data-card-index="0"]) > .relative::after,
-            .motion-instance-card[data-card-index]:not([data-card-index="0"]) .preview-card-subtitle,
-            .motion-instance-card[data-card-index]:not([data-card-index="0"]) .preview-card-status,
-            .motion-instance-card[data-card-index]:not([data-card-index="0"]) .motion-accordion,
-            .motion-instance-card[data-card-index]:not([data-card-index="0"]) .motion-accordion-inner {
+            .motion-instance-card:not([data-create-card]) > .relative::before,
+            .motion-instance-card:not([data-create-card]) > .relative::after,
+            .motion-instance-card:not([data-create-card]) .preview-card-subtitle,
+            .motion-instance-card:not([data-create-card]) .preview-card-status,
+            .motion-instance-card:not([data-create-card]) .motion-accordion,
+            .motion-instance-card:not([data-create-card]) .motion-accordion-inner {
               transition: none !important;
             }
 
-            .motion-instance-card[data-card-index]:not([data-card-index="0"]).is-expanded .preview-card-subtitle {
+            .motion-instance-card:not([data-create-card]).is-expanded .preview-card-subtitle {
               transform: translate3d(0, var(--card-title-lift), 0);
             }
 
-            .motion-instance-card[data-card-index]:not([data-card-index="0"]).is-expanded .preview-card-status {
+            .motion-instance-card:not([data-create-card]).is-expanded .preview-card-status {
               transform: none;
             }
           }
@@ -1513,10 +1523,9 @@
 
           .motion-instance-card img {
             display: block;
-            width: 100% !important;
-            height: 100% !important;
             opacity: var(--sf-img-op, 1) !important;
-            filter: brightness(var(--sf-img-bri, 1)) saturate(var(--sf-img-sat, 1)) blur(var(--sf-img-blur, 0px)) !important;
+            filter: var(--sf-img-filter, none) !important;
+            transform: none !important;
           }
 
           /* 压掉源样式遗留的卡片伪元素盖层，保持背景通透
@@ -1639,18 +1648,32 @@
         const textNodesMatching = (node, value) =>
           Array.from(node.querySelectorAll("span")).filter((item) => item.textContent.trim() === value);
 
-        const setWallpaperBlur = (doc, value) => {
-          wallpaperBlur = Number(value);
-          doc.documentElement.style.setProperty("--preview-wallpaper-blur", `${wallpaperBlur}px`);
+        const setWallpaperBlur = (doc, value, visualT) => {
+          const min = 0;
+          const max = 16;
+          const numeric = Math.min(max, Math.max(min, Number(value)));
+          const t = visualT == null
+            ? (max === min ? 0 : (numeric - min) / (max - min))
+            : Math.min(1, Math.max(0, Number(visualT)));
+          const shown = min + t * (max - min);
+          wallpaperBlur = shown;
+          doc.documentElement.style.setProperty("--preview-wallpaper-blur", `${shown}px`);
           const output = doc.querySelector(".preview-wallpaper-blur-control output");
-          if (output) output.value = `${wallpaperBlur} px`;
-          const slider = doc.querySelector(".preview-blur-slider");
-          if (slider) {
-            const min = Number(slider.min) || 0;
-            const max = Number(slider.max) || 16;
-            const pct = ((wallpaperBlur - min) / (max - min)) * 100;
-            slider.style.setProperty("--pct", `${pct}%`);
+          if (output) output.value = formatBlur(shown);
+          const field = doc.querySelector(".preview-blur-field");
+          const slider = field?.querySelector(".preview-blur-slider");
+          if (field) {
+            field.style.setProperty("--blur-t", String(t));
+            field.setAttribute("aria-valuenow", String(Math.round(shown * 10) / 10));
+            field.setAttribute("aria-valuetext", formatBlur(shown));
+            field.querySelectorAll(".preview-blur-dot").forEach((dot) => dot.remove());
           }
+          if (slider) slider.value = String(shown);
+        };
+
+        const formatBlur = (value) => {
+          const rounded = Math.round(Number(value) * 10) / 10;
+          return `${Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1)} px`;
         };
 
         const getBackgroundPanel = (doc) =>
@@ -1688,7 +1711,7 @@
             return null;
           }
 
-          wallpaper.setAttribute("data-preview-wallpaper", "");
+          if (!wallpaper.hasAttribute("data-preview-wallpaper")) wallpaper.setAttribute("data-preview-wallpaper", "");
           if (wallpaper.style.getPropertyValue("--preview-wallpaper-image") !== wallpaper.style.backgroundImage) {
             wallpaper.style.setProperty("--preview-wallpaper-image", wallpaper.style.backgroundImage);
           }
@@ -1700,16 +1723,16 @@
           const panel = getBackgroundPanel(doc);
           if (!panel) return;
 
-          panel.setAttribute("data-preview-bg-panel", "");
+          if (!panel.hasAttribute("data-preview-bg-panel")) panel.setAttribute("data-preview-bg-panel", "");
 
           const importBtn = Array.from(panel.querySelectorAll("button")).find((node) => {
             const title = node.querySelector("div > div");
             return title && (title.textContent === "导入本地图片" || title.textContent === "已导入壁纸");
           });
           if (importBtn) {
-            importBtn.setAttribute("data-preview-wallpaper-import", "");
-            if (wallpaper) importBtn.setAttribute("data-preview-has-wallpaper", "");
-            else importBtn.removeAttribute("data-preview-has-wallpaper");
+            if (!importBtn.hasAttribute("data-preview-wallpaper-import")) importBtn.setAttribute("data-preview-wallpaper-import", "");
+            if (wallpaper && !importBtn.hasAttribute("data-preview-has-wallpaper")) importBtn.setAttribute("data-preview-has-wallpaper", "");
+            else if (!wallpaper && importBtn.hasAttribute("data-preview-has-wallpaper")) importBtn.removeAttribute("data-preview-has-wallpaper");
           }
 
           const existing = panel.querySelector(".preview-wallpaper-blur-control");
@@ -1722,8 +1745,9 @@
           const wallpaperGroup = wallpaperLabel?.parentElement;
           if (!wallpaperGroup) return;
           if (existing) {
-            if (wallpaperGroup.nextElementSibling !== existing) wallpaperGroup.after(existing);
-            return;
+            if (!existing.querySelector(".preview-blur-fill")) existing.remove();
+            else if (wallpaperGroup.nextElementSibling !== existing) wallpaperGroup.after(existing);
+            if (existing.isConnected) return;
           }
 
           const isLight = !!doc.body.dataset.previewLight;
@@ -1741,23 +1765,91 @@
           output.value = `${wallpaperBlur} px`;
           label.append(title, output);
 
+          const field = doc.createElement("div");
+          field.className = "preview-blur-field";
+          const track = doc.createElement("div");
+          track.className = "preview-blur-track";
+          track.setAttribute("aria-hidden", "true");
+          const fill = doc.createElement("span");
+          fill.className = "preview-blur-fill";
+          track.append(fill);
+          const blurMin = 0;
+          const blurMax = 16;
+          const knob = doc.createElement("span");
+          knob.className = "preview-blur-knob";
+          track.append(knob);
+
           const input = doc.createElement("input");
           input.className = "preview-blur-slider";
           input.type = "range";
-          input.min = "0";
-          input.max = "16";
-          input.step = "1";
+          input.min = String(blurMin);
+          input.max = String(blurMax);
+          input.step = "any";
           input.value = String(wallpaperBlur);
           input.setAttribute("aria-label", "壁纸磨砂强度");
-          input.addEventListener("input", () => setWallpaperBlur(doc, input.value));
+          input.tabIndex = -1;
 
-          control.append(label, input);
+          const valueFromPointer = (event) => {
+            const rect = track.getBoundingClientRect();
+            const inset = 16;
+            const span = Math.max(1, rect.width - inset * 2);
+            const x = Math.min(rect.width - inset, Math.max(inset, event.clientX - rect.left));
+            const ratio = (x - inset) / span;
+            return { t: ratio, value: blurMin + ratio * (blurMax - blurMin) };
+          };
+
+          field.tabIndex = 0;
+          field.setAttribute("role", "slider");
+          field.setAttribute("aria-label", "壁纸磨砂强度");
+          field.setAttribute("aria-valuemin", String(blurMin));
+          field.setAttribute("aria-valuemax", String(blurMax));
+          field.setAttribute("aria-orientation", "horizontal");
+          field.addEventListener("pointerdown", (event) => {
+            if (event.button != null && event.button !== 0) return;
+            event.preventDefault();
+            field.setPointerCapture(event.pointerId);
+            field.classList.add("is-dragging");
+            const apply = (pointerEvent) => {
+              const next = valueFromPointer(pointerEvent);
+              setWallpaperBlur(doc, next.value, next.t);
+            };
+            const end = (pointerEvent) => {
+              if (field.hasPointerCapture?.(pointerEvent.pointerId)) {
+                field.releasePointerCapture(pointerEvent.pointerId);
+              }
+              field.classList.remove("is-dragging");
+              const next = valueFromPointer(pointerEvent);
+              setWallpaperBlur(doc, next.value, next.t);
+              field.removeEventListener("pointermove", apply);
+              field.removeEventListener("pointerup", end);
+              field.removeEventListener("pointercancel", end);
+            };
+            apply(event);
+            field.addEventListener("pointermove", apply);
+            field.addEventListener("pointerup", end);
+            field.addEventListener("pointercancel", end);
+          });
+          field.addEventListener("keydown", (event) => {
+            const current = Number(input.value);
+            let next = null;
+            if (event.key === "ArrowRight" || event.key === "ArrowUp") next = Math.round(current) + 1;
+            else if (event.key === "ArrowLeft" || event.key === "ArrowDown") next = Math.round(current) - 1;
+            else if (event.key === "Home") next = blurMin;
+            else if (event.key === "End") next = blurMax;
+            if (next == null) return;
+            event.preventDefault();
+            setWallpaperBlur(doc, Math.min(blurMax, Math.max(blurMin, next)));
+          });
+
+          field.append(track, input);
+          control.append(label, field);
           wallpaperGroup.after(control);
           setWallpaperBlur(doc, wallpaperBlur);
         };
 
         let previewThemeToneDoc = null;
         let previewThemeTone = null;
+        const themeWashAnimations = new WeakMap();
         const playThemeWash = (doc, tone) => {
           const view = doc.defaultView;
           if (!doc.body || !view || view.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
@@ -1771,22 +1863,20 @@
             doc.body.appendChild(wash);
           }
 
-          if (typeof wash.getAnimations === "function") {
-            wash.getAnimations().forEach((animation) => animation.cancel());
-          }
+          themeWashAnimations.get(wash)?.cancel();
           if (typeof wash.animate !== "function") return;
-          wash.style.backgroundColor = tone === "light" ? "#f0ece8" : "#1a1625";
-          wash.animate(
+          wash.style.backgroundColor = tone === "light" ? "rgb(var(--app-light-surface-rgb, 240 236 232))" : "#1a1625";
+          themeWashAnimations.set(wash, wash.animate(
             [{ opacity: 0.12 }, { opacity: 0 }],
             {
               duration: 220,
               easing: "cubic-bezier(0.22, 1, 0.36, 1)",
             },
-          );
+          ));
         };
 
         const syncLightMode = (doc, root) => {
-          const isLight = root.classList.contains("bg-[#f0ece8]");
+          const isLight = root.dataset.themeTone === "light";
           const nextTone = isLight ? "light" : "dark";
           const toneChanged =
             previewThemeToneDoc === doc &&
@@ -1795,14 +1885,14 @@
           previewThemeToneDoc = doc;
           previewThemeTone = nextTone;
 
-          if (isLight) doc.body.dataset.previewLight = "true";
-          else delete doc.body.dataset.previewLight;
+          if (isLight && doc.body.dataset.previewLight !== "true") doc.body.dataset.previewLight = "true";
+          else if (!isLight && doc.body.hasAttribute("data-preview-light")) delete doc.body.dataset.previewLight;
 
           // 黑夜模式 = 深底且无动态光效容器（动态模式才有 ambient-glow-container）
           const isDynamic = !!doc.querySelector(".ambient-glow-container");
           const isDarkNight = !isLight && !isDynamic;
-          if (isDarkNight) doc.body.dataset.previewDarkMode = "true";
-          else delete doc.body.dataset.previewDarkMode;
+          if (isDarkNight && doc.body.dataset.previewDarkMode !== "true") doc.body.dataset.previewDarkMode = "true";
+          else if (!isDarkNight && doc.body.hasAttribute("data-preview-dark-mode")) delete doc.body.dataset.previewDarkMode;
 
           const control = doc.querySelector(".preview-wallpaper-blur-control");
           if (control) {
@@ -1852,6 +1942,8 @@
         const ensureEdgeBlurs = (doc) => {
           const carousel = doc.querySelector(".carousel-scrollbar-hidden");
           const rect = carousel ? carousel.getBoundingClientRect() : null;
+          const topPx = rect ? `${Math.round(rect.top)}px` : "";
+          const heightPx = rect ? `${Math.round(rect.height)}px` : "";
           for (const side of ["left", "right"]) {
             const id = `preview-edge-blur-${side}`;
             const strip = doc.getElementById(id);
@@ -1868,8 +1960,14 @@
               for (const div of buildEdgeBlurDivs(doc, side)) node.appendChild(div);
               doc.body.appendChild(node);
             }
-            node.style.top = `${Math.round(rect.top)}px`;
-            node.style.height = `${Math.round(rect.height)}px`;
+            if (node.__lastTop !== topPx) {
+              node.__lastTop = topPx;
+              node.style.top = topPx;
+            }
+            if (node.__lastHeight !== heightPx) {
+              node.__lastHeight = heightPx;
+              node.style.height = heightPx;
+            }
           }
         };
 
@@ -1976,8 +2074,9 @@
 
         const ensureCardRevealStructure = (doc) => {
           const cards = doc.querySelectorAll(
-            '.motion-instance-card[data-card-index]:not([data-card-index="0"])'
+            '.motion-instance-card:not([data-create-card])'
           );
+          const pendingWrites = [];
           cards.forEach((card) => {
             const content = Array.from(card.children).find((node) =>
               node.classList &&
@@ -1993,14 +2092,7 @@
             if (!accordion || accordionIndex < 2) return;
 
             const subtitle = contentChildren[accordionIndex - 2];
-            if (!subtitle.classList.contains('preview-card-subtitle')) {
-              subtitle.classList.add('preview-card-subtitle');
-            }
             const status = contentChildren[accordionIndex - 1];
-            if (!status.classList.contains('preview-card-status')) {
-              status.classList.add('preview-card-status');
-            }
-
             const detailList = accordion.querySelector('.motion-accordion-inner > div');
             if (!detailList) return;
 
@@ -2010,16 +2102,25 @@
             const rawTitleLift = detailTop - 8 - expandedTitleHeight - subtitle.offsetTop;
             const titleLift = Math.max(-96, Math.min(-60, Math.round(rawTitleLift)));
             const titleLiftValue = `${titleLift}px`;
+            pendingWrites.push({ content, accordion, subtitle, status, titleLiftValue });
+          });
+
+          for (const { content, accordion, subtitle, status, titleLiftValue } of pendingWrites) {
+            if (!subtitle.classList.contains('preview-card-subtitle')) {
+              subtitle.classList.add('preview-card-subtitle');
+            }
+            if (!status.classList.contains('preview-card-status')) {
+              status.classList.add('preview-card-status');
+            }
             if (content.style.getPropertyValue('--card-title-lift') !== titleLiftValue) {
               content.style.setProperty('--card-title-lift', titleLiftValue);
             }
-
             if (accordion.classList.contains('is-open') && accordion.hasAttribute('inert')) {
               accordion.removeAttribute('inert');
             } else if (!accordion.classList.contains('is-open') && !accordion.hasAttribute('inert')) {
               accordion.setAttribute('inert', '');
             }
-          });
+          }
         };
 
         // —— 卡片轻微 3D 倾斜跟随鼠标（隔离架构）：
@@ -2037,7 +2138,7 @@
         };
 
         const wireCardTilt = (doc) => {
-          doc.querySelectorAll(".carousel-scrollbar-hidden > [data-card-index]").forEach((card) => {
+          doc.querySelectorAll(".carousel-scrollbar-hidden > [data-slot]:not(.flip-card)").forEach((card) => {
             if (card.dataset.cardMotionManaged !== "true") card.dataset.cardMotionManaged = "true";
           });
           if (tiltWiredDoc === doc) return;
@@ -2076,7 +2177,7 @@
             while (curr && curr.parentElement !== track) {
               curr = curr.parentElement;
             }
-            if (!curr?.hasAttribute?.("data-card-index")) {
+            if (!curr?.hasAttribute?.("data-slot") || curr?.classList?.contains("flip-card")) {
               return null;
             }
             return { track, card: curr };
@@ -2123,6 +2224,27 @@
             )) || (selection && !selection.isCollapsed
               && (card.contains(selection.anchorNode) || card.contains(selection.focusNode)));
           };
+          const solveCubicBezier = (p1x, p1y, p2x, p2y) => {
+            return (t) => {
+              if (t <= 0) return 0;
+              if (t >= 1) return 1;
+              let u = t;
+              for (let i = 0; i < 6; i++) {
+                const f = 3 * (1 - u) * (1 - u) * u * p1x + 3 * (1 - u) * u * u * p2x + u * u * u - t;
+                const df = 3 * (1 - u) * (1 - u) * p1x + 6 * (1 - u) * u * (p2x - p1x) + 3 * u * u * (1 - p2x);
+                if (Math.abs(f) < 1e-4) break;
+                u -= f / (df || 1);
+              }
+              return 3 * (1 - u) * (1 - u) * u * p1y + 3 * (1 - u) * u * u * p2y + u * u * u;
+            };
+          };
+
+          // 紧致敏捷的微触感按压与利落回弹（杜绝过冲与果冻晃动）
+          const bezierPress = solveCubicBezier(0.2, 0, 0, 1);
+          const bezierRelease = solveCubicBezier(0.16, 1, 0.3, 1);
+          const PRESS_DUR_MS = 80;
+          const RELEASE_DUR_MS = 150;
+
           const stateFor = ({ card, track }) => {
             let state = states.get(card);
             if (!state) {
@@ -2130,28 +2252,35 @@
                 card, track, hoverU: 0, hoverV: 0, hover: false, hoverReturn: null,
                 channels: Array.from({ length: 3 }, () => ({ value: 0, velocity: 0, target: 0 })),
                 lastTime: view.performance.now(), pressureLock: false, tiltLock: false,
+                pressPhase: "idle", pressStart: 0, pressStartDepth: 0,
+                releaseStart: 0, releaseStartDepth: 0, depth: 0, pressMoving: false,
               };
               states.set(card, state);
             }
             card.dataset.cardMotionManaged = "true";
             return state;
           };
-          const pressMoving = (state) => state.channels.some((channel) =>
-            Math.abs(channel.value - channel.target) > 0.0008 || Math.abs(channel.velocity) > 0.025);
+          const pressMoving = (state) => !!state.pressMoving;
           const render = (state) => {
+            if (state.card.closest(".flip-card[data-reordering], .flip-card[data-dropping], [data-carousel-committing]")) return;
             const rawDeg = parseFloat(doc.documentElement.style.getPropertyValue("--sf-tilt-max"));
             const deg = Number.isFinite(rawDeg) ? rawDeg : TILT_MAX_DEG;
-            const [x, y, depth] = state.channels.map((channel) => channel.value);
-            const angleY = state.hoverU * deg / 2 + clamp(x, -1, 1) * 3;
-            const angleX = -state.hoverV * deg / 2 - clamp(y, -1, 1) * 3;
+            const depth = state.depth || 0;
+            const angleY = state.hoverU * deg / 2;
+            const angleX = -state.hoverV * deg / 2;
+            const currentScale = Math.max(0.993, 1 - depth * 0.007);
+            const currentZ = clamp(-depth * 2, -2, 0.3);
             const tilt = `perspective(900px) rotateY(${angleY.toFixed(3)}deg) rotateX(${angleX.toFixed(3)}deg) ` +
-              `translateZ(${clamp(-depth * 5, -5, 0.3).toFixed(3)}px) scale(${Math.max(0.985, 1 - depth * 0.015).toFixed(5)})`;
+              `translateZ(${currentZ.toFixed(3)}px) scale(${currentScale.toFixed(5)})`;
             state.card.style.transform = tilt;
           };
           const neutral = (state, immediate = false) => {
-            state.card.style.setProperty("--tilt-dur", immediate ? "0ms" : "400ms");
+            state.card.style.setProperty("--tilt-dur", immediate ? "0ms" : "150ms");
             state.card.style.removeProperty("--preview-tilt");
             state.card.style.transform = immediate ? "none" : "";
+            state.pressPhase = "idle";
+            state.pressMoving = false;
+            state.depth = 0;
             snap(state, "pressure", false);
             snap(state, "tilt", false);
             states.delete(state.card);
@@ -2163,7 +2292,9 @@
             state.hover = false;
             state.hoverReturn = null;
             state.hoverU = state.hoverV = 0;
-            state.channels.forEach((channel) => { channel.value = channel.velocity = channel.target = 0; });
+            state.depth = 0;
+            state.pressPhase = "idle";
+            state.pressMoving = false;
             if (hovered === state) hovered = null;
             if (held?.state === state) {
               blockedPointers.add(held.id);
@@ -2185,40 +2316,49 @@
             held = hovered = null;
           };
 
-          // Closed-form damped springs preserve position and velocity when a press is interrupted.
+          // 优雅贝塞尔曲线驱动物理按压与回弹
           const advance = (state, now) => {
-            const dt = Math.min(0.064, Math.max(0, (now - state.lastTime) / 1000));
             state.lastTime = now;
             const down = held?.state === state;
-            const frequency = down ? 34 : 20;
-            const damping = down ? 1 : 0.8;
-            for (const channel of state.channels) {
-              const delta = channel.value - channel.target;
-              const velocity = channel.velocity;
-              const decay = Math.exp(-damping * frequency * dt);
-              if (damping === 1) {
-                const b = velocity + frequency * delta;
-                channel.value = channel.target + (delta + b * dt) * decay;
-                channel.velocity = (velocity - frequency * b * dt) * decay;
+
+            if (down) {
+              if (state.pressPhase !== "down") {
+                state.pressPhase = "down";
+                state.pressStart = now;
+                state.pressStartDepth = state.depth || 0;
+              }
+              const p = clamp((now - state.pressStart) / PRESS_DUR_MS, 0, 1);
+              const eased = bezierPress(p);
+              state.depth = state.pressStartDepth + (1 - state.pressStartDepth) * eased;
+              state.pressMoving = p < 1;
+            } else {
+              if (state.pressPhase === "down") {
+                state.pressPhase = "up";
+                state.releaseStart = now;
+                state.releaseStartDepth = state.depth || 0;
+              }
+              if (state.pressPhase === "up") {
+                const p = clamp((now - state.releaseStart) / RELEASE_DUR_MS, 0, 1);
+                // 贝塞尔回弹曲线：随着 p 变化，bezierRelease(p) 达到 ~1.038 微超调，实现极致温润灵动的微果冻回弹
+                const easedOut = bezierRelease(p);
+                state.depth = state.releaseStartDepth * (1 - easedOut);
+                state.pressMoving = p < 1;
+                if (p >= 1) {
+                  state.pressPhase = "idle";
+                  state.depth = 0;
+                  state.pressMoving = false;
+                }
               } else {
-                const w = frequency * Math.sqrt(1 - damping * damping);
-                const b = (velocity + damping * frequency * delta) / w;
-                const cosine = Math.cos(w * dt);
-                const sine = Math.sin(w * dt);
-                const position = delta * cosine + b * sine;
-                channel.value = channel.target + position * decay;
-                channel.velocity = (w * (-delta * sine + b * cosine) - damping * frequency * position) * decay;
+                state.depth = 0;
+                state.pressMoving = false;
               }
             }
-            if (!pressMoving(state)) state.channels.forEach((channel) => {
-              channel.value = channel.target;
-              channel.velocity = 0;
-            });
+
             if (state.hoverReturn) {
-              const progress = clamp((now - state.hoverReturn.start) / 400, 0, 1);
+              const progress = clamp((now - state.hoverReturn.start) / 420, 0, 1);
               const amount = Math.pow(1 - progress, 4);
               state.hoverU = state.hoverReturn.u * amount;
-              state.hoverV = state.hoverReturn.v * amount;
+              state.hoverV = state.hoverV * amount;
               if (progress === 1) state.hoverReturn = null;
             }
           };
@@ -2281,6 +2421,7 @@
           };
 
           listen(doc, "pointerdown", (event) => {
+            if (event.target?.closest?.(".flip-card[data-reordering], [data-carousel-committing]")) return;
             pointerIds.add(event.pointerId);
             if (!event.isPrimary || event.button !== 0 || pointerIds.size > 1) {
               if (held) interruptState(held.state);
@@ -2303,6 +2444,10 @@
             if (!reduced) targetPressure(state, position);
           });
           listen(doc, "pointermove", (event) => {
+            if (event.target?.closest?.(".flip-card[data-reordering], .flip-card[data-dropping], [data-carousel-committing]")) {
+              if (held?.id === event.pointerId) interruptState(held.state);
+              return;
+            }
             if (held?.id === event.pointerId) {
               const state = held.state;
               if (Math.hypot(event.clientX - held.x, event.clientY - held.y) > 4
@@ -2438,6 +2583,7 @@
               timer = 0;
               if (!button.isConnected || frame.contentDocument !== doc) return;
               tuningPanelConcealed = !tuningPanelConcealed;
+              if (!tuningPanelConcealed) ensureTuningPanel(doc);
               syncTuningPanelVisibility(doc);
               consumeClick = true;
               if (consumeTimer) view.clearTimeout(consumeTimer);
@@ -2473,11 +2619,11 @@
           const root = doc.querySelector("#root > div");
           if (!root || !doc.body) return;
 
-          root.setAttribute("data-preview-root", "");
+          if (!root.hasAttribute("data-preview-root")) root.setAttribute("data-preview-root", "");
           const main = root.querySelector(":scope > main");
           if (main) {
             const logo = main.querySelector(":scope > div.mb-4.text-center.select-none.cursor-pointer.group");
-            if (logo) logo.setAttribute("data-preview-logo", "");
+            if (logo && !logo.hasAttribute("data-preview-logo")) logo.setAttribute("data-preview-logo", "");
           }
 
           syncLightMode(doc, root);
@@ -2563,7 +2709,7 @@
         // 三种模式各自拥有独立工作区、手动保存槽和历史，任何修改只写入
         // 面板当前模式。旧版 dynamic 裸对象与三个旧槽会按模式一次性兼容读取。
         const SF_STORAGE_VERSION = 3;
-        const SF_BASELINE_REVISION = "20260904-card-reveal-v10";
+        const SF_BASELINE_REVISION = "20261103-light-neutral-v1";
         const SF_BASELINE_REVISION_KEY = "sillyclient.sfTuningPreset.baselineRevision";
         const SF_MODE_LABELS = {
           dynamic: "动态",
@@ -2675,7 +2821,17 @@
           for (const mode of SF_MODE_ORDER) {
             const rawDraft = readSfJson(SF_DRAFT_KEYS[mode]);
             const draftVersion = Number(rawDraft && rawDraft.version);
-            if (Number.isFinite(draftVersion) && draftVersion >= SF_STORAGE_VERSION) continue;
+            if (Number.isFinite(draftVersion) && draftVersion >= SF_STORAGE_VERSION) {
+              if (appliedRevision === "20261103-light-warm-v1" &&
+                  mode === "light" && draftVersion === SF_STORAGE_VERSION &&
+                  Array.isArray(rawDraft.values?.lgRgb) &&
+                  rawDraft.values.lgRgb.length === 3 &&
+                  rawDraft.values.lgRgb.every((channel, index) => channel === [252, 249, 241][index])) {
+                rawDraft.values.lgRgb = cloneSfValues(SF_MODE_DEFAULTS.light.lgRgb);
+                writeSfJson(SF_DRAFT_KEYS[mode], rawDraft);
+              }
+              continue;
+            }
             const slot = loadSfSlotRecord(mode);
             writeSfJson(SF_DRAFT_KEYS[mode], {
               version: SF_STORAGE_VERSION,
@@ -2718,6 +2874,7 @@
           }
         };
         clearDynamicWinePlate();
+
 
         const sfDraftCache = Object.create(null);
         const sfDraftSaveTimers = Object.create(null);
@@ -2882,6 +3039,10 @@
           el.style.setProperty("--sf-img-bri", String(v.imgBri / 100));
           el.style.setProperty("--sf-img-sat", String(v.imgSat / 100));
           el.style.setProperty("--sf-img-blur", v.imgBlur + "px");
+          el.style.setProperty("--sf-img-filter",
+            v.imgBri === 100 && v.imgSat === 100 && v.imgBlur === 0
+              ? "none"
+              : "brightness(" + (v.imgBri / 100) + ") saturate(" + (v.imgSat / 100) + ") blur(" + v.imgBlur + "px)");
           el.style.setProperty("--sf-cover", String(v.cover / 100));
           el.style.setProperty("--sf-grad-bc", String(v.gradBc / 100));
           el.style.setProperty("--sf-grad-be", String(v.gradBe / 100));
@@ -2997,7 +3158,7 @@
             sfThemeTick(doc);
             return;
           }
-          if (!doc.body) return;
+          if (!doc.body || tuningPanelConcealed) return;
 
           panel = doc.createElement("div");
           panel.className = "preview-tuning-panel preview-tuning-panel--draggable";
@@ -3664,9 +3825,6 @@
             const liveRoot = currentDoc.querySelector("#root > div");
             if (!liveRoot) return;
             if (liveRoot !== observedThemeRoot) installThemeRootObserver(currentDoc, liveRoot);
-            if (liveRoot.classList.contains("theme-smoothing")) {
-              liveRoot.classList.remove("theme-smoothing");
-            }
             syncLightMode(currentDoc, liveRoot);
             ensureTuningPanel(currentDoc);
           });

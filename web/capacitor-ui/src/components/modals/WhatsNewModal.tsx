@@ -106,14 +106,14 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({
           >
             <div className="flex items-center justify-between mb-1.5">
               <span className={cn("text-[13px] font-semibold tracking-tight", isLight ? "text-[#1a1625]/90" : "text-white/90")}>
-                新方式：实例存放位置由你选择
+                拖拽：保留流光，收好边缘
               </span>
               <span className={cn("text-[10px] font-mono", isLight ? "text-[#1a1625]/35" : "text-white/30")}>
                 01
               </span>
             </div>
             <div className={cn("text-[11.5px] leading-relaxed", isLight ? "text-[#1a1625]/65" : "text-white/65")}>
-              创建、迁移与搬迁都必须先选一个存放文件夹，实例就放在该文件夹内；不再有任何默认落点，所选位置同时作为之后的默认存放位置。
+              长按拖动时，模糊卡片继续跟随底层背景变化，不再透出旁边的卡片；修正边缘细亮线，保留原有抬起与归位动画，运行中的终端卡片不参与拖拽排序。
             </div>
           </div>
 
@@ -126,14 +126,14 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({
           >
             <div className="flex items-center justify-between mb-1.5">
               <span className={cn("text-[13px] font-semibold tracking-tight", isLight ? "text-[#1a1625]/90" : "text-white/90")}>
-                新更新：导入旧数据只认你选的文件夹
+                终端：统一材质，专注阅读
               </span>
               <span className={cn("text-[10px] font-mono", isLight ? "text-[#1a1625]/35" : "text-white/30")}>
                 02
               </span>
             </div>
             <div className={cn("text-[11.5px] leading-relaxed", isLight ? "text-[#1a1625]/65" : "text-white/65")}>
-              数据迁移的目标位置只能由你自己选择（必选），原地接管沿用来源目录；“迁移至默认路径”一类选项已全部移除。
+              终端沿用设置与实例菜单的玻璃外壳，代码区域统一为深色。标题栏、字号控件和命令输入重新对齐，保留窗口拖动与右下角缩放手柄。
             </div>
           </div>
 
@@ -146,14 +146,14 @@ export const WhatsNewModal: React.FC<WhatsNewModalProps> = ({
           >
             <div className="flex items-center justify-between mb-1.5">
               <span className={cn("text-[13px] font-semibold tracking-tight", isLight ? "text-[#1a1625]/90" : "text-white/90")}>
-                新优化：报错说人话与界面细节
+                细节：隐藏滚动条，淡化标签
               </span>
               <span className={cn("text-[10px] font-mono", isLight ? "text-[#1a1625]/35" : "text-white/30")}>
                 03
               </span>
             </div>
             <div className={cn("text-[11.5px] leading-relaxed", isLight ? "text-[#1a1625]/65" : "text-white/65")}>
-              失败原因直接以中文说明（不再出现内部英文报错）；管理面板的导出与操作按钮在窄屏下不再被挤成竖排。
+              启动日志、维护页及其他滚动区域隐藏滚动条，内容仍可正常滚动，不再因滚动条挤压布局。版本标签只去掉细边线，保持原有位置、尺寸与配色。
             </div>
           </div>
 
