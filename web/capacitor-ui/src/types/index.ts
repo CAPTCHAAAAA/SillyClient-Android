@@ -1,12 +1,9 @@
 import React from "react";
 import type {
-  AppUpdateInfo,
   CompanionPresetSelection,
   PreinstallSelection,
-  ContentOpenMode,
   InstanceConfig,
   InstallPathMode,
-  GithubRelease,
 } from "../capacitor-plugin";
 
 export interface TavernInstance {
@@ -45,10 +42,10 @@ export interface TavernInstance {
   /** 创建实例时选用的内置主题预设；宿主通过一次性标记避免后续启动重复覆盖。 */
   companionPreset?: CompanionPresetSelection;
   preinstall?: PreinstallSelection;
+  /** 实例是否设置了访问保护密码（保险开关） */
+  hasPassword?: boolean;
   /** Android 新建实例首次进入酒馆时显示状态栏返回提示；仅在用户实际滑动返回后清除。 */
   pendingTavernGestureHint?: boolean;
-  /** 是否已开启本地访问密码保护 (本地保险开关) */
-  hasPassword?: boolean;
 }
 
 export type ManageTab = "launch" | "storage" | "terminal" | "about";

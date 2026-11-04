@@ -6,7 +6,7 @@ import { LAYERS } from "../../constants/layers";
 import { PreinstallOptions } from "../instance/PreinstallOptions";
 import type { GithubRelease, PreinstalledExtensionId } from "../../capacitor-plugin";
 
-export type WizardMode = "local" | "remote";
+export type WizardMode = "local" | "remote" | "import";
 
 export interface DiscoveredTavern {
   name: string;
@@ -216,7 +216,7 @@ export const NewInstanceWizardModal: React.FC<NewInstanceWizardModalProps> = ({
   onClose,
   isLight,
   glassBg,
-  isWindows,
+  isWindows: _isWindows,
   newInstanceName,
   setNewInstanceName,
   newInstanceMode,
@@ -243,7 +243,7 @@ export const NewInstanceWizardModal: React.FC<NewInstanceWizardModalProps> = ({
   newInstanceError,
   isCreatingInstance,
   createInstance,
-  releases,
+  releases: _releases,
   setReleases,
   fetchingReleases,
   setFetchingReleases,
@@ -256,15 +256,10 @@ export const NewInstanceWizardModal: React.FC<NewInstanceWizardModalProps> = ({
   const wizardContainerRef = useRef<HTMLDivElement>(null);
   const wizardLocalRef = useRef<HTMLDivElement>(null);
   const wizardRemoteRef = useRef<HTMLDivElement>(null);
-  const importCopyRef = useRef<HTMLDivElement>(null);
-  const importTakeoverRef = useRef<HTMLDivElement>(null);
   const [wizardHeight, setWizardHeight] = useState<number | null>(null);
   const [releaseFetchError, setReleaseFetchError] = useState<string | null>(null);
   const wizardBodyRef = useRef<HTMLDivElement>(null);
   const [wizardBodyFade, setWizardBodyFade] = useState({ top: false, bottom: false });
-
-  const [showAccessModeInfo, setShowAccessModeInfo] = useState(false);
-  const [hasReadAccessMode, setHasReadAccessMode] = useState(false);
 
   // 同步测量当前激活模式的实际高度，在同一浏览器渲染帧提交以保证无闪烁、无空白跳跃的平滑流体溶变
   useLayoutEffect(() => {
@@ -298,7 +293,6 @@ export const NewInstanceWizardModal: React.FC<NewInstanceWizardModalProps> = ({
     newInstanceCompanionPresetEnabled,
     newInstanceExtensionIds,
     newRemoteAuthEnabled,
-    showAccessModeInfo,
     isOpen,
   ]);
 
@@ -328,7 +322,6 @@ export const NewInstanceWizardModal: React.FC<NewInstanceWizardModalProps> = ({
     newInstanceError,
     newInstanceCompanionPresetEnabled,
     newRemoteAuthEnabled,
-    showAccessModeInfo,
   ]);
 
   const handleSwitchMode = (mode: WizardMode) => {

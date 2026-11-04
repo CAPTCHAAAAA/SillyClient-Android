@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Play, MoreVertical, Edit2, Loader2, Lock } from "lucide-react";
+import { Play, MoreVertical, Edit2, Lock } from "lucide-react";
 import { cn, formatDisplayVersion } from "../../lib/utils";
 import type { TavernInstance } from "../../types";
 import { coverTone, coverWash } from "./coverTone";
+import { useFrozenCoverPlate } from "./useFrozenCoverPlate";
 
 export interface InstanceStoppedCardProps {
   instance: TavernInstance;
@@ -11,14 +12,14 @@ export interface InstanceStoppedCardProps {
   isDynamic?: boolean;
   glassBg?: string;
   isExpanded: boolean;
-  isMenuOpen: boolean;
   launchingId: string | null;
   onToggleExpand: () => void;
   onLaunch: (instance: TavernInstance) => void;
   onOpenMenu: (instance: TavernInstance, rect: DOMRect) => void;
-  onRenameSave: (instanceId: string, newName: string) => void | boolean | Promise<void | boolean>;
+  onRenameSave: (instanceId: string, newName: string) => void;
   isExternallyRenaming?: boolean;
   onClearExternalRenaming?: () => void;
+  isReordering?: boolean;
 }
 
 function getStatusText(status: TavernInstance["status"]) {
@@ -46,7 +47,6 @@ export const InstanceStoppedCard: React.FC<InstanceStoppedCardProps> = ({
   isLight,
   isDynamic = false,
   isExpanded,
-  isMenuOpen,
   launchingId,
   onToggleExpand,
   onLaunch,
@@ -54,23 +54,16 @@ export const InstanceStoppedCard: React.FC<InstanceStoppedCardProps> = ({
   onRenameSave,
   isExternallyRenaming = false,
   onClearExternalRenaming,
+  isReordering = false,
 }) => {
   const [isEditingInline, setIsEditingInline] = useState(false);
   const [editName, setEditName] = useState(instance.name);
   const inputRef = useRef<HTMLInputElement>(null);
-  const savingRef = useRef(false);
-  const cancelledEditRef = useRef(false);
-  const mountedRef = useRef(true);
-  const [isSavingInline, setIsSavingInline] = useState(false);
-  const [renameError, setRenameError] = useState<string | null>(null);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => { mountedRef.current = false; };
-  }, []);
+  const coverSrc = instance.cover || "./tavern-logo.png";
+  const { rootRef, plateRef, usePlate } = useFrozenCoverPlate(isLight, isDynamic, isReordering, coverSrc);
 
   useEffect(() => {
     if (isExternallyRenaming) {
-      setRenameError(null);
       setIsEditingInline(true);
       setEditName(instance.subtitle || instance.name);
       onClearExternalRenaming?.();
@@ -79,50 +72,34 @@ export const InstanceStoppedCard: React.FC<InstanceStoppedCardProps> = ({
 
   useEffect(() => {
     if (isEditingInline) {
-      cancelledEditRef.current = false;
       inputRef.current?.focus();
       inputRef.current?.select();
     }
   }, [isEditingInline]);
 
-  const handleSave = async () => {
-    if (savingRef.current || cancelledEditRef.current) return;
+  const handleSave = () => {
     const trimmed = editName.trim();
-    if (!trimmed || trimmed === (instance.subtitle || instance.name)) {
-      setIsEditingInline(false);
-      return;
+    if (trimmed && trimmed !== (instance.subtitle || instance.name)) {
+      onRenameSave(instance.id, trimmed);
     }
-    savingRef.current = true;
-    setIsSavingInline(true);
-    setRenameError(null);
-    try {
-      const saved = await onRenameSave(instance.id, trimmed);
-      if (saved === false) throw new Error("重命名未完成，请重试");
-      if (mountedRef.current) setIsEditingInline(false);
-    } catch (error) {
-      if (mountedRef.current) setRenameError(error instanceof Error ? error.message : "重命名失败，请重试");
-    } finally {
-      savingRef.current = false;
-      if (mountedRef.current) setIsSavingInline(false);
-    }
+    setIsEditingInline(false);
   };
 
   const handleCancel = () => {
-    if (savingRef.current) return;
-    cancelledEditRef.current = true;
-    setRenameError(null);
     setEditName(instance.subtitle || instance.name);
     setIsEditingInline(false);
   };
 
   return (
     <div
-      data-card-index={String(index + 1)}
+      ref={rootRef}
+      data-slot={String(index + 1)}
       className={cn(
         "motion-instance-card w-full h-full rounded-[26px] relative group cursor-pointer overflow-hidden",
         isLight && "is-light",
         isExpanded && "is-expanded"
       )}
+      data-frozen-plate={usePlate ? "" : undefined}
       onClick={(e) => {
         if ((e.target as HTMLElement).closest("button")) return;
         onToggleExpand();
@@ -130,6 +107,7 @@ export const InstanceStoppedCard: React.FC<InstanceStoppedCardProps> = ({
     >
       {/* 封面与遮罩：100% 饱满贴合圆角内壁，彻底消除边缘漏边 */}
       <div className="absolute inset-0">
+        {usePlate ? <div ref={plateRef} className="cover-frozen-plate" /> : null}
         <img
           src={instance.cover || "./tavern-logo.png"}
           alt=""
@@ -143,6 +121,8 @@ export const InstanceStoppedCard: React.FC<InstanceStoppedCardProps> = ({
           }}
         />
       </div>
+
+      <div className="card-volume-wash" aria-hidden="true" />
 
       <div
         className={cn(
@@ -165,10 +145,10 @@ export const InstanceStoppedCard: React.FC<InstanceStoppedCardProps> = ({
         <div className="self-start flex items-center gap-1.5 w-fit">
           <span
             className={cn(
-              "px-2 py-0.5 rounded-md text-[10px] font-semibold tracking-wide border",
+              "px-2 py-0.5 rounded-md text-[10px] font-medium tracking-wide border border-transparent",
               isLight
-                ? "bg-black/[0.06] text-[#1a1625]/55 border-black/[0.08]"
-                : "bg-white/[0.08] text-white/50 border-white/[0.08]"
+                ? "bg-black/[0.035] text-[#1a1625]/60"
+                : "bg-white/[0.07] text-white/70"
             )}
           >
             {formatDisplayVersion(instance.version)}
@@ -193,35 +173,29 @@ export const InstanceStoppedCard: React.FC<InstanceStoppedCardProps> = ({
 
         {/* 标题（支持双击就地内联编辑） */}
         {isEditingInline ? (
-          <div className="relative mb-2" onClick={(e) => e.stopPropagation()} aria-busy={isSavingInline}>
+          <div className="mb-2" onClick={(e) => e.stopPropagation()}>
             <input
               ref={inputRef}
               type="text"
               value={editName}
-              disabled={isSavingInline}
-              aria-label="实例名称"
-              aria-invalid={Boolean(renameError)}
               onChange={(e) => setEditName(e.target.value)}
               onBlur={handleSave}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); void handleSave(); }
-                if (e.key === "Escape") { e.stopPropagation(); handleCancel(); }
+                if (e.key === "Enter") handleSave();
+                if (e.key === "Escape") handleCancel();
               }}
               className={cn(
-                "w-full h-7 pl-2 pr-7 rounded-lg border text-sm font-medium leading-snug transition-colors outline-none",
+                "w-full h-7 px-2 rounded-lg border text-sm font-medium leading-snug transition-colors outline-none",
                 isLight
                   ? "bg-white/90 border-black/20 text-[#1a1625]"
                   : "bg-black/80 border-white/25 text-white"
               )}
             />
-            {isSavingInline && <Loader2 className="absolute right-2 top-1.5 h-4 w-4 animate-spin" aria-label="正在重命名" />}
-            {renameError && <span role="alert" className="mt-1 block truncate text-[10px] text-red-400" title={renameError}>{renameError}</span>}
           </div>
         ) : (
           <div
             onDoubleClick={(e) => {
               e.stopPropagation();
-              setRenameError(null);
               setIsEditingInline(true);
               setEditName(instance.subtitle || instance.name);
             }}
@@ -348,7 +322,7 @@ export const InstanceStoppedCard: React.FC<InstanceStoppedCardProps> = ({
                     e.stopPropagation();
                     onLaunch(instance);
                   }}
-                  disabled={isSavingInline || launchingId === instance.id}
+                  disabled={launchingId === instance.id}
                   className={cn(
                     "flat-capsule motion-control h-7 px-4 rounded-full text-[11px] font-semibold flex items-center justify-center gap-1 border-0 disabled:opacity-50",
                     isLight
@@ -368,7 +342,6 @@ export const InstanceStoppedCard: React.FC<InstanceStoppedCardProps> = ({
                     const r = e.currentTarget.getBoundingClientRect();
                     onOpenMenu(instance, r);
                   }}
-                  disabled={isSavingInline}
                   className={cn(
                     "flat-capsule motion-control w-7 h-7 rounded-full flex items-center justify-center border-0",
                     isLight

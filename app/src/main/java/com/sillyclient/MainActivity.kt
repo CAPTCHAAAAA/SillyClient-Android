@@ -549,6 +549,13 @@ class MainActivity : BridgeActivity() {
             }
         )
 
+        val renderSp = getSharedPreferences("sc_render_settings", MODE_PRIVATE)
+        val initColorEnabled = renderSp.getBoolean("immersive_color", true)
+        val initMode = renderSp.getString("color_extraction_mode", "realtime") ?: "realtime"
+        val initClickEffect = renderSp.getBoolean("click_effect", true)
+        chameleonController.updateSettings(initColorEnabled, initMode, initClickEffect)
+        renderEngineManager.setSettings(initColorEnabled, initMode, initClickEffect)
+
         // 顶部状态栏手势区：透明 View 覆盖 statusBarFixedPx 条带
         // 始终可见（不放在 root 里），支持双向操作：
         //   酒馆模式：滑动 → exitTavern()（回启动器，不停服务）
@@ -1567,12 +1574,14 @@ class MainActivity : BridgeActivity() {
         // 版本更新后同一实例也会重新提示，是否展示由原生版本标记决定。
         if (!instanceId.isNullOrBlank()) tavernStatusHint.show(instanceId)
         // 顶条带自动取色：第 0 毫秒先以缓存色瞬时对齐，随后首帧探针校准与事件驱动
+        chameleonController.setInstanceId(instanceId)
+        chameleonController.reset()
         val cachedColor = getSavedTopColor(instanceId)
         if (cachedColor != null) {
             applyTopColor(cachedColor, instant = true)
         }
         handler.removeCallbacks(topColorPoll)
-        handler.postDelayed({ triggerTopColorSample() }, 360)
+        handler.postDelayed({ triggerTopColorSample() }, 1000)
         injectRenderEngine()
         renderEngineManager.forceChameleonSample(webView)
         return true
@@ -1900,7 +1909,7 @@ class MainActivity : BridgeActivity() {
     /** 探针：页面加载后驱动取色；触控原汁原味响应轻触点击光波与下拉刷新，滑动过程零打扰。 */
     private fun installChameleonProbes() {
         handler.removeCallbacks(topColorPoll)
-        handler.postDelayed(topColorPoll, 300)
+        handler.postDelayed(topColorPoll, 600)
         chameleonController.setupTouchListener(webView) {
             webView.reload()
             topScrimBar.sweepGloss()
@@ -2623,6 +2632,39 @@ body:has(.popup[opening]) #chat {
     /** 启用/禁用酒馆 WebView 下拉刷新。 */
     fun setPullToRefresh(enabled: Boolean) {
         pullToRefreshEnabled = enabled
+    }
+
+    data class RenderSettings(val colorEnabled: Boolean, val mode: String, val clickEffect: Boolean)
+
+    fun getRenderEngineSettings(): RenderSettings {
+        val sp = getSharedPreferences("sc_render_settings", MODE_PRIVATE)
+        return RenderSettings(
+            sp.getBoolean("immersive_color", true),
+            sp.getString("color_extraction_mode", "realtime") ?: "realtime",
+            sp.getBoolean("click_effect", true)
+        )
+    }
+
+    fun setRenderEngineSettings(colorEnabled: Boolean, mode: String, clickEffect: Boolean) {
+        val safeMode = if (mode == "once") "once" else "realtime"
+        val safeClick = if (colorEnabled) clickEffect else false
+        getSharedPreferences("sc_render_settings", MODE_PRIVATE).edit()
+            .putBoolean("immersive_color", colorEnabled)
+            .putString("color_extraction_mode", safeMode)
+            .putBoolean("click_effect", safeClick)
+            .apply()
+
+        runOnUiThread {
+            if (::chameleonController.isInitialized) {
+                chameleonController.updateSettings(colorEnabled, safeMode, safeClick)
+            }
+            if (::renderEngineManager.isInitialized) {
+                renderEngineManager.setSettings(colorEnabled, safeMode, safeClick)
+                if (::webView.isInitialized) {
+                    renderEngineManager.applySettingsToWebView(webView)
+                }
+            }
+        }
     }
 
     /** 把选中图片复制到 covers/{instanceId}.png,返回可加载的文件路径。 */

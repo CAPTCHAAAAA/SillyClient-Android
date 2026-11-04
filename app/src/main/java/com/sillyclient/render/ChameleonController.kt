@@ -34,6 +34,12 @@ class ChameleonController(
     private var isSamplingPixelCopy = false
     private var currentInstanceId: String? = null
 
+    // 沉浸式与低占用渲染配置
+    var isColorExtractionEnabled: Boolean = true
+    var colorExtractionMode: String = "realtime" // "realtime" | "once"
+    var isClickEffectEnabled: Boolean = true
+    private var hasSampledOnce: Boolean = false
+
     // 触控手势状态
     private var touchDownX = 0f
     private var touchDownY = 0f
@@ -49,10 +55,20 @@ class ChameleonController(
         currentInstanceId = instanceId
     }
 
+    fun updateSettings(colorEnabled: Boolean, mode: String, clickEffect: Boolean) {
+        isColorExtractionEnabled = colorEnabled
+        colorExtractionMode = if (mode == "once") "once" else "realtime"
+        isClickEffectEnabled = clickEffect
+        if (!colorEnabled) {
+            topScrimBar.setColorInstant(0xFF1E1E1E.toInt())
+        }
+    }
+
     fun reset() {
         lastAppliedColor = null
         isSamplingPixelCopy = false
         isTouchScrolling = false
+        hasSampledOnce = false
     }
 
     fun getSavedColor(instanceId: String?): Int? {
@@ -71,6 +87,9 @@ class ChameleonController(
     fun applyColor(color: Int, instant: Boolean = false) {
         if (color == 0) return
         saveColor(currentInstanceId, color)
+        if (colorExtractionMode == "once") {
+            hasSampledOnce = true
+        }
         if (!instant && lastAppliedColor == color) {
             statusHint?.onColorChanged(color)
             return
@@ -85,6 +104,14 @@ class ChameleonController(
     }
 
     fun sampleTopColor(webView: WebView, onResult: (Int?) -> Unit) {
+        if (!isColorExtractionEnabled) {
+            onResult(null)
+            return
+        }
+        if (colorExtractionMode == "once" && hasSampledOnce) {
+            onResult(null)
+            return
+        }
         if (!isWebViewVisible() || !webView.isShown) {
             onResult(null)
             return
@@ -97,7 +124,9 @@ class ChameleonController(
                 onResult(color)
             } else if (webView.isShown && webView.width > 0) {
                 // 引擎 B: PixelCopy 兜底
-                sampleTopColorPixelCopy(webView, onResult)
+                sampleTopColorPixelCopy(webView) { copyColor ->
+                    onResult(copyColor)
+                }
             } else {
                 onResult(null)
             }
@@ -159,12 +188,17 @@ class ChameleonController(
                 pullReadyToReload = false
                 isTouchScrolling = false
                 if (event.actionMasked == MotionEvent.ACTION_UP && !isTouchScrolling) {
-                    topScrimBar.sweepGloss()
-                    handler.postDelayed({
-                        if (isWebViewVisible() && !isTouchScrolling) {
-                            sampleTopColor(webView) { c -> if (c != null) applyColor(c) }
-                        }
-                    }, 500)
+                    if (isColorExtractionEnabled && isClickEffectEnabled) {
+                        topScrimBar.sweepGloss()
+                    }
+                    val shouldSample = isColorExtractionEnabled && (colorExtractionMode == "realtime" || !hasSampledOnce)
+                    if (shouldSample) {
+                        handler.postDelayed({
+                            if (isWebViewVisible() && !isTouchScrolling && (colorExtractionMode == "realtime" || !hasSampledOnce)) {
+                                sampleTopColor(webView) { c -> if (c != null) applyColor(c) }
+                            }
+                        }, 500)
+                    }
                 }
                 return@setOnTouchListener false
             }
@@ -194,14 +228,21 @@ class ChameleonController(
                     val minPullDist = density * 100f
                     if (isPullToRefreshEnabled() && pullReadyToReload && isTopZone && pullDist > minPullDist) {
                         onReloadRequest()
-                        topScrimBar.sweepGloss()
+                        if (isColorExtractionEnabled && isClickEffectEnabled) {
+                            topScrimBar.sweepGloss()
+                        }
                     } else if (!isTouchScrolling) {
-                        topScrimBar.sweepGloss()
-                        handler.postDelayed({
-                            if (isWebViewVisible() && !isTouchScrolling) {
-                                sampleTopColor(webView) { c -> if (c != null) applyColor(c) }
-                            }
-                        }, 500)
+                        if (isColorExtractionEnabled && isClickEffectEnabled) {
+                            topScrimBar.sweepGloss()
+                        }
+                        val shouldSample = isColorExtractionEnabled && (colorExtractionMode == "realtime" || !hasSampledOnce)
+                        if (shouldSample) {
+                            handler.postDelayed({
+                                if (isWebViewVisible() && !isTouchScrolling && (colorExtractionMode == "realtime" || !hasSampledOnce)) {
+                                    sampleTopColor(webView) { c -> if (c != null) applyColor(c) }
+                                }
+                            }, 500)
+                        }
                     }
                     pullReadyToReload = false
                     isTouchScrolling = false

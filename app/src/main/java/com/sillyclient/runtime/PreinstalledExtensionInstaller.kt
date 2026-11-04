@@ -142,6 +142,7 @@ object PreinstalledExtensionInstaller {
                 extractVerifiedArchive(archive, staged, extension.archiveRoot, ensureActive)
                 validateManifest(staged, version)
                 check(safeFile(staged, extension.licensePath).isFile) { "扩展授权文件缺失" }
+                writeGitMetadata(staged, extension)
                 File(staged, markerName).writeText(ownership)
                 identities[target.absolutePath] = treeIdentity(staged, ensureActive)
                 pending.add(staged to target)
@@ -358,6 +359,24 @@ object PreinstalledExtensionInstaller {
         require(comparison > 0 || (comparison == 0 && !client.contains('-'))) { "扩展要求 SillyTavern $minimum 或更新版本" }
     }
 
+    private fun writeGitMetadata(directory: File, extension: Extension) {
+        val gitDir = File(directory, ".git")
+        for (sub in listOf("refs/heads", "refs/remotes/origin", "objects/info", "objects/pack")) {
+            val dir = File(gitDir, sub)
+            dir.mkdirs()
+            check(dir.isDirectory && ManagedFiles.isWithin(dir, directory)) { "Could not create extension git directory" }
+        }
+        val remoteUrl = "https://github.com/${extension.repository}.git"
+        File(gitDir, "HEAD").writeText("ref: refs/heads/main\n")
+        File(gitDir, "config").writeText(
+            "[core]\n\trepositoryformatversion = 0\n\tfilemode = false\n\tbare = false\n\tlogallrefupdates = true\n" +
+                "[remote \"origin\"]\n\turl = $remoteUrl\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n" +
+                "[branch \"main\"]\n\tremote = origin\n\tmerge = refs/heads/main\n"
+        )
+        File(gitDir, "refs/heads/main").writeText("${extension.commit}\n")
+        File(gitDir, "refs/remotes/origin/main").writeText("${extension.commit}\n")
+    }
+
     private fun sha256(file: File, ensureActive: () -> Unit): String {
         val digest = MessageDigest.getInstance("SHA-256")
         file.inputStream().use { input ->
@@ -373,8 +392,8 @@ object PreinstalledExtensionInstaller {
             ensureActive()
             require(ManagedFiles.isUnlinked(it)) { "Extension ownership changed" }
             true
-        }.take(MAX_ENTRIES + 3).toList()
-        require(paths.size <= MAX_ENTRIES + 2) { "Extension ownership changed" }
+        }.take(MAX_ENTRIES + 16).toList()
+        require(paths.size <= MAX_ENTRIES + 15) { "Extension ownership changed" }
         val digest = MessageDigest.getInstance("SHA-256")
         var bytes = 0L
         paths.sortedBy { it.relativeTo(directory).path }.forEach { file ->

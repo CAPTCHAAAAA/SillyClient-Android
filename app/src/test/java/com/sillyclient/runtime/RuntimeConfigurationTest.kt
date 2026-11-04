@@ -295,4 +295,102 @@ class RuntimeConfigurationTest {
             } finally { process.destroyForcibly() }
         }
     }
+
+    @Test
+    fun serverBuilderBridgesSimpleGitAndSelfHealsLegacyExtensionReposInTheSameProcess() = withConfiguration { directory, configuration, _, _ ->
+        val remoteHead = "e71c990607f6c92127151b1f8dad6c79fa03966e"
+        val isoDir = File(directory, "node_modules/isomorphic-git").apply { mkdirs() }
+        val isoHttpDir = File(isoDir, "http/node").apply { mkdirs() }
+        File(isoDir, "package.json").writeText(
+            """{"name":"isomorphic-git","version":"1.0.0","main":"index.js","exports":{".":"./index.js","./http/node":"./http/node/index.js"}}"""
+        )
+        File(isoHttpDir, "index.js").writeText(
+            """
+            module.exports = {
+              async request(req) {
+                if (req.url.startsWith('https://github.com/')) throw new Error('Direct GitHub blocked in test');
+                return { url: req.url, statusCode: 200, headers: {}, body: [] };
+              }
+            };
+            """.trimIndent()
+        )
+        File(isoDir, "index.js").writeText(
+            """
+            const fs = require('node:fs');
+            const path = require('node:path');
+            module.exports = {
+              async listServerRefs({ http, url }) {
+                await http.request({ url: url + '/info/refs?service=git-upload-pack', method: 'GET' });
+                return [
+                  { ref: 'refs/heads/main', oid: '$remoteHead' },
+                  { ref: 'refs/heads/dev', oid: '1234567890abcdef1234567890abcdef12345678' }
+                ];
+              },
+              async fetch({ http, dir, url, ref }) {
+                await http.request({ url: url + '/git-upload-pack', method: 'POST', body: [Buffer.from('want')] });
+                return { fetchHead: '$remoteHead' };
+              },
+              async checkout({ dir, ref }) {
+                fs.writeFileSync(path.join(dir, 'updated-marker.txt'), 'checked-out-' + ref);
+              }
+            };
+            """.trimIndent()
+        )
+        val extDir = File(directory, "data/default-user/extensions/JS-Slash-Runner").apply { mkdirs() }
+        File(extDir, "manifest.json").writeText(
+            """{"display_name":"Tavern Helper","version":"4.11.2","js":"dist/index.js"}"""
+        )
+        File(directory, "package.json").writeText("""{"name":"synthetic-tavern","type":"module"}""")
+        File(directory, "config.yaml").writeText("port: 8000\n")
+        File(directory, "server.js").writeText(
+            """
+            import { CheckRepoActions, default as simpleGit } from 'simple-git';
+            import fs from 'node:fs';
+            import path from 'node:path';
+            const extPath = path.resolve('data/default-user/extensions/JS-Slash-Runner');
+            const git = simpleGit({ baseDir: extPath });
+            const isRepo = await git.checkIsRepo(CheckRepoActions.IS_REPO_ROOT);
+            const beforeCommit = await git.revparse(['HEAD']);
+            const beforeBranch = await git.branch();
+            await git.fetch('origin');
+            const beforeLog = await git.log({ from: beforeCommit, to: 'origin/' + beforeBranch.current });
+            const remotes = await git.getRemotes(true);
+            await git.pull('origin', beforeBranch.current);
+            const afterCommit = await git.revparse(['HEAD']);
+            const afterLog = await git.log({ from: afterCommit, to: 'origin/' + beforeBranch.current });
+            const remoteBranches = await git.branch(['-r', '--list', 'origin/*']);
+            console.log(JSON.stringify({
+              isRepo,
+              beforeCommit,
+              branch: beforeBranch.current,
+              beforeUpToDate: beforeLog.total === 0,
+              remoteUrl: remotes[0].refs.fetch,
+              afterCommit,
+              afterUpToDate: afterLog.total === 0,
+              updatedMarker: fs.readFileSync(path.join(extPath, 'updated-marker.txt'), 'utf8'),
+              remoteBranches: remoteBranches.all
+            }));
+            """.trimIndent()
+        )
+        val process = configuration.serverBuilder(
+            directory,
+            JSONObject().put("port", 8000).put("browserLaunch.enabled", false)
+        ).start()
+        try {
+            assertTrue("Synthetic server did not exit", process.waitFor(10, TimeUnit.SECONDS))
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            assertEquals(output, 0, process.exitValue())
+            val observed = JSONObject(output)
+            assertTrue(observed.getBoolean("isRepo"))
+            assertEquals("46ec10df770b47e1ce6562de747d72f1bde3549e", observed.getString("beforeCommit"))
+            assertEquals("main", observed.getString("branch"))
+            assertFalse(observed.getBoolean("beforeUpToDate"))
+            assertEquals("https://github.com/N0VI028/JS-Slash-Runner", observed.getString("remoteUrl"))
+            assertEquals(remoteHead, observed.getString("afterCommit"))
+            assertTrue(observed.getBoolean("afterUpToDate"))
+            assertEquals("checked-out-main", observed.getString("updatedMarker"))
+            val branches = observed.getJSONArray("remoteBranches")
+            assertEquals(listOf("origin/dev", "origin/main"), (0 until branches.length()).map(branches::getString).sorted())
+        } finally { process.destroyForcibly() }
+    }
 }

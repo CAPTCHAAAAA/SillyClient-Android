@@ -362,10 +362,56 @@
     // ========================================================
     // 4. CHAMELEON ENGINE (变色龙精准事件感知取色 - 0 轮询)
     // ========================================================
+    let renderSettings = {
+        colorEnabled: true,
+        mode: 'realtime', // 'realtime' | 'once'
+        clickEffect: true
+    };
+    window.__scUpdateRenderSettings = function(colorEnabled, mode, clickEffect) {
+        renderSettings.colorEnabled = !!colorEnabled;
+        renderSettings.mode = mode === 'once' ? 'once' : 'realtime';
+        renderSettings.clickEffect = !!clickEffect;
+        if (!renderSettings.colorEnabled) {
+            chameleonEngine.pause();
+        } else if (renderSettings.mode === 'once') {
+            if (chameleonEngine.hasSampledOnce) {
+                chameleonEngine.pause();
+            } else {
+                chameleonEngine.initObserver();
+                chameleonEngine.sampleAndReport(false);
+                if (chameleonEngine.isThemeMounted() && chameleonEngine.lastReportedColor !== null) {
+                    setTimeout(() => {
+                        if (renderSettings.mode === 'once' && isPageActive()) {
+                            chameleonEngine.sampleAndReport(true);
+                            chameleonEngine.hasSampledOnce = true;
+                            chameleonEngine.pause();
+                        }
+                    }, 400);
+                }
+            }
+        } else {
+            chameleonEngine.hasSampledOnce = false;
+            chameleonEngine.initObserver();
+            chameleonEngine.sampleAndReport(true);
+        }
+    };
+
     const chameleonEngine = {
         lastReportedColor: null,
         debounceTimer: null,
+        settleTimer: null,
         observer: null,
+        hasSampledOnce: false,
+
+        isThemeMounted: function() {
+            if (document.getElementById('top-bar')) return true;
+            try {
+                const tint = window.getComputedStyle(document.documentElement).getPropertyValue('--SmartThemeBlurTintColor');
+                if (tint && tint.trim()) return true;
+            } catch(_) {}
+            if (document.getElementById('bg1') || document.getElementById('chat') || document.getElementById('sheld')) return true;
+            return false;
+        },
 
         parseCssColor: function(str) {
             if (!str || str === 'transparent' || str === 'inherit' || str === 'initial') return null;
@@ -404,10 +450,15 @@
             };
         },
 
-        computeTopColor: function() {
+        computeTopColor: function(strict) {
             let bodyBg = null;
             if (document.body) {
                 bodyBg = this.parseCssColor(window.getComputedStyle(document.body).backgroundColor);
+            }
+            const bg1 = document.getElementById('bg1');
+            if (bg1) {
+                const bg1Color = this.parseCssColor(window.getComputedStyle(bg1).backgroundColor);
+                if (bg1Color) bodyBg = bg1Color;
             }
             const topBar = document.getElementById('top-bar');
             if (topBar) {
@@ -434,14 +485,17 @@
                 const mc = this.parseCssColor(meta.getAttribute('content'));
                 if (mc) return (0xFF000000 | (mc.r << 16) | (mc.g << 8) | mc.b);
             }
+            if (strict) return null;
             if (bodyBg) return (0xFF000000 | (bodyBg.r << 16) | (bodyBg.g << 8) | bodyBg.b);
             return null;
         },
 
         sampleAndReport: function(force) {
-            if (!isPageActive()) return;
+            if (!isPageActive() || !renderSettings.colorEnabled) return;
+            if (renderSettings.mode === 'once' && this.hasSampledOnce && !force) return;
             try {
-                const color = this.computeTopColor();
+                const strict = (renderSettings.mode === 'once' && !force && !this.isThemeMounted());
+                const color = this.computeTopColor(strict);
                 if (color !== null && (force || color !== this.lastReportedColor)) {
                     this.lastReportedColor = color;
                     engineState.lastTopColor = color;
@@ -457,7 +511,21 @@
             if (this.debounceTimer) clearTimeout(this.debounceTimer);
             this.debounceTimer = setTimeout(() => {
                 this.debounceTimer = null;
+                this.bindTargets();
                 this.sampleAndReport(false);
+                if (renderSettings.mode === 'once') {
+                    if (this.isThemeMounted() && this.lastReportedColor !== null) {
+                        if (this.settleTimer) clearTimeout(this.settleTimer);
+                        this.settleTimer = setTimeout(() => {
+                            this.settleTimer = null;
+                            if (renderSettings.mode === 'once' && isPageActive()) {
+                                this.sampleAndReport(true);
+                                this.hasSampledOnce = true;
+                                this.pause();
+                            }
+                        }, 500);
+                    }
+                }
             }, 120);
         },
 
@@ -497,6 +565,8 @@
         pause: function() {
             if (this.debounceTimer !== null) clearTimeout(this.debounceTimer);
             this.debounceTimer = null;
+            if (this.settleTimer !== null) clearTimeout(this.settleTimer);
+            this.settleTimer = null;
             if (this.observer) this.observer.disconnect();
         }
     };
@@ -505,22 +575,26 @@
     let chameleonStartupTimer = null;
 
     function startChameleon() {
-        if (!isPageActive()) return;
-        chameleonEngine.sampleAndReport(true);
-        if (document.readyState !== 'loading') chameleonEngine.initObserver();
+        if (!isPageActive() || !renderSettings.colorEnabled) return;
+        chameleonEngine.initObserver();
+        chameleonEngine.sampleAndReport(false);
         if (chameleonStartupTimer !== null) clearTimeout(chameleonStartupTimer);
-        // Rebind after the upstream SPA mounts its theme targets.
         chameleonStartupTimer = setTimeout(() => {
             chameleonStartupTimer = null;
             chameleonEngine.bindTargets();
             chameleonEngine.sampleAndReport(false);
-        }, 500);
+            if (renderSettings.mode === 'once' && !chameleonEngine.hasSampledOnce && isPageActive()) {
+                chameleonEngine.sampleAndReport(true);
+                chameleonEngine.hasSampledOnce = true;
+                chameleonEngine.pause();
+            }
+        }, 1500);
     }
 
     if (document.readyState === 'loading') {
         listen(document, 'DOMContentLoaded', () => {
-            chameleonEngine.sampleAndReport(true);
             chameleonEngine.initObserver();
+            chameleonEngine.sampleAndReport(false);
         }, { once: true });
     }
     startChameleon();
