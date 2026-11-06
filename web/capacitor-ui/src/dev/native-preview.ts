@@ -1,8 +1,7 @@
 import { Capacitor } from "@capacitor/core";
 import type { TarvenEnvPlugin, TarvenEvent, GarbageItem, MaintenanceItem, MaintenanceScan, MaintenanceRecovery } from "../capacitor-plugin";
 import { normalizeRenderEngineSettings } from "../lib/render-settings";
-import { exactInstallTarget, sanitizeFolderName } from "../lib/install-location";
-import type { LegacyInstanceLocation } from "../capacitor-plugin";
+import { exactInstallTarget } from "../lib/install-location";
 import { validateExternalUrl } from "../lib/external-url";
 
 type EventName = Parameters<TarvenEnvPlugin["addListener"]>[0];
@@ -24,16 +23,6 @@ type DirectorySelection = Awaited<ReturnType<TarvenEnvPlugin["pickDirectory"]>>;
 let platform: "windows" | "android" | "ios" = "windows";
 let directorySelection: DirectorySelection | null | undefined;
 let directoryDelay = 0;
-interface StorageFixture {
-  legacyInstances?: LegacyInstanceLocation[];
-  failRelocateIds?: string[];
-  falseRelocateIds?: string[];
-  retainedSourceIds?: string[];
-  delayMillis?: number;
-  renameError?: string;
-  renameKeepsId?: boolean;
-}
-let storageFixture: StorageFixture = {};
 
 function syntheticRoot() {
   return platform === "windows" ? "D:\\Synthetic" : platform === "android"
@@ -127,12 +116,6 @@ export const nativePreview: TarvenEnvPlugin = {
   },
   async enterImmersive(options) {
     record("enterImmersive", options);
-    if (!options.url) {
-      // 多开：仅按 instanceId 切换前台会话，无需 URL。
-      if (!options.instanceId?.trim()) throw new Error("enterImmersive requires url or instanceId");
-      status = { ...status, mode: "tavern", instanceId: options.instanceId };
-      return;
-    }
     const url = validateExternalUrl(options.url);
     if (!options.instanceId?.trim()) {
       await nativePreview.openExternalUrl({ url });
@@ -153,24 +136,10 @@ export const nativePreview: TarvenEnvPlugin = {
   async returnToTavern() { record("returnToTavern"); },
   async getStatus() { record("getStatus"); return { ...status }; },
   async fetchReleases() { return { releases: [{ tag: "1.19.0", zipballUrl: "https://example.test/synthetic.zip", prerelease: false }] }; },
-  async inspectImportArchive(options: { archivePath: string }) {
-    record("inspectImportArchive", options);
-    return { importEntries: 12, importBytes: 3_145_728, skippedEntries: 240, skippedBytes: 52_428_800,
-      hasSecrets: true, hasConfig: true, importable: true };
-  },
-  async importInstanceData(options: { instanceId: string; archivePath: string; includeOptional?: boolean }) {
-    record("importInstanceData", options);
-    return { imported: 12, bytes: 3_145_728, skipped: 240 };
-  },
-  async exportInstance(options: { instanceId: string; installPath?: string; targetPath?: string }) {
-    record("exportInstance", options);
-    const target = options.targetPath || `${options.instanceId}.zip`;
-    return { path: target, bytes: 1048576 };
-  },
   async getAppSettings() {
     record("getAppSettings", {});
     const instancesRoot = syntheticRoot();
-    return { instancesRoot, defaultInstancesRoot: `${instancesRoot}-managed` };
+    return { instancesRoot, defaultInstancesRoot: instancesRoot };
   },
   async setInstancesRoot(options) {
     record("setInstancesRoot", options ?? {});
@@ -215,6 +184,18 @@ export const nativePreview: TarvenEnvPlugin = {
   },
   async reloadTavern() { record("reloadTavern"); },
   async clearWebViewData() { record("clearWebViewData"); },
+  async exportInstance(options: { instanceId: string; installPath?: string; targetZipPath?: string }) {
+    record("exportInstance", options);
+    return { path: options.targetZipPath || `C:\\exports\\${options.instanceId}.zip`, bytes: 1024 };
+  },
+  async inspectImportArchive(options: { archivePath: string }) {
+    record("inspectImportArchive", options);
+    return { importEntries: 10, importBytes: 2048, skippedEntries: 0, skippedBytes: 0, hasSecrets: false, hasConfig: true, importable: true };
+  },
+  async importInstanceData(options: { installPath?: string; archivePath: string; includeOptional?: boolean; operationId?: string }) {
+    record("importInstanceData", options);
+    return { imported: 10, bytes: 2048, skipped: 0 };
+  },
   async getSafeInsets() { return { top: 0, bottom: 0, left: 0, right: 0 }; },
   async setPullToRefresh() {},
   async getRenderEngineSettings() { return { ...renderEngineSettings }; },
@@ -310,71 +291,27 @@ export const nativePreview: TarvenEnvPlugin = {
   },
   async checkLegacyInstances() {
     record("checkLegacyInstances", {});
-    return { instances: (storageFixture.legacyInstances || [])
-      .filter(item => !migrated.has(item.instanceId) || migrated.get(item.instanceId) === item.currentPath)
-      .map(item => ({ ...item })) };
+    return { instances: [] };
   },
   async relocateInstance(options) {
     record("relocateInstance", options);
-    maintenanceStopped();
-    if (storageFixture.delayMillis) {
-      const delay = storageFixture.delayMillis;
-      const stageAt = (fraction: number, stage: string, percent: number) =>
-        setTimeout(() => emit("progress", { instanceId: options.instanceId, percent, stage }), Math.round(delay * fraction));
-      stageAt(0.05, "实例迁移 · 正在扫描 12 项", 0);
-      stageAt(0.25, "实例迁移 · 已复制 24/120 个文件", 20);
-      stageAt(0.55, "实例迁移 · 已复制 78/120 个文件", 65);
-      stageAt(0.8, "实例迁移 · 已复制 120/120 个文件", 88);
-      stageAt(0.92, "实例迁移 · 校验 96/120 项", 94);
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-    maintenanceStopped();
-    if (storageFixture.failRelocateIds?.includes(options.instanceId)) throw new Error("Synthetic relocation refusal");
-    const legacy = storageFixture.legacyInstances?.find(item => item.instanceId === options.instanceId);
-    const oldPath = migrated.get(options.instanceId) || options.installPath || legacy?.currentPath
-      || exactInstallTarget(syntheticRoot(), "root", options.instanceId)!;
-    const folderName = oldPath.split(/[\\/]/).filter(Boolean).pop() || options.instanceId;
-    const newPath = options.targetPath || exactInstallTarget(syntheticRoot(), "root", folderName)!;
-    if (storageFixture.falseRelocateIds?.includes(options.instanceId)) {
-      return { success: false, instanceId: options.instanceId, oldPath, newPath: oldPath };
-    }
-    migrated.set(options.instanceId, newPath);
-    if (!scannedInstanceIds.includes(options.instanceId)) scannedInstanceIds.push(options.instanceId);
-    return {
-      success: true, instanceId: options.instanceId, oldPath, newPath, unchanged: oldPath === newPath,
-      ...(storageFixture.retainedSourceIds?.includes(options.instanceId) ? { retainedSourcePath: oldPath } : {}),
-    };
+    const newPath = options.targetPath || exactInstallTarget(syntheticRoot(), "root", options.instanceId)!;
+    return { success: true, instanceId: options.instanceId, oldPath: "C:\\AppData\\Legacy", newPath };
   },
   async migrateLegacyInstances(options = {}) {
     record("migrateLegacyInstances", options);
-    const { instances } = await nativePreview.checkLegacyInstances();
-    const results = [];
-    for (const instance of instances) {
-      if (!options.instanceIds || options.instanceIds.includes(instance.instanceId)) {
-        results.push(await nativePreview.relocateInstance({ instanceId: instance.instanceId, targetPath: instance.targetPath }));
-      }
-    }
-    return { success: results.every(result => result.success), results };
+    return { success: true, results: [] };
   },
   async renameInstance(options) {
     record("renameInstance", options);
-    maintenanceStopped();
-    if (storageFixture.delayMillis) await new Promise(resolve => setTimeout(resolve, storageFixture.delayMillis));
-    maintenanceStopped();
-    if (storageFixture.renameError) throw new Error(storageFixture.renameError);
-    const oldPath = migrated.get(options.instanceId) || options.installPath
-      || exactInstallTarget(syntheticRoot(), "root", options.instanceId)!;
-    const folderName = sanitizeFolderName(options.newName);
-    const newId = (storageFixture.renameKeepsId ?? platform !== "windows") ? options.instanceId : folderName;
-    const separatorAt = Math.max(oldPath.lastIndexOf("/"), oldPath.lastIndexOf("\\"));
-    const newPath = oldPath.slice(0, separatorAt + 1) + folderName;
-    if (newId !== options.instanceId && (migrated.has(newId) || scannedInstanceIds.includes(newId))) {
-      throw new Error("Synthetic destination already exists");
-    }
-    migrated.delete(options.instanceId);
-    migrated.set(newId, newPath);
-    scannedInstanceIds = [...new Set(scannedInstanceIds.map(id => id === options.instanceId ? newId : id))];
-    return { success: true, oldId: options.instanceId, newId, oldPath, newPath };
+    const newId = options.newName.trim().replace(/[\\/:*?"<>|\x00-\x1f]/g, "-").slice(0, 100) || "instance";
+    return {
+      success: true,
+      oldId: options.instanceId,
+      newId,
+      oldPath: options.installPath || `D:\\Software\\AI\\Entertainment\\SillyClient\\instances\\${options.instanceId}`,
+      newPath: `D:\\Software\\AI\\Entertainment\\SillyClient\\instances\\${newId}`,
+    };
   },
   async setInstancePassword(options) {
     record("setInstancePassword", options);
@@ -429,7 +366,6 @@ export function installNativePreview() {
       status?: Awaited<ReturnType<TarvenEnvPlugin["getStatus"]>>;
       contentOpenMode?: "webview" | "browser";
       maintenance?: MaintenanceFixture;
-      storage?: StorageFixture;
       platform?: "windows" | "android" | "ios";
       directorySelection?: DirectorySelection | null;
       directoryDelay?: number;
@@ -447,7 +383,6 @@ export function installNativePreview() {
   if (global.__SILLYCLIENT_PREVIEW_FIXTURE__?.maintenance) {
     maintenanceFixture = { ...global.__SILLYCLIENT_PREVIEW_FIXTURE__.maintenance };
   }
-  storageFixture = { ...global.__SILLYCLIENT_PREVIEW_FIXTURE__?.storage };
   platform = global.__SILLYCLIENT_PREVIEW_FIXTURE__?.platform || "windows";
   directorySelection = global.__SILLYCLIENT_PREVIEW_FIXTURE__?.directorySelection;
   directoryDelay = global.__SILLYCLIENT_PREVIEW_FIXTURE__?.directoryDelay || 0;
@@ -461,7 +396,6 @@ export function installNativePreview() {
       failMigration?: boolean; failCommands?: boolean;
       scannedInstanceIds?: string[];
       maintenance?: MaintenanceFixture;
-      storage?: StorageFixture;
       status?: Awaited<ReturnType<TarvenEnvPlugin["getStatus"]>>;
       directorySelection?: DirectorySelection | null;
       directoryDelay?: number;
@@ -473,7 +407,6 @@ export function installNativePreview() {
       failCommands = options.failCommands ?? failCommands;
       if (options.scannedInstanceIds) scannedInstanceIds = [...options.scannedInstanceIds];
       if (options.maintenance) maintenanceFixture = { ...maintenanceFixture, ...options.maintenance };
-      if (options.storage) storageFixture = { ...storageFixture, ...options.storage };
       if (options.status) status = { ...options.status };
       if ("directorySelection" in options) directorySelection = options.directorySelection;
       if (options.directoryDelay !== undefined) directoryDelay = options.directoryDelay;

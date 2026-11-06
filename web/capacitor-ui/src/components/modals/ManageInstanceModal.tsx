@@ -472,6 +472,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
   onClose,
   isLight,
   bgMode = "dynamic",
+  isWindows,
   allInstances,
   onSelectInstance,
   onLaunchInstance,
@@ -640,8 +641,6 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [passwordSuccess, setPasswordSuccess] = useState<string | null>(null);
   const [passwordSaving, setPasswordSaving] = useState(false);
-  const [exportStatus, setExportStatus] = useState<string | null>(null);
-  const [importStatus, setImportStatus] = useState<string | null>(null);
 
   useEffect(() => {
     setHasPassword(Boolean(instance?.hasPassword));
@@ -651,8 +650,6 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
     setPasswordConfirm("");
     setPasswordError(null);
     setPasswordSuccess(null);
-    setExportStatus(null);
-    setImportStatus(null);
   }, [instance?.id, instance?.hasPassword]);
 
   useEffect(() => {
@@ -997,7 +994,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                       </ManageItem>
                       <ManageItem
                         label="允许外部监听"
-                        desc="仅在需要局域网访问时开启"
+                        desc={isWindows ? "仅在需要局域网访问时开启" : "移动宿主默认建议关闭，只在明确需要局域网访问时开启"}
                         isLight={isLight} isPortrait={isPortrait}
                       >
                         <ManageToggle
@@ -1490,7 +1487,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                   {mp.type === "local" && onOpenRelocate && (
                     <ManageItem
                       label="存储迁移"
-                      desc="无损搬迁至你选择的新目录"
+                      desc="无损搬迁至新目录或软件默认路径"
                       isLight={isLight} isPortrait={isPortrait}
                     >
                       <button
@@ -1512,87 +1509,6 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                         style={{ fontSize: 16 }}
                       >
                         扫描
-                      </button>
-                    </ManageItem>
-                  )}
-                  {mp.type === "local" && (
-                    <ManageItem
-                      label="导出实例（ZIP）"
-                      desc={exportStatus || "选择保存位置并导出完整实例压缩包（ZIP）"}
-                      isLight={isLight}
-                      isPortrait={isPortrait}
-                    >
-                      <button
-                        type="button"
-                        disabled={exportStatus === "正在打包…" || exportStatus === "正在选择保存位置…"}
-                        onClick={async () => {
-                          try {
-                            setExportStatus("正在选择保存位置…");
-                            const res = await TarvenEnv.exportInstance({
-                              instanceId: mp.installDir || mp.id,
-                              installPath: mp.installPath,
-                            });
-                            const name = res.path.split("/").pop() || res.path;
-                            const sizeMb = (res.bytes / 1048576).toFixed(1);
-                            setExportStatus(`已导出：${name}（${sizeMb} MB）`);
-                          } catch (error) {
-                            if (error instanceof Error && (error.message.includes("cancelled") || error.message.includes("canceled"))) {
-                              setExportStatus(null);
-                              return;
-                            }
-                            setExportStatus(error instanceof Error ? error.message : "导出失败，请重试");
-                          }
-                        }}
-                        className={manageCapsuleButtonClass(isLight)}
-                        style={{ fontSize: 16 }}
-                      >
-                        导出
-                      </button>
-                    </ManageItem>
-                  )}
-                  {mp.type === "local" && (
-                    <ManageItem
-                      label="导入数据（ZIP）"
-                      desc={importStatus || "从旧酒馆备份导入聊天、角色与扩展（不导入依赖与程序文件，不含 secrets.json）"}
-                      isLight={isLight}
-                      isPortrait={isPortrait}
-                    >
-                      <button
-                        type="button"
-                        disabled={importStatus?.startsWith("正在") ?? false}
-                        onClick={async () => {
-                          try {
-                            setImportStatus("正在读取压缩包…");
-                            const picked = await TarvenEnv.pickZipFile({ purpose: "dataImport" });
-                            if (!picked?.path && !picked?.uri) return;
-                            setImportStatus("正在预检压缩包…");
-                            const summary = await TarvenEnv.inspectImportArchive({
-                              archivePath: picked.path || undefined,
-                              archiveUri: picked.uri,
-                            });
-                            if (!summary.importable) {
-                              setImportStatus("该压缩包里没有可导入的实例数据（需要 data/ 或第三方扩展）");
-                              return;
-                            }
-                            setImportStatus(
-                              `正在导入…（${summary.importEntries} 项 / ${(summary.importBytes / 1048576).toFixed(1)} MB，忽略 ${summary.skippedEntries} 项依赖与程序文件）`
-                            );
-                            const res = await TarvenEnv.importInstanceData({
-                              instanceId: mp.installDir || mp.id,
-                              installPath: mp.installPath,
-                              archivePath: picked.path || undefined,
-                              archiveUri: picked.uri,
-                              includeOptional: false,
-                            });
-                            setImportStatus(`已导入 ${res.imported} 项（忽略 ${res.skipped} 项依赖与程序文件）`);
-                          } catch (error) {
-                            setImportStatus(error instanceof Error ? error.message : "导入失败，请重试");
-                          }
-                        }}
-                        className={manageCapsuleButtonClass(isLight)}
-                        style={{ fontSize: 16 }}
-                      >
-                        导入
                       </button>
                     </ManageItem>
                   )}
