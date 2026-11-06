@@ -3,7 +3,6 @@ import { Check } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { LAYERS } from "../../constants/layers";
 import { LayerBackdrop } from "../common/LayerBackdrop";
-import type { GithubRelease } from "../../capacitor-plugin";
 
 export interface VersionDropdownMenuProps {
   isOpen: boolean;
@@ -11,8 +10,7 @@ export interface VersionDropdownMenuProps {
   onClose: () => void;
   isLight: boolean;
   glassBg: string;
-  releases: GithubRelease[];
-  menuRef?: React.Ref<HTMLDivElement>;
+  releases: any[];
   currentVersion: string;
   onSelectVersion: (tag: string) => void;
   dropdownPos: { bottom?: number; left?: number; width?: number; maxHeight?: number };
@@ -29,30 +27,27 @@ export const VersionDropdownMenu: React.FC<VersionDropdownMenuProps> = ({
   isLight,
   glassBg,
   releases,
-  menuRef,
   currentVersion,
   onSelectVersion,
   dropdownPos,
 }) => {
   if (!isOpen && !isClosing) return null;
 
-  const recommendedTag = (releases.find(release => !release.prerelease && !release.isBranch)
-    || releases.find(release => !release.prerelease))?.tag;
   const options = [
     ...releases
-      .filter((release, index) => index < 20 || release.isBundled)
+      .slice(0, 20)
       .reverse()
       .map((r) => ({
         value: r.tag,
         label: r.tag,
-        sublabel: r.isBundled ? "内置正式版本" : r.isBranch ? "稳定分支" : r.prerelease ? "预发布版本" : "正式版本",
+        sublabel: r.prerelease ? "预发布版本" : "正式版本",
         zipballUrl: r.zipballUrl,
-        recommended: r.tag === recommendedTag,
+        recommended: r.tag === releases.find((x) => !x.prerelease)?.tag,
       })),
     {
       value: "stable",
-      label: "稳定版",
-      sublabel: "自动选择稳定版本",
+      label: "内置版",
+      sublabel: "本地内置最新版本",
       zipballUrl: undefined,
     },
   ];
@@ -66,7 +61,6 @@ export const VersionDropdownMenu: React.FC<VersionDropdownMenuProps> = ({
         blur={false}
       />
       <div
-        ref={menuRef}
         className={cn(
           "motion-menu-list fixed rounded-md overflow-hidden backdrop-blur-[40px] saturate-180",
           isClosing ? "animate-dropdown-up-exit" : "animate-dropdown-up",

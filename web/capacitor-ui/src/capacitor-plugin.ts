@@ -32,10 +32,10 @@ export const DEFAULT_CONFIG: InstanceConfig = {
 /** GitHub release 条目(来自 SillyTavern/SillyTavern releases)。 */
 export interface GithubRelease {
   tag: string
+  name?: string
   zipballUrl: string
   prerelease: boolean
   isBranch?: boolean
-  isBundled?: boolean
 }
 
 /** SillyClient 应用自身的更新检查结果。 */
@@ -150,28 +150,11 @@ export interface PreinstallSelection {
 
 export type InstallPathMode = "root" | "exact"
 
-export interface LegacyInstanceLocation {
-  instanceId: string
-  name: string
-  currentPath: string
-  targetPath: string
-  version?: string
-}
-
-export interface InstanceRelocationResult {
-  success: boolean
-  instanceId: string
-  oldPath: string
-  newPath: string
-  unchanged?: boolean
-  retainedSourcePath?: string
-}
-
 export interface TarvenEnvPlugin {
   provisionAndStart(options: {
     port: number
     instanceId: string
-    /** Initial directory display name; identity and existing locations remain unchanged. */
+    /** 初始目录显示名；既有实例标识与路径保持不变。 */
     instanceName?: string
     operationId?: string
     version: string
@@ -191,8 +174,7 @@ export interface TarvenEnvPlugin {
   }): Promise<{ ready: boolean }>
 
   enterImmersive(options: {
-    /** 可选：缺省时按 instanceId 切换到该实例的存活会话（多开前台切换）。 */
-    url?: string
+    url: string
     instanceId?: string
     showGestureHint?: boolean
   }): Promise<void>
@@ -201,21 +183,10 @@ export interface TarvenEnvPlugin {
   exitImmersive(): Promise<void>
   returnToTavern(): Promise<void>
   closeTavern(options?: { instanceId?: string; operationId?: string }): Promise<void>
-  /** 多开：返回全部存活会话清单；携带 instanceId 时附带该实例的就绪态。 */
-  getStatus(options?: {
-    instanceId?: string
-  }): Promise<{
-    serverReady: boolean
-    mode: string
-    url?: string
-    instanceId?: string
-    operationId?: string
-    runningInstances?: string[]
-    instanceReady?: boolean
-  }>
+  getStatus(): Promise<{ serverReady: boolean; mode: string; url?: string; instanceId?: string; operationId?: string }>
 
   /** 拉取 GitHub SillyTavern releases 列表。 */
-  fetchReleases(): Promise<{ releases: GithubRelease[]; warning?: string }>
+  fetchReleases(): Promise<{ releases: GithubRelease[] }>
 
   /** Installation selectors return an executable root; source selectors may return document URIs. */
   pickDirectory(options?: { purpose?: "installation" | "source" }): Promise<{
@@ -227,19 +198,14 @@ export interface TarvenEnvPlugin {
   /** 读取应用级设置；instancesRoot 为当前默认实例存储根（实例是其直接子目录）。 */
   getAppSettings(): Promise<{ instancesRoot: string; defaultInstancesRoot: string; configuredInstancesRoot?: string }>
 
-  /** 设置或恢复默认实例存储根；path 留空恢复应用内置兜底（创建实例仍需先选择文件夹）。 */
+  /** 设置默认实例存储根；path 留空恢复出厂默认。仅影响之后创建的实例。 */
   setInstancesRoot(options?: { path?: string }): Promise<{ instancesRoot: string; configured: boolean }>
 
   /** 调用系统图片选择器,把图片复制到 covers/{instanceId},返回可加载的文件路径。 */
   pickImage(options: { instanceId: string }): Promise<{ path: string; url?: string }>
 
-  /** 调用系统文件选择器,选择 SillyTavern zip 文件。dataImport 可返回可寻址的 content URI。 */
-  pickZipFile(options?: { purpose?: "instanceSource" | "dataImport" }): Promise<{
-    path: string
-    uri?: string
-    sizeBytes: number
-    direct?: boolean
-  }>
+  /** 调用系统文件选择器,选择 SillyTavern zip 文件,复制到 tmp 并返回路径。 */
+  pickZipFile(): Promise<{ path: string; sizeBytes: number }>
 
   /** 调用系统保存位置选择器,写入文本/JSON 文件。 */
   saveTextFile(options: { fileName: string; mimeType: string; content: string }): Promise<void>
@@ -275,6 +241,28 @@ export interface TarvenEnvPlugin {
   /** Windows: 获取和保存酒馆内容的全局打开方式。 */
   getContentOpenMode(): Promise<{ mode: ContentOpenMode }>
   setContentOpenMode(options: { mode: ContentOpenMode }): Promise<{ mode: ContentOpenMode }>
+
+  /** 只读预检：压缩包里有多少用户数据会被导入、多少依赖/程序文件会被忽略。 */
+  inspectImportArchive(options: { archivePath: string }): Promise<{
+    importEntries: number
+    importBytes: number
+    skippedEntries: number
+    skippedBytes: number
+    hasSecrets: boolean
+    hasConfig: boolean
+    importable: boolean
+  }>
+
+  /** 把压缩包里的用户数据无损导入到已有实例：只覆盖用户数据，依赖与程序文件永不写入。 */
+  importInstanceData(options: {
+    installPath?: string
+    archivePath: string
+    includeOptional?: boolean
+    operationId?: string
+  }): Promise<{ imported: number; bytes: number; skipped: number }>
+
+  /** 导出实例为 ZIP（支持弹窗选择保存位置），返回保存路径与字节数。若用户取消则 cancelled: true。 */
+  exportInstance(options: { instanceId: string; installPath?: string; targetZipPath?: string }): Promise<{ path: string; bytes: number; cancelled?: boolean }>
 
   /** 将远程实例的 Basic Auth 凭据写入平台安全存储。password 省略时保留现有密码。 */
   setRemoteBasicAuth(options: {
@@ -337,22 +325,41 @@ export interface TarvenEnvPlugin {
     preinstall?: PreinstallSelection
   }): Promise<{ success: boolean; instanceId: string; targetPath?: string }>
 
-  /** 检测仍位于旧版默认目录的受管实例。 */
-  checkLegacyInstances(): Promise<{ instances: LegacyInstanceLocation[] }>
+  /** 检测保存在旧版路径（如 C 盘 AppData）的待迁移实例 */
+  checkLegacyInstances(): Promise<{
+    instances: Array<{
+      instanceId: string
+      name: string
+      currentPath: string
+      targetPath: string
+      version?: string
+    }>
+  }>
 
   /** 单个实例无损迁移 / 路径重定位 */
   relocateInstance(options: {
     instanceId: string
     targetPath?: string
-    installPath?: string
-  }): Promise<InstanceRelocationResult>
+  }): Promise<{
+    success: boolean
+    instanceId: string
+    oldPath: string
+    newPath: string
+    unchanged?: boolean
+  }>
 
   /** 一键批量无损迁移旧路径实例至当前客户端默认实例目录 */
   migrateLegacyInstances(options?: {
     instanceIds?: string[]
   }): Promise<{
     success: boolean
-    results: InstanceRelocationResult[]
+    results: Array<{
+      success: boolean
+      instanceId: string
+      oldPath: string
+      newPath: string
+      unchanged?: boolean
+    }>
   }>
 
   /** 重命名实例并同步修改底层物理存储文件夹与注册表 */
@@ -367,34 +374,6 @@ export interface TarvenEnvPlugin {
     oldPath: string
     newPath: string
   }>
-
-  /** 只读预检：压缩包里有多少用户数据会被导入、多少依赖/程序文件会被忽略。 */
-  inspectImportArchive(options: { archivePath?: string; archiveUri?: string }): Promise<{
-    importEntries: number
-    importBytes: number
-    skippedEntries: number
-    skippedBytes: number
-    hasSecrets: boolean
-    hasConfig: boolean
-    importable: boolean
-  }>
-
-  /** 把压缩包里的用户数据无损导入到已有实例：只覆盖用户数据，依赖与程序文件永不写入。 */
-  importInstanceData(options: {
-    instanceId: string
-    installPath?: string
-    archivePath?: string
-    archiveUri?: string
-    includeOptional?: boolean
-    operationId?: string
-  }): Promise<{ imported: number; bytes: number; skipped: number }>
-
-  /** 导出实例为 ZIP（支持可选 targetPath；未指定时调起系统文件保存器让用户选择保存位置，返回保存路径与字节数） */
-  exportInstance(options: {
-    instanceId: string
-    installPath?: string
-    targetPath?: string
-  }): Promise<{ path: string; bytes: number; uri?: string }>
 
   /** 设置或更新实例访问密码（本地安全开关） */
   setInstancePassword(options: {
@@ -433,7 +412,7 @@ export interface TarvenEnvPlugin {
   listInstancePasswordStatus(): Promise<Record<string, boolean>>
 
   addListener(
-    eventName: 'log' | 'progress' | 'ready' | 'mode' | 'error' | 'exit',
+    eventName: 'log' | 'progress' | 'ready' | 'mode' | 'error',
     listenerFunc: (data: TarvenEvent) => void,
   ): Promise<PluginListenerHandle>
 }
@@ -453,8 +432,6 @@ export interface TarvenEvent {
   port?: number
   mode?: string
   tavernRunning?: boolean
-  /** 多开：exit 事件的进程退出码。 */
-  code?: number
   lastUsedAt?: string
   totalUsageMs?: number
 }
