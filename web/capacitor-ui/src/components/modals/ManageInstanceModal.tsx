@@ -7,7 +7,7 @@ import {
   Lock,
 } from "lucide-react";
 import { TarvenEnv } from "../../capacitor-plugin";
-import type { InstanceConfig } from "../../capacitor-plugin";
+import type { ImportArchiveSummary, InstanceConfig } from "../../capacitor-plugin";
 import { cn, formatDisplayVersion } from "../../lib/utils";
 import { coverPlate, coverTone } from "../instance/coverTone";
 import { LAYERS } from "../../constants/layers";
@@ -16,6 +16,7 @@ import { useInstanceLogs } from "../../hooks/useInstanceLogs";
 import { instanceLogs } from "../../lib/log-store";
 import { MENU_GLASS_FILTER, menuShellBackground } from "../../lib/menu-surface";
 import { TerminalWell } from "../common/TerminalWell";
+import { ToggleSwitch } from "../common/ToggleSwitch";
 import { CornerResizeCurve } from "./CornerResizeCurve";
 import { MANAGE_VISUAL_SCALE, useManagePanelLayout } from "./useManagePanelLayout";
 import "./ManageInstanceModal.css";
@@ -34,12 +35,6 @@ const MANAGE_FACE_EXIT_MS = 860;
 const manageEm = (px: number) => `${px / MANAGE_FONT_PX}em`;
 /** 字号用。保持缩小菜单之前的像素大小。 */
 const manageFont = (px: number) => `${px * MANAGE_TYPE_SCALE}px`;
-/**
- * 毛玻璃选择组件的内凹轨道。几何按 44px 母版 × 49/44。
- * 文件里的暗边只有黑 10% + overlay 8%，亮边是白 25% 的 1px 内阴影。
- * 导出的示意图几乎是平的，不能再把这些 alpha 加成深槽。
- * 模糊取 GLASS radius 11.58 × 49/44。没有外投影，也不压 brightness。
- */
 function copyManageFaceValues(source: HTMLElement, clone: HTMLElement) {
   const from = source.querySelectorAll("input, textarea");
   const to = clone.querySelectorAll("input, textarea");
@@ -93,7 +88,7 @@ function ManageTabTrack({
       className={cn("ios-choice-track manage-choice-track flex-shrink-0", isPortrait && "is-portrait")}
       role="group"
       aria-label="管理分类"
-      style={isPortrait ? { height: 44, width: "100%" } : { height: manageEm(49) }}
+      style={isPortrait ? { height: 36, width: "100%" } : { height: manageEm(49) }}
     >
       {MANAGE_TABS.map((tab) => {
         const isTabActive = manageTab === tab.id;
@@ -102,6 +97,7 @@ function ManageTabTrack({
             key={tab.id}
             type="button"
             aria-pressed={isTabActive}
+            data-onboarding-target={tab.id === "storage" ? "manage-storage" : undefined}
             onClick={() => {
               if (tab.id === manageTab) return;
               setManageTab(tab.id);
@@ -109,7 +105,7 @@ function ManageTabTrack({
             className="ios-choice-control motion-control flex select-none items-center justify-center whitespace-nowrap border font-medium"
             style={{
               width: isPortrait ? undefined : manageEm(109),
-              fontSize: isPortrait ? 15 : manageFont(16),
+              fontSize: isPortrait ? 12 : manageFont(16),
             }}
           >
             {tab.label}
@@ -124,16 +120,10 @@ function ManageTabTrack({
 const MANAGE_PANE_RADIUS = 30;
 const MANAGE_NEST_INSET = 14;
 
-const MANAGE_VIEW_GUTTER = 32;
 const PORTRAIT_CTRL = 44;
 const PORTRAIT_CARD_W = 148;
 const PORTRAIT_CARD_ACTIVE_W = 168;
 const PORTRAIT_CARD_GAP = 12;
-
-export const manageMenuMinWindowCss = () => ({
-  width: 580 + MANAGE_VIEW_GUTTER * 2,
-  height: 300 + MANAGE_VIEW_GUTTER * 2,
-});
 
 export interface ManageInstanceModalProps {
   instance: TavernInstance | null;
@@ -177,21 +167,28 @@ function ManageItem({
   desc,
   isLight,
   isPortrait,
+  stackOnPortrait = false,
   children,
 }: {
   label: string;
   desc?: string;
   isLight: boolean;
   isPortrait: boolean;
+  stackOnPortrait?: boolean;
   children: React.ReactNode;
 }) {
+  const stacked = isPortrait && stackOnPortrait;
   return (
-    <div className="manage-item">
+    <div className={cn("manage-item", stacked && "is-stacked")}>
       <div
-        className="setting-row flex items-center justify-between gap-3"
+        className={cn(
+          "setting-row flex",
+          stacked ? "flex-col items-stretch justify-center gap-2" : "items-center justify-between gap-3"
+        )}
         style={{
-          minHeight: isPortrait ? 64 : 88,
+          minHeight: isPortrait ? 60 : 88,
           marginInline: isPortrait ? 16 : 28,
+          paddingBlock: isPortrait ? stacked ? 12 : 6 : undefined,
         }}
       >
       <div className="min-w-0 flex-1">
@@ -200,7 +197,7 @@ function ManageItem({
             "setting-label font-medium leading-tight",
             isLight ? "text-[#1a1625]/85" : "text-white/88"
           )}
-          style={{ fontSize: isPortrait ? 17 : MANAGE_LABEL_PX }}
+          style={{ fontSize: isPortrait ? 13 : MANAGE_LABEL_PX }}
         >
           {label}
         </div>
@@ -210,13 +207,13 @@ function ManageItem({
               "setting-desc leading-snug",
               isLight ? "text-[#1a1625]/45" : "text-white/48"
             )}
-            style={{ marginTop: 4, fontSize: 13 }}
+            style={{ marginTop: 4, fontSize: isPortrait ? 11 : 13 }}
           >
             {desc}
           </div>
         )}
       </div>
-      <div className={isPortrait ? "min-w-0 max-w-[58%]" : "min-w-0 max-w-[46%]"}>{children}</div>
+      <div className={stacked ? "min-w-0 w-full" : isPortrait ? "min-w-0 max-w-[58%] shrink-0" : "min-w-0 max-w-[46%]"}>{children}</div>
       </div>
     </div>
   );
@@ -224,21 +221,18 @@ function ManageItem({
 
 function ManageSettingValue({
   isLight,
-  mono = false,
   children,
 }: {
   isLight: boolean;
-  mono?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <div
       className={cn(
         "setting-value text-right break-words",
-        mono && "font-mono",
         isLight ? "text-[#1a1625]/72" : "text-white/78"
       )}
-      style={{ fontSize: 16 }}
+      style={{ fontSize: "var(--manage-value-size, 16px)" }}
     >
       {children}
     </div>
@@ -247,7 +241,7 @@ function ManageSettingValue({
 
 function manageNumberFieldClass(isLight: boolean) {
   return cn(
-    "manage-flat h-10 w-[112px] rounded-xl border-0 text-center outline-none",
+    "manage-flat manage-number-field h-10 w-[112px] rounded-xl border-0 text-center outline-none",
     isLight ? "text-[#1a1625]" : "text-white"
   );
 }
@@ -261,17 +255,40 @@ function manageTextFieldClass(isLight: boolean) {
   );
 }
 
+function formatArchiveBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function isNativeCancelError(error: unknown) {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : typeof error === "object" && error !== null && "message" in error
+          ? String((error as { message?: unknown }).message || "")
+          : "";
+  return /cancel(?:led|ed)?|取消|cancel/i.test(message);
+}
+
 function ManageToggle({
   label,
   on,
   onChange,
   isLight,
+  isPortrait,
 }: {
   label: string;
   on: boolean;
   onChange: (value: boolean) => void;
   isLight: boolean;
+  isPortrait: boolean;
 }) {
+  if (isPortrait) {
+    return <ToggleSwitch ariaLabel={label} on={on} onChange={onChange} isLight={isLight} />;
+  }
   return (
     <button
       type="button"
@@ -322,7 +339,7 @@ function getStatusText(status: TavernInstance["status"]) {
 
 function manageCapsuleButtonClass(isLight: boolean) {
   return cn(
-    "manage-flat flat-capsule motion-control flex h-10 flex-shrink-0 items-center rounded-full border-0 px-4 font-medium",
+    "manage-flat flat-capsule motion-control flex h-[var(--manage-action-height,40px)] flex-shrink-0 items-center whitespace-nowrap rounded-full border-0 px-4 text-[length:var(--manage-action-size,16px)] font-medium",
     isLight
       ? "text-[#1a1625]/60 hover:text-[#1a1625]"
       : "text-white/60 hover:text-white",
@@ -407,7 +424,7 @@ function ManageInstanceCard({
         />
         <div className={cn("manage-card-veil manage-card-scrim", selected && "opacity-0")} />
         <div className={cn("manage-card-veil manage-card-scrim is-focus", selected ? "opacity-100" : "opacity-0")} />
-        <div className="pointer-events-none absolute left-0 top-0 z-[2] flex items-center gap-1.5" style={{ padding: manageEm(14) }}>
+        <div className="pointer-events-none absolute left-0 top-0 z-[2] flex items-center gap-1.5" style={{ padding: isPortrait ? 10 : manageEm(14) }}>
           <span
             className={cn(
               "rounded-md px-2 py-0.5 text-[10px] font-medium tracking-wide",
@@ -435,11 +452,12 @@ function ManageInstanceCard({
         </div>
         <div
           className="pointer-events-none absolute inset-x-0 bottom-0 z-[2] flex items-end justify-between"
-          style={{ paddingInline: manageEm(14), paddingBottom: manageEm(14), gap: manageEm(8) }}
+          style={{ paddingInline: isPortrait ? 10 : manageEm(14), paddingBottom: isPortrait ? 10 : manageEm(14), gap: manageEm(8) }}
         >
           <div
             className={cn(
               "motion-control min-w-0 flex-1 truncate text-sm font-medium leading-snug",
+              isPortrait && "text-[13px]",
               isLight
                 ? "text-[#1a1625]/75 group-hover:text-[#1a1625]"
                 : "text-white/80 group-hover:text-white"
@@ -519,6 +537,18 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
     typeof window !== "undefined" && window.matchMedia("(max-width: 760px)").matches
   ));
   const isPortraitRef = useRef(isPortrait);
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [importArchive, setImportArchive] = useState<{
+    archivePath?: string;
+    archiveUri?: string;
+    label: string;
+    summary: ImportArchiveSummary;
+  } | null>(null);
+  const [importIncludeOptional, setImportIncludeOptional] = useState(false);
+  const [importStatus, setImportStatus] = useState<string | null>(null);
+  const [isInspectingImport, setIsInspectingImport] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
   isPortraitRef.current = isPortrait;
   const portraitScrollMode = useRef<ScrollBehavior>("auto");
   useEffect(() => {
@@ -620,7 +650,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
   const [terminalInput, setTerminalInput] = useState("");
   const [localAboutInfo, setLocalAboutInfo] = useState<{ path?: string; sizeBytes?: number; version?: string; status?: string; createdAt?: string } | null>(null);
 
-  const { windowRef, width: shellW, height: shellH, isResizing, onResizePointerDown } = useManagePanelLayout({
+  const { windowRef, width: shellW, height: shellH, viewport, isResizing, onResizePointerDown } = useManagePanelLayout({
     visible: Boolean(instance) && (isOpen || isClosing),
     ready: settingsFaceReady,
     isPortrait,
@@ -674,6 +704,16 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
     return () => { active = false; };
   }, [isOpen, instance?.id, instance?.installPath, instance?.installDir]);
 
+  useEffect(() => {
+    setExportStatus(null);
+    setIsExporting(false);
+    setImportArchive(null);
+    setImportIncludeOptional(false);
+    setImportStatus(null);
+    setIsInspectingImport(false);
+    setIsImporting(false);
+  }, [instance?.id]);
+
   const logKey = instance?.installDir || instance?.id;
   const terminalLogs = useInstanceLogs(logKey, (isOpen || isClosing) && manageTab === "terminal");
   useLayoutEffect(() => {
@@ -702,6 +742,8 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
   if (!instance || (!isOpen && !isClosing)) return null;
 
   const mp = instance;
+  const isLocalInstance = mp.type === "local";
+  const isInstanceRunning = mp.status === "running" || mp.status === "online";
   const effectiveInstancePath =
     mp.type === "local"
       ? (aboutInfo?.path || localAboutInfo?.path || mp.installPath || (mp.installDir && (mp.installDir.includes("/") || mp.installDir.includes("\\")) ? mp.installDir : null) || "—")
@@ -728,10 +770,103 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
     onSelectInstance(item);
   };
 
+  const selectImportArchive = async () => {
+    if (isInspectingImport || isImporting) return;
+    setIsInspectingImport(true);
+    setImportStatus("正在检查 ZIP…");
+    try {
+      const selected = await TarvenEnv.pickZipFile({ purpose: "dataImport" });
+      const archivePath = selected.path?.trim() || undefined;
+      const archiveUri = selected.uri?.trim() || undefined;
+      if (!archivePath && !archiveUri) throw new Error("未选择 ZIP 文件");
+      const summary = await TarvenEnv.inspectImportArchive({
+        ...(archivePath ? { archivePath } : {}),
+        ...(archiveUri ? { archiveUri } : {}),
+      });
+      const label =
+        archivePath?.split(/[/\\]/).pop() ||
+        (archiveUri ? "已选择 ZIP 文件" : "未命名 ZIP 文件");
+      setImportArchive({ archivePath, archiveUri, label, summary });
+      setImportStatus(
+        summary.importable
+          ? `已检查：${summary.importEntries} 项 · ${formatArchiveBytes(summary.importBytes)}`
+          : "压缩包中没有可导入的用户数据"
+      );
+    } catch (error) {
+      setImportArchive(null);
+      setImportStatus(
+        isNativeCancelError(error)
+          ? null
+          : error instanceof Error
+            ? error.message
+            : "检查 ZIP 失败，请重试"
+      );
+    } finally {
+      setIsInspectingImport(false);
+    }
+  };
+
+  const importSelectedArchive = async () => {
+    if (isImporting || !isLocalInstance || isInstanceRunning || !importArchive?.summary.importable) return;
+    setIsImporting(true);
+    setImportStatus("正在导入…");
+    try {
+      const result = await TarvenEnv.importInstanceData({
+        instanceId: mp.installDir || mp.id,
+        installPath: mp.installPath,
+        ...(importArchive.archivePath ? { archivePath: importArchive.archivePath } : {}),
+        ...(importArchive.archiveUri ? { archiveUri: importArchive.archiveUri } : {}),
+        includeOptional: importIncludeOptional,
+      });
+      setImportStatus(
+        `已导入 ${result.imported} 项 · ${formatArchiveBytes(result.bytes)}`
+      );
+      setLocalAboutInfo(null);
+    } catch (error) {
+      setImportStatus(
+        isNativeCancelError(error)
+          ? null
+          : error instanceof Error
+            ? error.message
+            : "导入失败，请重试"
+      );
+    } finally {
+      setIsImporting(false);
+    }
+  };
+
+  const exportInstanceArchive = async () => {
+    if (isExporting || !isLocalInstance) return;
+    setIsExporting(true);
+    setExportStatus("正在打包…");
+    try {
+      const result = await TarvenEnv.exportInstance({
+        instanceId: mp.installDir || mp.id,
+        installPath: mp.installPath,
+      });
+      if (result.cancelled || result.canceled) {
+        setExportStatus(null);
+        return;
+      }
+      const label = result.path.split(/[/\\]/).pop() || result.path;
+      setExportStatus(`已导出：${label}`);
+    } catch (error) {
+      setExportStatus(
+        isNativeCancelError(error)
+          ? null
+          : error instanceof Error
+            ? error.message
+            : "导出失败，请重试"
+      );
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   const isDynamic = bgMode === "dynamic";
 
-  const rightFadeTop = manageEm(36);
-  const rightFadeBottom = isPortrait ? manageEm(40) : manageEm(36);
+  const rightFadeTop = isPortrait ? "16px" : manageEm(36);
+  const rightFadeBottom = isPortrait ? "20px" : manageEm(36);
   const rightFaceMask = rightFade.top || rightFade.bottom
     ? `linear-gradient(to bottom, ${rightFade.top ? "transparent" : "#000"} 0, #000 ${rightFadeTop}, #000 calc(100% - ${rightFadeBottom}), ${rightFade.bottom ? "transparent" : "#000"} 100%)`
     : undefined;
@@ -748,10 +883,10 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
       className="fixed flex select-none"
       style={{
         zIndex: LAYERS.MODAL_SURFACE,
-        top: 0,
-        left: 0,
-        width: "100vw",
-        height: "100dvh",
+        top: isPortrait ? viewport.top : 0,
+        left: isPortrait ? viewport.left : 0,
+        width: isPortrait ? viewport.width : "100vw",
+        height: isPortrait ? viewport.height : "100dvh",
         alignItems: "center",
         justifyContent: "center",
         pointerEvents: "none",
@@ -766,11 +901,14 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
       ref={surfaceRef}
       className={cn(
         "ios-task-surface manage-panel-surface relative flex h-full w-full flex-col overflow-hidden",
+        isPortrait && "is-portrait",
+        isPortrait && viewport.height < window.innerHeight - 120 && "is-keyboard-open",
         isLight && "is-light",
         isClosing ? "animate-manage-panel-exit" : "animate-manage-panel"
       )}
       style={{
-        fontSize: MANAGE_FONT_PX,
+        fontSize: isPortrait ? 16 : MANAGE_FONT_PX,
+        ["--manage-viewport-height" as string]: `${viewport.height}px`,
         zoom: isPortrait ? 1 : MANAGE_VISUAL_SCALE,
         width: isPortrait ? "100%" : shellW / MANAGE_VISUAL_SCALE,
         height: "100%",
@@ -816,6 +954,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                 ? "text-[#1a1625] placeholder:text-[#1a1625]/40"
                 : "text-white placeholder:text-white/45"
             )}
+            style={{ fontSize: isPortrait ? 16 : undefined }}
           />
           <div
             className={cn("motion-slot is-after", manageSearchQuery && "is-open")}
@@ -858,6 +997,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
             type="button"
             onClick={onClose}
             title="关闭管理面板"
+            data-onboarding-target="manage-close"
             className={cn(
               "manage-recess motion-control flex flex-shrink-0 select-none items-center justify-center rounded-full border-0 outline-none",
               isLight
@@ -1004,6 +1144,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                             setDraftConfig((prev) => ({ ...prev, listen: v }))
                           }
                           isLight={isLight}
+                          isPortrait={isPortrait}
                         />
                       </ManageItem>
                       <ManageItem
@@ -1018,6 +1159,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                             setDraftConfig((prev) => ({ ...prev, ipv4: v }))
                           }
                           isLight={isLight}
+                          isPortrait={isPortrait}
                         />
                       </ManageItem>
                       <ManageItem
@@ -1032,6 +1174,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                             setDraftConfig((prev) => ({ ...prev, ipv6: v }))
                           }
                           isLight={isLight}
+                          isPortrait={isPortrait}
                         />
                       </ManageItem>
                       <ManageItem
@@ -1046,6 +1189,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                             setDraftConfig((prev) => ({ ...prev, dnsIpv6: v }))
                           }
                           isLight={isLight}
+                          isPortrait={isPortrait}
                         />
                       </ManageItem>
                       <ManageItem
@@ -1079,6 +1223,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                             setDraftConfig((prev) => ({ ...prev, keepAlive: v }))
                           }
                           isLight={isLight}
+                          isPortrait={isPortrait}
                         />
                       </ManageItem>
                     </>
@@ -1094,6 +1239,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                           on={draftRemoteAuthEnabled}
                           onChange={setDraftRemoteAuthEnabled}
                           isLight={isLight}
+                          isPortrait={isPortrait}
                         />
                       </ManageItem>
                       <div
@@ -1105,7 +1251,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                         inert={!draftRemoteAuthEnabled}
                       >
                         <div className="motion-accordion-inner">
-                          <div className="space-y-2" style={{ padding: "4px 40px 18px" }}>
+                          <div className="space-y-2" style={{ padding: isPortrait ? "4px 16px 18px" : "4px 40px 18px" }}>
                             <input
                               type="text"
                               disabled={!draftRemoteAuthEnabled}
@@ -1153,8 +1299,9 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                     label="访问密码保护"
                     desc="开启后需在本地输入密码方可启动或连接实例"
                     isLight={isLight} isPortrait={isPortrait}
+                    stackOnPortrait={hasPassword && !isConfiguringPassword}
                   >
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center justify-end gap-2">
                       {hasPassword && !isConfiguringPassword && (
                         <button
                           type="button"
@@ -1168,7 +1315,9 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                             setPasswordSuccess(null);
                           }}
                           className={cn(
-                            "manage-flat flat-capsule motion-control h-7 rounded-full px-3 text-[11px] font-medium",
+                            isPortrait
+                              ? manageCapsuleButtonClass(isLight)
+                              : "manage-flat flat-capsule motion-control h-7 rounded-full px-3 text-[11px] font-medium",
                             isLight
                               ? "text-[#1a1625]/60 hover:text-[#1a1625]/85"
                               : "text-white/60 hover:text-white/85"
@@ -1202,6 +1351,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                           }
                         }}
                         isLight={isLight}
+                        isPortrait={isPortrait}
                       />
                     </div>
                   </ManageItem>
@@ -1215,7 +1365,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                     inert={!isConfiguringPassword}
                   >
                     <div className="motion-accordion-inner">
-                      <div className="space-y-2" style={{ padding: "4px 40px 18px" }}>
+                      <div className="space-y-2" style={{ padding: isPortrait ? "4px 16px 18px" : "4px 40px 18px" }}>
                         {passwordMode === "set" ? (
                           <>
                             {hasPassword && (
@@ -1289,7 +1439,9 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                             }}
                             disabled={passwordSaving}
                             className={cn(
-                              "manage-flat flat-capsule motion-control h-7 rounded-full px-3 text-xs font-medium",
+                              isPortrait
+                                ? manageCapsuleButtonClass(isLight)
+                                : "manage-flat flat-capsule motion-control h-7 rounded-full px-3 text-xs font-medium",
                               isLight
                                 ? "text-[#1a1625]/60 hover:text-[#1a1625]/85"
                                 : "text-white/60 hover:text-white/85"
@@ -1354,7 +1506,9 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                               }
                             }}
                             className={cn(
-                              "motion-control h-7 rounded-full px-3.5 text-xs font-semibold disabled:opacity-40",
+                              isPortrait
+                                ? cn(manageCapsuleButtonClass(isLight), "justify-center disabled:opacity-40")
+                                : "motion-control h-7 rounded-full px-3.5 text-xs font-semibold disabled:opacity-40",
                               passwordMode === "clear"
                                 ? isLight
                                   ? "manage-flat text-red-900/70 hover:text-red-900"
@@ -1382,7 +1536,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                       "font-medium leading-snug",
                       isLight ? "text-red-900/70" : "text-red-300/80"
                     )}
-                    style={{ marginTop: manageEm(16), fontSize: manageFont(13) }}
+                    style={{ marginTop: manageEm(16), fontSize: isPortrait ? 11 : manageFont(13) }}
                   >
                     {manageSaveError}
                   </p>
@@ -1407,9 +1561,9 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                       isLight ? "text-[#1a1625]/60 hover:text-[#1a1625]/85" : "text-white/60 hover:text-white/85"
                     )}
                     style={{
-                      height: isPortrait ? 44 : manageEm(49),
-                      paddingInline: isPortrait ? 22 : manageEm(22),
-                      fontSize: isPortrait ? 16 : manageFont(16),
+                      height: isPortrait ? 32 : manageEm(49),
+                      paddingInline: isPortrait ? 16 : manageEm(22),
+                      fontSize: isPortrait ? 12 : manageFont(16),
                     }}
                   >
                     {isSavingManagePanel ? "保存中..." : "保存"}
@@ -1426,10 +1580,10 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                       isLight ? "text-[#1a1625]/70 hover:text-[#1a1625]" : "text-white/75 hover:text-white"
                     )}
                     style={{
-                      height: isPortrait ? 44 : manageEm(49),
+                      height: isPortrait ? 32 : manageEm(49),
                       gap: isPortrait ? 6 : manageEm(8),
-                      paddingInline: isPortrait ? 22 : manageEm(22),
-                      fontSize: isPortrait ? 16 : manageFont(16),
+                      paddingInline: isPortrait ? 16 : manageEm(22),
+                      fontSize: isPortrait ? 12 : manageFont(16),
                     }}
                   >
                     <Play className="fill-current" style={{ width: isPortrait ? 14 : manageEm(15), height: isPortrait ? 14 : manageEm(15) }} />
@@ -1457,8 +1611,9 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                 <ManageItem
                   label={mp.type === "local" ? "实例位置" : "连接地址"}
                   isLight={isLight} isPortrait={isPortrait}
+                  stackOnPortrait
                 >
-                  <ManageSettingValue isLight={isLight} mono>
+                  <ManageSettingValue isLight={isLight}>
                     {effectiveInstancePath}
                   </ManageSettingValue>
                 </ManageItem>
@@ -1479,7 +1634,6 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                     type="button"
                     onClick={() => onPickCover(mp)}
                     className={manageCapsuleButtonClass(isLight)}
-                    style={{ fontSize: 16 }}
                   >
                     更换插图
                   </button>
@@ -1487,17 +1641,111 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                   {mp.type === "local" && onOpenRelocate && (
                     <ManageItem
                       label="存储迁移"
-                      desc="无损搬迁至新目录或软件默认路径"
+                      desc="无损搬迁至你选择的新目录"
                       isLight={isLight} isPortrait={isPortrait}
                     >
                       <button
                         type="button"
                         onClick={() => onOpenRelocate(mp)}
                         className={manageCapsuleButtonClass(isLight)}
-                        style={{ fontSize: 16 }}
                       >
                         迁移目录
                       </button>
+                    </ManageItem>
+                  )}
+                  {mp.type === "local" && (
+                    <ManageItem
+                      label="导出实例（ZIP）"
+                      desc={exportStatus || "打包实例文件，由系统选择保存位置"}
+                      isLight={isLight} isPortrait={isPortrait}
+                    >
+                      <button
+                        type="button"
+                        disabled={isExporting}
+                        onClick={exportInstanceArchive}
+                        className={manageCapsuleButtonClass(isLight)}
+                      >
+                        {isExporting ? "导出中..." : "导出"}
+                      </button>
+                    </ManageItem>
+                  )}
+                  {mp.type === "local" && (
+                    <ManageItem
+                      label="导入数据（ZIP）"
+                      desc={
+                        isInstanceRunning
+                          ? "请先停止实例，再覆盖导入用户数据"
+                          : importStatus || "先创建实例，再从 ZIP 覆盖导入用户数据"
+                      }
+                      isLight={isLight} isPortrait={isPortrait}
+                      stackOnPortrait={Boolean(importArchive)}
+                    >
+                      <div className={cn("flex min-w-0 flex-col gap-2", isPortrait && importArchive ? "items-stretch" : "items-end")}>
+                        <button
+                          type="button"
+                          disabled={isInspectingImport || isImporting || isInstanceRunning}
+                          onClick={selectImportArchive}
+                          data-onboarding-target="manage-import-select"
+                          className={cn(manageCapsuleButtonClass(isLight), isPortrait && importArchive && "self-end")}
+                        >
+                          {isInspectingImport ? "检查中..." : "选择 ZIP"}
+                        </button>
+                        {importArchive && (
+                          <div className={cn("flex min-w-0 max-w-full flex-col", isPortrait ? "items-stretch gap-3" : "items-end gap-1.5")}>
+                            <span
+                              className={cn(
+                                "max-w-full font-medium",
+                                isPortrait ? "break-words text-[13px] leading-relaxed [overflow-wrap:anywhere]" : "truncate text-[11px]",
+                                isLight ? "text-[#1a1625]/65" : "text-white/65"
+                              )}
+                              title={importArchive.label}
+                            >
+                              {importArchive.label}
+                            </span>
+                            <span
+                              className={cn(
+                                "leading-snug",
+                                isPortrait ? "text-left text-xs" : "text-right text-[10px]",
+                                isLight ? "text-[#1a1625]/45" : "text-white/45"
+                              )}
+                            >
+                              {importArchive.summary.importEntries} 项 ·{" "}
+                              {formatArchiveBytes(importArchive.summary.importBytes)}
+                              {importArchive.summary.skippedEntries > 0
+                                ? ` · 忽略 ${importArchive.summary.skippedEntries} 项`
+                                : ""}
+                            </span>
+                            {(importArchive.summary.hasConfig || importArchive.summary.hasSecrets) && (
+                              <div className={cn("flex items-center gap-2", isPortrait && "justify-between")}>
+                                <span
+                                  className={cn(
+                                    isPortrait ? "text-[13px]" : "text-[11px]",
+                                    isLight ? "text-[#1a1625]/55" : "text-white/55"
+                                  )}
+                                >
+                                  包含配置与密钥
+                                </span>
+                                <ManageToggle
+                                  label="导入配置与密钥"
+                                  on={importIncludeOptional}
+                                  onChange={setImportIncludeOptional}
+                                  isLight={isLight}
+                                  isPortrait={isPortrait}
+                                />
+                              </div>
+                            )}
+                            <button
+                              type="button"
+                              disabled={isImporting || !importArchive.summary.importable || isInstanceRunning}
+                              onClick={importSelectedArchive}
+                              data-onboarding-target="manage-import-confirm"
+                              className={cn(manageCapsuleButtonClass(isLight), isPortrait && "self-end")}
+                            >
+                              {isImporting ? "导入中..." : "导入"}
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </ManageItem>
                   )}
                   {mp.type === "local" && onOpenMaintenance && (
@@ -1506,7 +1754,6 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                         type="button"
                         onClick={() => onOpenMaintenance(mp)}
                         className={manageCapsuleButtonClass(isLight)}
-                        style={{ fontSize: 16 }}
                       >
                         扫描
                       </button>
@@ -1535,7 +1782,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                   {mp.type === "remote" ? (
                     <div
                       className="flex flex-1 items-center justify-center px-6 text-center text-[var(--terminal-text-label)]"
-                      style={{ fontSize: manageFont(14) }}
+                      style={{ fontSize: isPortrait ? 12 : manageFont(14) }}
                     >
                       远程实例不支持本地终端
                     </div>
@@ -1547,7 +1794,7 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                     >
                       <span
                         className="min-w-0 truncate font-medium text-[var(--terminal-text-label)]"
-                        style={{ fontSize: manageFont(13) }}
+                        style={{ fontSize: isPortrait ? 12 : manageFont(13) }}
                       >
                         {mp.subtitle || mp.name} · 实例终端
                       </span>
@@ -1651,11 +1898,11 @@ export const ManageInstanceModal: React.FC<ManageInstanceModalProps> = ({
                   }}
                 >
                 <div className="manage-content">
-                <ManageItem label="实例名称" isLight={isLight} isPortrait={isPortrait}>
+                <ManageItem label="实例名称" isLight={isLight} isPortrait={isPortrait} stackOnPortrait>
                   <ManageSettingValue isLight={isLight}>{mp.subtitle || mp.name}</ManageSettingValue>
                 </ManageItem>
-                <ManageItem label={mp.type === "local" ? "实例位置" : "连接地址"} isLight={isLight} isPortrait={isPortrait}>
-                  <ManageSettingValue isLight={isLight} mono>{effectiveInstancePath}</ManageSettingValue>
+                <ManageItem label={mp.type === "local" ? "实例位置" : "连接地址"} isLight={isLight} isPortrait={isPortrait} stackOnPortrait>
+                  <ManageSettingValue isLight={isLight}>{effectiveInstancePath}</ManageSettingValue>
                 </ManageItem>
                 <ManageItem label="版本" isLight={isLight} isPortrait={isPortrait}>
                   <ManageSettingValue isLight={isLight}>

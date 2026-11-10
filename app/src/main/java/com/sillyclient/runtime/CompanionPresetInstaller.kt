@@ -40,9 +40,9 @@ class CompanionPresetTransaction internal constructor(
 
 object CompanionPresetInstaller {
     const val BUNDLE_ID = "sc-bordeaux"
-    const val REVISION = 2
+    const val REVISION = 3
 
-    private const val THEME_HASH = "D492656B0BF349D0F6AE9B153C3118E0A443E6FFCD614EACE49CA7DC56D9CEC2"
+    private const val THEME_HASH = "8253F83DA43971F489A48CDD94F1050A3DD3BABDA0772C1AA5D85300029544F2"
     private const val WALLPAPER_HASH = "FA17565F1A3CB8AC6FB4F55E3D8FFE2A8200CC1AC60B9C38DEF2D225938E187E"
     private const val THEME_SOURCE = "themes/SC Bordeaux.json"
     private const val WALLPAPER_SOURCE = "wallpaper/sillyclient-bg-8k.jpg"

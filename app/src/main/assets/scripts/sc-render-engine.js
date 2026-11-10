@@ -5,10 +5,10 @@
  * 核心架构组件:
  * 1. ChameleonEngine: 变色龙精准事件感知取色 (首帧瞬时同步 + 定向 DOM 变动通知，彻底 0 轮询)
  * 2. Streaming Diagnostics: HUD-only native-frame metrics without intercepting DOM writes
- * 3. Layer Explosion Elimination: 彻底根治几百条消息的图层爆炸，单滚动硬件层 + 动态末尾消息硬件层
- * 4. Full-Fidelity Visuals: 永久保留全站原生毛玻璃 (backdrop-filter) 与立体阴影 (box-shadow)，滑屏零降级零破坏
+ * 3. Optional Performance Preset: 消息布局隔离、资源按需渲染与既有抽屉动画
+ * 4. Existing Visual Rules: 保持原有样式与动画，包含抽屉打开时既有的聊天毛玻璃规则
  * 5. FrameScheduler: 读写严格分离原子化调度 (Read/Write Phase 严格隔离)
- * 6. Invisible Animation Freeze & Image Async Decode: 视口外动画挂起与图片后台异步解码
+ * 6. Offscreen Animation Freeze: 预设开启时按需观察并挂起视口外动画
  * 7. Zero-Timer Interaction Governor: 手势触控优先调频器 (0 Timer 堆开销)
  * 8. Performance Monitor & SC Slate-900 Glass HUD: 极客监控面板与全站微震触感开关
  */
@@ -25,9 +25,9 @@
         return !disposed && !pageSuspended && !document.hidden;
     }
 
-    function listen(target, type, callback, options) {
+    function listen(target, type, callback, options, owners = ownedListeners) {
         target.addEventListener(type, callback, options);
-        ownedListeners.push(() => target.removeEventListener(type, callback, options));
+        owners.push(() => target.removeEventListener(type, callback, options));
     }
 
     // ========================================================
@@ -56,6 +56,13 @@
         lastTopColor: null,
         hapticEnabled: safeStorageGet('__sc_haptic_enabled') === '1',
         hudVisible: false
+    };
+    const initialSettings = window.__scInitialRenderSettings || {};
+    const renderSettings = {
+        colorEnabled: initialSettings.colorEnabled !== false,
+        mode: initialSettings.mode === 'once' ? 'once' : 'realtime',
+        clickEffect: initialSettings.clickEffect !== false,
+        performancePreset: initialSettings.performancePreset !== false
     };
 
     // ========================================================
@@ -141,97 +148,6 @@
                 if (spacer) spacer.remove();
             }
 
-            // 1.5 二级抽屉 (.inline-drawer-content) 90ms 纯透明度微显影（0 JS 逐帧循环开销）
-            if (window.jQuery && !window.__scSlideTogglePatched) {
-                window.__scSlideTogglePatched = true;
-                const jq = window.jQuery;
-                const SELECTOR = '.inline-drawer-content';
-                const origToggle = jq.fn.slideToggle;
-                const origDown   = jq.fn.slideDown;
-                const origUp     = jq.fn.slideUp;
-
-                const isHidden = (el) =>
-                    el.style.display === 'none' ||
-                    window.getComputedStyle(el).display === 'none';
-
-                const fastAnimate = (el, toOpen, cb) => {
-                    if (toOpen) {
-                        el.style.display = 'block';
-                        try {
-                            if (el.animate) {
-                                el.animate([
-                                    { opacity: 0.15, transform: 'translateY(-4px)' },
-                                    { opacity: 1, transform: 'translateY(0)' }
-                                ], {
-                                    duration: 90,
-                                    easing: 'cubic-bezier(0.12, 0.98, 0.24, 1)',
-                                    fill: 'forwards'
-                                });
-                            }
-                        } catch(_) {}
-                        if (typeof cb === 'function') cb.call(el);
-                    } else {
-                        try {
-                            if (el.animate) {
-                                const anim = el.animate([
-                                    { opacity: 1, transform: 'translateY(0)' },
-                                    { opacity: 0, transform: 'translateY(-3px)' }
-                                ], {
-                                    duration: 70,
-                                    easing: 'cubic-bezier(0.4, 0, 1, 1)',
-                                    fill: 'forwards'
-                                });
-                                anim.onfinish = () => {
-                                    el.style.display = 'none';
-                                    if (typeof cb === 'function') cb.call(el);
-                                };
-                            } else {
-                                el.style.display = 'none';
-                                if (typeof cb === 'function') cb.call(el);
-                            }
-                        } catch(_) {
-                            el.style.display = 'none';
-                            if (typeof cb === 'function') cb.call(el);
-                        }
-                    }
-                };
-
-                const patchedToggle = function(duration, easing, complete) {
-                    const cb = typeof easing === 'function' ? easing : complete;
-                    const inline = this.filter(SELECTOR);
-                    const rest   = this.not(SELECTOR);
-                    inline.each(function() { fastAnimate(this, isHidden(this), cb); });
-                    if (rest.length) origToggle.apply(rest, arguments);
-                    return this;
-                };
-
-                const patchedDown = function(duration, easing, complete) {
-                    const cb = typeof easing === 'function' ? easing : complete;
-                    const inline = this.filter(SELECTOR);
-                    const rest   = this.not(SELECTOR);
-                    inline.each(function() { fastAnimate(this, true, cb); });
-                    if (rest.length) origDown.apply(rest, arguments);
-                    return this;
-                };
-
-                const patchedUp = function(duration, easing, complete) {
-                    const cb = typeof easing === 'function' ? easing : complete;
-                    const inline = this.filter(SELECTOR);
-                    const rest   = this.not(SELECTOR);
-                    inline.each(function() { fastAnimate(this, false, cb); });
-                    if (rest.length) origUp.apply(rest, arguments);
-                    return this;
-                };
-                jq.fn.slideToggle = patchedToggle;
-                jq.fn.slideDown = patchedDown;
-                jq.fn.slideUp = patchedUp;
-                patchRestorers.push(() => {
-                    if (jq.fn.slideToggle === patchedToggle) jq.fn.slideToggle = origToggle;
-                    if (jq.fn.slideDown === patchedDown) jq.fn.slideDown = origDown;
-                    if (jq.fn.slideUp === patchedUp) jq.fn.slideUp = origUp;
-                    window.__scSlideTogglePatched = false;
-                });
-            }
         } catch(_) {}
     }
     installRuntimePatches();
@@ -362,37 +278,27 @@
     // ========================================================
     // 4. CHAMELEON ENGINE (变色龙精准事件感知取色 - 0 轮询)
     // ========================================================
-    let renderSettings = {
-        colorEnabled: true,
-        mode: 'realtime', // 'realtime' | 'once'
-        clickEffect: true
-    };
-    window.__scUpdateRenderSettings = function(colorEnabled, mode, clickEffect) {
-        renderSettings.colorEnabled = !!colorEnabled;
-        renderSettings.mode = mode === 'once' ? 'once' : 'realtime';
+    let chameleonStartupTimer = null;
+    window.__scUpdateRenderSettings = function(colorEnabled, mode, clickEffect, performancePreset) {
+        if (disposed) return;
+        const nextColorEnabled = !!colorEnabled;
+        const nextMode = mode === 'once' ? 'once' : 'realtime';
+        const samplingChanged = renderSettings.colorEnabled !== nextColorEnabled || renderSettings.mode !== nextMode;
+        renderSettings.colorEnabled = nextColorEnabled;
+        renderSettings.mode = nextMode;
         renderSettings.clickEffect = !!clickEffect;
-        if (!renderSettings.colorEnabled) {
-            chameleonEngine.pause();
-        } else if (renderSettings.mode === 'once') {
-            if (chameleonEngine.hasSampledOnce) {
-                chameleonEngine.pause();
-            } else {
-                chameleonEngine.initObserver();
-                chameleonEngine.sampleAndReport(false);
-                if (chameleonEngine.isThemeMounted() && chameleonEngine.lastReportedColor !== null) {
-                    setTimeout(() => {
-                        if (renderSettings.mode === 'once' && isPageActive()) {
-                            chameleonEngine.sampleAndReport(true);
-                            chameleonEngine.hasSampledOnce = true;
-                            chameleonEngine.pause();
-                        }
-                    }, 400);
-                }
-            }
-        } else {
+        if (performancePreset !== undefined) renderSettings.performancePreset = !!performancePreset;
+        syncPerformancePreset();
+        if (!samplingChanged) return;
+        chameleonEngine.pause();
+        if (renderSettings.mode === 'realtime') {
             chameleonEngine.hasSampledOnce = false;
-            chameleonEngine.initObserver();
-            chameleonEngine.sampleAndReport(true);
+        }
+        if (!chameleonEngine.canSample()) return;
+        startChameleon(renderSettings.mode === 'realtime');
+        if (renderSettings.mode === 'once' && chameleonEngine.isThemeMounted() &&
+            chameleonEngine.lastReportedColor !== null) {
+            chameleonEngine.settleOnce(400);
         }
     };
 
@@ -402,6 +308,11 @@
         settleTimer: null,
         observer: null,
         hasSampledOnce: false,
+
+        canSample: function(force) {
+            return isPageActive() && renderSettings.colorEnabled &&
+                (force || renderSettings.mode !== 'once' || !this.hasSampledOnce);
+        },
 
         isThemeMounted: function() {
             if (document.getElementById('top-bar')) return true;
@@ -491,8 +402,7 @@
         },
 
         sampleAndReport: function(force) {
-            if (!isPageActive() || !renderSettings.colorEnabled) return;
-            if (renderSettings.mode === 'once' && this.hasSampledOnce && !force) return;
+            if (!this.canSample(force)) return;
             try {
                 const strict = (renderSettings.mode === 'once' && !force && !this.isThemeMounted());
                 const color = this.computeTopColor(strict);
@@ -507,30 +417,35 @@
         },
 
         onTargetMutated: function() {
-            if (!isPageActive()) return;
+            if (!this.canSample()) return;
             if (this.debounceTimer) clearTimeout(this.debounceTimer);
             this.debounceTimer = setTimeout(() => {
                 this.debounceTimer = null;
+                if (!this.canSample()) return;
                 this.bindTargets();
                 this.sampleAndReport(false);
                 if (renderSettings.mode === 'once') {
                     if (this.isThemeMounted() && this.lastReportedColor !== null) {
-                        if (this.settleTimer) clearTimeout(this.settleTimer);
-                        this.settleTimer = setTimeout(() => {
-                            this.settleTimer = null;
-                            if (renderSettings.mode === 'once' && isPageActive()) {
-                                this.sampleAndReport(true);
-                                this.hasSampledOnce = true;
-                                this.pause();
-                            }
-                        }, 500);
+                        this.settleOnce(500);
                     }
                 }
             }, 120);
         },
 
+        settleOnce: function(delay) {
+            if (!this.canSample() || renderSettings.mode !== 'once') return;
+            if (this.settleTimer !== null) clearTimeout(this.settleTimer);
+            this.settleTimer = setTimeout(() => {
+                this.settleTimer = null;
+                if (!this.canSample() || renderSettings.mode !== 'once') return;
+                this.sampleAndReport(true);
+                this.hasSampledOnce = true;
+                this.pause();
+            }, delay);
+        },
+
         initObserver: function() {
-            if (!isPageActive() || !window.MutationObserver) return;
+            if (!this.canSample() || !window.MutationObserver) return;
             try {
                 if (!this.observer) this.observer = new MutationObserver(() => this.onTargetMutated());
                 this.bindTargets();
@@ -538,7 +453,7 @@
         },
 
         bindTargets: function() {
-            if (!this.observer || !isPageActive()) return;
+            if (!this.observer || !this.canSample()) return;
             this.observer.disconnect();
             const candidates = [
                 document.documentElement,
@@ -567,20 +482,21 @@
             this.debounceTimer = null;
             if (this.settleTimer !== null) clearTimeout(this.settleTimer);
             this.settleTimer = null;
+            if (chameleonStartupTimer !== null) clearTimeout(chameleonStartupTimer);
+            chameleonStartupTimer = null;
             if (this.observer) this.observer.disconnect();
         }
     };
     window.__scChameleonEngine = chameleonEngine;
 
-    let chameleonStartupTimer = null;
-
-    function startChameleon() {
-        if (!isPageActive() || !renderSettings.colorEnabled) return;
+    function startChameleon(force) {
+        if (!chameleonEngine.canSample()) return;
         chameleonEngine.initObserver();
-        chameleonEngine.sampleAndReport(false);
+        chameleonEngine.sampleAndReport(force);
         if (chameleonStartupTimer !== null) clearTimeout(chameleonStartupTimer);
         chameleonStartupTimer = setTimeout(() => {
             chameleonStartupTimer = null;
+            if (!chameleonEngine.canSample()) return;
             chameleonEngine.bindTargets();
             chameleonEngine.sampleAndReport(false);
             if (renderSettings.mode === 'once' && !chameleonEngine.hasSampledOnce && isPageActive()) {
@@ -598,6 +514,10 @@
         }, { once: true });
     }
     startChameleon();
+    if (renderSettings.mode === 'once' && chameleonEngine.isThemeMounted() &&
+        chameleonEngine.lastReportedColor !== null) {
+        chameleonEngine.settleOnce(400);
+    }
 
     // ========================================================
     // 5. DOM MUTATION BATCHER (突变监控与聚合，HUD 按需挂载)
@@ -657,103 +577,257 @@
     }
 
     // ========================================================
-    // 6. 根除图层爆炸与物理沙箱 (Layer Explosion Elimination & Containment)
-    // 永久保留全站毛玻璃与投影，滑屏绝对零降级
+    // 6. 基础布局与可选性能样式 (Mandatory Layout & Optional Containment)
     // ========================================================
-    function setupVirtualizationAndContainment() {
-        if (disposed || document.getElementById('sc-p1-containment')) return;
+    let mandatoryStyle = null;
+    let performanceStyle = null;
+    let performancePresetActive = false;
+
+    function setupMandatoryLayout() {
+        if (disposed || mandatoryStyle || !document.head) return;
         const style = document.createElement('style');
-        style.id = 'sc-p1-containment';
+        style.id = 'sc-render-layout';
         style.textContent = `
-            /* 1. 消除外层 html/body 双重滚动分层争抢，让单一物理滚动图层收敛在 #chat */
             html, body {
                 overflow: hidden !important;
                 height: 100% !important;
-                overscroll-behavior: none !important;
-                text-rendering: optimizeSpeed !important; /* 文字排版提速：跳过昂贵的字偶间距计算 */
             }
             #chat {
-                overscroll-behavior-y: contain !important;
                 -webkit-overflow-scrolling: touch !important;
-                transform: translateZ(0); /* 唯一主滚动硬件合成层 */
-                will-change: scroll-position;
-                touch-action: pan-y pinch-zoom; /* 纵向滑动直通合成器，绕过主线程 JS 计算 */
-                scroll-behavior: auto !important; /* 禁用软滚动引起的物理衰减撕裂 */
-                text-rendering: optimizeSpeed !important;
+                touch-action: pan-y pinch-zoom;
             }
-            /* 2. 现代输入框原生尺寸通道：消除 JS 频繁读取 scrollHeight 造成的强制回流 */
             #send_textarea {
                 field-sizing: content !important;
                 max-height: 160px !important;
-                contain: layout style !important;
             }
-            /* 3. 根除图层爆炸：历史消息坚决不加 translateZ(0)，使用纯局部布局与重绘隔离 */
-            #chat .mes {
-                contain: layout style !important;
-            }
-            /* 仅最新一条正在生成变动的消息赋予独立硬件层，杜绝动态生成时重绘静态历史消息 */
-            #chat .mes:last-child {
-                transform: translateZ(0);
-            }
-            /* 头像与静态资源局部绘制隔离：杜绝 GIF 头像扩散重绘 */
-            .mes_avatar {
-                contain: paint layout !important;
-                user-select: none !important;
-                -webkit-user-select: none !important;
-            }
-            /* 4. 图片 GPU 显存自动释放通道：离屏自动释放解码纹理，视口自动后台异步光栅化 */
-            #chat img {
-                content-visibility: auto;
-                contain-intrinsic-size: auto 120px;
-                decoding: async !important;
-            }
-            /* 5. 打字光标与旋转动效独立硬件层隔离：闪烁时绝对不重绘消息文字 */
-            .typing_indicator, .cursor, .typing, .spinner, .rotating {
-                will-change: opacity, transform !important;
-                transform: translateZ(0) !important;
-            }
-            /* 代码块、复杂表格与公式横向滚动沙箱：防止撑破气泡与垂直滑动偏航 */
             #chat .mes_text pre,
             #chat .mes_text table,
             #chat .katex-display {
                 max-width: 100% !important;
                 overflow-x: auto !important;
                 -webkit-overflow-scrolling: touch !important;
-                contain: layout paint;
             }
-            /* 消除移动端 300ms 点击延迟与双击探测 */
             button, .menu_button, .drawer-toggle, #send_but {
                 touch-action: manipulation;
-            }
-            /* 离屏冻结类：挂起不可见视口元素的 CSS 动画 */
-            .__sc-anim-frozen, .__sc-anim-frozen * {
-                animation-play-state: paused !important;
             }
             * {
                 -webkit-tap-highlight-color: transparent !important;
             }
         `;
         document.head.appendChild(style);
-        engineState.virtualizationActive = true;
+        mandatoryStyle = style;
     }
     if (document.head) {
-        setupVirtualizationAndContainment();
+        setupMandatoryLayout();
     } else {
-        listen(document, 'DOMContentLoaded', setupVirtualizationAndContainment, { once: true });
+        listen(document, 'DOMContentLoaded', () => {
+            setupMandatoryLayout();
+            syncPerformancePreset();
+        }, { once: true });
+    }
+
+    function setupPerformanceStyle() {
+        if (performanceStyle || !document.head) return;
+        const style = document.createElement('style');
+        style.id = 'sc-performance-preset';
+        style.textContent = `
+            html, body {
+                overscroll-behavior: none !important;
+                text-rendering: optimizeSpeed !important;
+            }
+            #chat {
+                overscroll-behavior: contain;
+                overscroll-behavior-y: contain !important;
+                contain: layout style paint;
+                isolation: isolate;
+                transform: translateZ(0);
+                will-change: scroll-position;
+                scroll-behavior: auto !important;
+                text-rendering: optimizeSpeed !important;
+            }
+            #send_textarea {
+                contain: layout style !important;
+            }
+            .mes {
+                contain: layout style;
+            }
+            .mes_text {
+                contain: content;
+            }
+            #chat .mes {
+                contain: layout style !important;
+            }
+            #chat .mes:last-child {
+                transform: translateZ(0);
+            }
+            .mes_avatar {
+                contain: paint layout !important;
+                user-select: none !important;
+                -webkit-user-select: none !important;
+            }
+            #chat img {
+                content-visibility: auto;
+                contain-intrinsic-size: auto 120px;
+                decoding: async !important;
+            }
+            .character_select {
+                content-visibility: auto;
+                contain-intrinsic-size: auto 72px;
+            }
+            .recentChat {
+                content-visibility: auto;
+                contain-intrinsic-size: auto 58px;
+            }
+            #top-bar, #send_form {
+                will-change: transform;
+            }
+            .typing_indicator, .cursor, .typing, .spinner, .rotating {
+                will-change: opacity, transform !important;
+                transform: translateZ(0) !important;
+            }
+            #chat .mes_text pre,
+            #chat .mes_text table,
+            #chat .katex-display {
+                contain: layout paint;
+            }
+            body:has(.drawer-content.openDrawer) #chat,
+            body:has(.drawer-content[style*="display: block"]) #chat,
+            body:has(.popup[open]) #chat,
+            body:has(.popup[opening]) #chat {
+                backdrop-filter: none !important;
+                -webkit-backdrop-filter: none !important;
+            }
+            .__sc-anim-frozen, .__sc-anim-frozen * {
+                animation-play-state: paused !important;
+            }
+        `;
+        document.head.appendChild(style);
+        performanceStyle = style;
+        engineState.virtualizationActive = true;
+    }
+
+    let drawerPatch = null;
+    const drawerAnimations = new Map();
+
+    function settleDrawerAnimation(entry) {
+        entry.animation.onfinish = null;
+        try {
+            entry.complete();
+        } finally {
+            entry.animation.cancel();
+            if (drawerAnimations.get(entry.element) === entry) drawerAnimations.delete(entry.element);
+        }
+    }
+
+    function installDrawerAnimations() {
+        const jq = window.jQuery;
+        if (drawerPatch || !jq || !jq.fn) return;
+        const originals = {
+            slideToggle: jq.fn.slideToggle,
+            slideDown: jq.fn.slideDown,
+            slideUp: jq.fn.slideUp
+        };
+        if (Object.values(originals).some(method => typeof method !== 'function')) return;
+        const patch = { jq, originals, methods: {} };
+        drawerPatch = patch;
+        window.__scSlideTogglePatched = true;
+        const selector = '.inline-drawer-content';
+        const isHidden = element => element.style.display === 'none' ||
+            window.getComputedStyle(element).display === 'none';
+        const fastAnimate = (element, toOpen, callback) => {
+            const previous = drawerAnimations.get(element);
+            if (previous) settleDrawerAnimation(previous);
+            let completed = false;
+            const complete = () => {
+                if (completed) return;
+                completed = true;
+                if (!toOpen) element.style.display = 'none';
+                if (typeof callback === 'function') callback.call(element);
+            };
+            if (toOpen) element.style.display = 'block';
+            try {
+                if (element.animate) {
+                    const animation = element.animate(toOpen ? [
+                        { opacity: 0.15, transform: 'translateY(-4px)' },
+                        { opacity: 1, transform: 'translateY(0)' }
+                    ] : [
+                        { opacity: 1, transform: 'translateY(0)' },
+                        { opacity: 0, transform: 'translateY(-3px)' }
+                    ], {
+                        duration: toOpen ? 90 : 70,
+                        easing: toOpen ? 'cubic-bezier(0.12, 0.98, 0.24, 1)' : 'cubic-bezier(0.4, 0, 1, 1)',
+                        fill: 'forwards'
+                    });
+                    drawerAnimations.set(element, { element, animation, complete });
+                    if (!toOpen) animation.onfinish = complete;
+                    if (toOpen) complete();
+                    return;
+                }
+            } catch(_) {}
+            complete();
+        };
+        for (const name of Object.keys(originals)) {
+            const original = originals[name];
+            const method = function(duration, easing, complete) {
+                if (drawerPatch !== patch || !isPerformancePresetActive()) {
+                    return original.apply(this, arguments);
+                }
+                const callback = typeof easing === 'function' ? easing : complete;
+                const inline = this.filter(selector);
+                const rest = this.not(selector);
+                inline.each(function() {
+                    fastAnimate(this, name === 'slideToggle' ? isHidden(this) : name === 'slideDown', callback);
+                });
+                if (rest.length) original.apply(rest, arguments);
+                return this;
+            };
+            patch.methods[name] = method;
+            jq.fn[name] = method;
+        }
+    }
+
+    function stopDrawerAnimations() {
+        const patch = drawerPatch;
+        drawerPatch = null;
+        if (patch) {
+            for (const name of Object.keys(patch.originals)) {
+                if (patch.jq.fn[name] === patch.methods[name]) patch.jq.fn[name] = patch.originals[name];
+            }
+            window.__scSlideTogglePatched = false;
+        }
+        settleOwnedDrawerAnimations();
+    }
+
+    function settleOwnedDrawerAnimations() {
+        for (const entry of Array.from(drawerAnimations.values())) {
+            try { settleDrawerAnimation(entry); } catch(_) {}
+        }
     }
 
     // ========================================================
-    // 7. 视口外动画挂起冻结 & 图片原型级异步解码
+    // 7. 可选视口外动画观察与挂起
     // ========================================================
     const frozenElements = new Set();
     const observedAnimations = new Set();
     let animObserver = null;
     let animationScanTimer = null;
     let animationIdleId = null;
-    if (window.IntersectionObserver) {
+    let animationGeneration = 0;
+
+    function isPerformancePresetActive() {
+        return performancePresetActive && renderSettings.performancePreset && isPageActive();
+    }
+
+    function animationScanIsCurrent(generation) {
+        return generation === animationGeneration && isPerformancePresetActive() && animObserver !== null;
+    }
+
+    function startAnimationScan() {
+        if (animObserver || !isPerformancePresetActive() || !window.IntersectionObserver) return;
+        const generation = ++animationGeneration;
         try {
-            animObserver = new IntersectionObserver((entries) => {
-                if (!isPageActive()) return;
+            const observer = new IntersectionObserver((entries) => {
+                if (!animationScanIsCurrent(generation) || animObserver !== observer) return;
                 for (let i = 0; i < entries.length; i++) {
                     const entry = entries[i];
                     const target = entry.target;
@@ -770,12 +844,19 @@
             }, {
                 rootMargin: '80px 0px 80px 0px'
             });
+            animObserver = observer;
+            animationScanTimer = setTimeout(() => scheduleIdleScan(generation), 2000);
         } catch(e) {}
     }
 
 
     function scanAndObserveAnimations() {
-        if (!animObserver || !isPageActive()) return;
+        if (!animObserver || !isPerformancePresetActive()) return;
+        for (const entry of Array.from(drawerAnimations.values())) {
+            if (!entry.element.isConnected) {
+                try { settleDrawerAnimation(entry); } catch(_) {}
+            }
+        }
         for (const element of observedAnimations) {
             if (!element.isConnected || !element.matches('.spinner, .rotating, .typing_indicator')) {
                 animObserver.unobserve(element);
@@ -795,17 +876,17 @@
     }
 
     // 利用 requestIdleCallback 在浏览器主线程空闲阶段（>3ms）执行后台扫描，杜绝关键帧竞争
-    function scheduleIdleScan() {
+    function scheduleIdleScan(generation) {
+        if (!animationScanIsCurrent(generation)) return;
         animationScanTimer = null;
-        if (!isPageActive() || !animObserver) return;
         const run = (deadline) => {
+            if (!animationScanIsCurrent(generation)) return;
             animationIdleId = null;
             animationScanTimer = null;
-            if (!isPageActive()) return;
             if (!isCurrentlyInteracting() && (!deadline || deadline.timeRemaining() > 3)) {
                 scanAndObserveAnimations();
             }
-            animationScanTimer = setTimeout(scheduleIdleScan, 4000);
+            animationScanTimer = setTimeout(() => scheduleIdleScan(generation), 4000);
         };
         if (window.requestIdleCallback) {
             animationIdleId = window.requestIdleCallback(run, { timeout: 6000 });
@@ -813,11 +894,8 @@
             animationScanTimer = setTimeout(run, 4000);
         }
     }
-    if (isPageActive() && animObserver) {
-        animationScanTimer = setTimeout(scheduleIdleScan, 2000);
-    }
-
     function pauseAnimationScan() {
+        animationGeneration++;
         if (animationScanTimer !== null) clearTimeout(animationScanTimer);
         animationScanTimer = null;
         if (animationIdleId !== null && window.cancelIdleCallback) {
@@ -825,16 +903,40 @@
         }
         animationIdleId = null;
         if (animObserver) animObserver.disconnect();
+        animObserver = null;
         observedAnimations.clear();
         for (const element of frozenElements) element.classList.remove('__sc-anim-frozen');
         frozenElements.clear();
         engineState.frozenAnimCount = 0;
     }
 
+    function syncPerformancePreset() {
+        if (!disposed && renderSettings.performancePreset) {
+            performancePresetActive = true;
+            setupPerformanceStyle();
+            installDrawerAnimations();
+            if (isPageActive()) {
+                startAnimationScan();
+            } else {
+                pauseAnimationScan();
+                settleOwnedDrawerAnimations();
+            }
+        } else {
+            performancePresetActive = false;
+            pauseAnimationScan();
+            stopDrawerAnimations();
+            if (performanceStyle) performanceStyle.remove();
+            performanceStyle = null;
+            engineState.virtualizationActive = false;
+        }
+        syncInteractionListeners();
+    }
+
     // ========================================================
     // 8. 交互优先调频器 (Zero-Timer Interaction Governor)
     // ========================================================
     let lastInteractionTimestamp = 0;
+    const interactionListeners = [];
     function notifyInteraction() {
         if (!isPageActive()) return;
         lastInteractionTimestamp = performance.now();
@@ -848,9 +950,18 @@
         }
         return true;
     }
-    listen(window, 'touchstart', notifyInteraction, { passive: true, capture: true });
-    listen(window, 'touchmove', notifyInteraction, { passive: true });
-    listen(window, 'scroll', notifyInteraction, { passive: true, capture: true });
+    function syncInteractionListeners() {
+        const needed = isPageActive() && (performancePresetActive || engineState.hudVisible);
+        if (!needed) {
+            for (const remove of interactionListeners.splice(0)) remove();
+            engineState.isInteracting = false;
+            return;
+        }
+        if (interactionListeners.length) return;
+        listen(window, 'touchstart', notifyInteraction, { passive: true, capture: true }, interactionListeners);
+        listen(window, 'touchmove', notifyInteraction, { passive: true }, interactionListeners);
+        listen(window, 'scroll', notifyInteraction, { passive: true, capture: true }, interactionListeners);
+    }
 
     // ========================================================
     // 9. PERFORMANCE MONITOR & HUD (美化对齐 SC 整体前端规范)
@@ -1122,6 +1233,7 @@
 
     function startDiagnostics() {
         if (!isPageActive() || !engineState.hudVisible || hudInterval !== null) return;
+        syncInteractionListeners();
         startFrameLoop();
         startMutationObserver();
         if (window.PerformanceObserver) {
@@ -1154,6 +1266,7 @@
         stopMutationObserver();
         if (longTaskObserver) longTaskObserver.disconnect();
         longTaskObserver = null;
+        syncInteractionListeners();
     }
 
     function cancelHudTransition() {
@@ -1206,9 +1319,7 @@
         stopDiagnostics();
         cancelHudTransition();
         chameleonEngine.pause();
-        if (chameleonStartupTimer !== null) clearTimeout(chameleonStartupTimer);
-        chameleonStartupTimer = null;
-        pauseAnimationScan();
+        syncPerformancePreset();
         engineState.isInteracting = false;
         if (hudElement) {
             hudElement.style.display = engineState.hudVisible ? 'block' : 'none';
@@ -1228,9 +1339,7 @@
         if (resourcesActive) return;
         resourcesActive = true;
         startChameleon();
-        if (animObserver && animationScanTimer === null && animationIdleId === null) {
-            animationScanTimer = setTimeout(scheduleIdleScan, 2000);
-        }
+        syncPerformancePreset();
         if (scheduler.readQueue.length || scheduler.writeQueue.length) scheduler.schedule();
         startDiagnostics();
     }
@@ -1244,8 +1353,11 @@
         scheduler.writeQueue.length = 0;
         for (const remove of ownedListeners.splice(0)) remove();
         for (const restore of patchRestorers.splice(0).reverse()) restore();
+        if (mandatoryStyle) mandatoryStyle.remove();
+        mandatoryStyle = null;
         if (hudElement) hudElement.remove();
         hudElement = null;
+        window.__scRenderEngineInstalled = false;
     }
 
     listen(document, 'visibilitychange', syncPageResources);
@@ -1272,5 +1384,6 @@
         toggleHud: window.__scTogglePerfHud,
         dispose: dispose
     };
+    syncPerformancePreset();
 })();
 

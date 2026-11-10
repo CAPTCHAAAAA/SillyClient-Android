@@ -39,7 +39,6 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.channels.SeekableByteChannel
-import org.apache.commons.compress.archivers.zip.ZipFile as CommonsZipFile
 import org.json.JSONObject
 
 /**
@@ -773,15 +772,7 @@ class TarvenEnvPlugin : Plugin() {
 
     private fun canUseDirectArchiveChannel(uri: Uri): Boolean = runCatching {
         withArchiveChannel(uri) { channel, archiveBytes ->
-            require(archiveBytes >= 22)
-            CommonsZipFile.builder()
-                .setSeekableByteChannel(channel)
-                .setCharset(Charsets.UTF_8)
-                .setUseUnicodeExtraFields(false)
-                .setIgnoreLocalFileHeader(false)
-                .setMaxNumberOfDisks(1)
-                .get()
-                .use { it.entries.hasMoreElements() }
+            com.sillyclient.runtime.ArchiveChannelProbe.canRead(channel, archiveBytes)
         }
     }.getOrDefault(false)
 
@@ -821,7 +812,10 @@ class TarvenEnvPlugin : Plugin() {
                         .put("version", s.version)
                         .put("path", s.path)
                         .put("sizeBytes", s.sizeBytes)
-                        .put("hasServer", s.hasServer))
+                        .put("hasServer", s.hasServer)
+                        .put("createdAt", s.createdAt)
+                        .put("totalUsageMs", s.totalUsageMs)
+                        .also { output -> s.lastUsedAt?.let { output.put("lastUsedAt", it) } })
                 }
                 call.resolve(JSObject().put("instances", arr))
             } catch (error: Exception) {
@@ -846,6 +840,8 @@ class TarvenEnvPlugin : Plugin() {
                 ret.put("path", info.path)
                 ret.put("sizeBytes", info.sizeBytes)
                 ret.put("createdAt", info.createdAt)
+                ret.put("totalUsageMs", info.totalUsageMs)
+                info.lastUsedAt?.let { ret.put("lastUsedAt", it) }
                 ret.put("port", port)
                 ret.put("status", info.status)
                 call.resolve(ret)
@@ -906,12 +902,17 @@ class TarvenEnvPlugin : Plugin() {
     @PluginMethod
     fun setRenderEngineSettings(call: PluginCall) {
         val act = activity as? MainActivity ?: run { call.reject("Not MainActivity"); return }
-        val colorEnabled = call.data.optBoolean("immersiveColor", true)
-        val mode = call.getString("colorExtractionMode") ?: "realtime"
-        val clickEffect = call.data.optBoolean("clickEffect", true)
+        val colorEnabled = call.getBoolean("immersiveColor")
+        val mode = call.getString("colorExtractionMode")
+        val clickEffect = call.getBoolean("clickEffect")
+        val performancePreset = call.getBoolean("performancePreset")
         act.runOnUiThread {
-            act.setRenderEngineSettings(colorEnabled, mode, clickEffect)
-            call.resolve()
+            try {
+                act.setRenderEngineSettings(colorEnabled, mode, clickEffect, performancePreset)
+                call.resolve()
+            } catch (error: Exception) {
+                call.reject("无法保存酒馆渲染设置", error)
+            }
         }
     }
 
@@ -923,6 +924,7 @@ class TarvenEnvPlugin : Plugin() {
         ret.put("immersiveColor", settings.colorEnabled)
         ret.put("colorExtractionMode", settings.mode)
         ret.put("clickEffect", settings.clickEffect)
+        ret.put("performancePreset", settings.performancePreset)
         call.resolve(ret)
     }
 

@@ -61,6 +61,8 @@ object InstanceDataImport {
 
     data class Outcome(val imported: Int, val bytes: Long, val skippedEntries: Int)
 
+    internal data class ImportFileSizes(val incomingBytes: Long, val existingBytes: Long)
+
     private interface ArchiveEntry {
         val name: String
         val isDirectory: Boolean
@@ -168,7 +170,7 @@ object InstanceDataImport {
         val planned = plan(session, limits, includeOptional, ensureActive)
         val summary = planned.summary
         check(summary.importable) { "压缩包里没有可导入的实例数据（$NO_DATA_MESSAGE）" }
-        ensureImportSpace(instanceDir, planned.included)
+        ensureImportSpace(instanceDir, planned.included, ensureActive)
         val buffer = ByteArray(65_536)
         var imported = 0
         var bytes = 0L
@@ -397,18 +399,32 @@ object InstanceDataImport {
         )
     }
 
-    private fun ensureImportSpace(instanceDir: File, entries: List<ArchiveItem>) {
+    internal fun requiredImportSpace(entries: Sequence<ImportFileSizes>): Long {
         var netAdditionalBytes = 0L
-        var largestTemporaryFileBytes = 0L
-        for ((entry, path) in entries) {
-            if (entry.isDirectory) continue
-            val target = File(instanceDir, path)
-            require(ManagedFiles.isWithin(target, instanceDir)) { "导入路径逃逸实例目录" }
-            val existingBytes = if (target.isFile && ManagedFiles.isUnlinked(target)) target.length() else 0L
-            if (entry.size > existingBytes) netAdditionalBytes += entry.size - existingBytes
-            largestTemporaryFileBytes = maxOf(largestTemporaryFileBytes, entry.size)
+        var peakAdditionalBytes = 0L
+        for ((incomingBytes, existingBytes) in entries) {
+            require(incomingBytes >= 0 && existingBytes >= 0) { "Import file sizes must not be negative" }
+            // The old file still occupies space until its complete temporary replacement is published.
+            peakAdditionalBytes = maxOf(peakAdditionalBytes, netAdditionalBytes + incomingBytes)
+            netAdditionalBytes += incomingBytes - existingBytes
         }
-        val requiredBytes = maxOf(netAdditionalBytes, largestTemporaryFileBytes)
+        return peakAdditionalBytes
+    }
+
+    private fun ensureImportSpace(
+        instanceDir: File,
+        entries: List<ArchiveItem>,
+        ensureActive: () -> Unit
+    ) {
+        val requiredBytes = requiredImportSpace(
+            entries.asSequence().filterNot { it.entry.isDirectory }.map { (entry, path) ->
+                ensureActive()
+                val target = File(instanceDir, path)
+                require(ManagedFiles.isWithin(target, instanceDir)) { "导入路径逃逸实例目录" }
+                val existingBytes = if (target.isFile && ManagedFiles.isUnlinked(target)) target.length() else 0L
+                ImportFileSizes(entry.size, existingBytes)
+            }
+        )
         val availableBytes = (instanceDir.usableSpace - STORAGE_RESERVE_BYTES).coerceAtLeast(0)
         check(requiredBytes <= availableBytes) {
             "设备可用空间不足：预计需要 ${formatBytes(requiredBytes)}，当前可用 ${formatBytes(availableBytes)}"

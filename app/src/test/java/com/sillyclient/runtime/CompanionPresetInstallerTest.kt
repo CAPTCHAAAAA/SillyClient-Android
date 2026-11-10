@@ -39,7 +39,7 @@ class CompanionPresetInstallerTest {
 
         assertEquals("sc-bordeaux", manifest.getString("bundleId"))
         assertEquals(CompanionPresetInstaller.REVISION, manifest.getInt("revision"))
-        assertEquals(2, CompanionPresetInstaller.REVISION)
+        assertEquals(3, CompanionPresetInstaller.REVISION)
 
         val themeBytes = realAssetReader("companion-presets/sc-bordeaux/themes/SC Bordeaux.json")
         val theme = JSONObject(themeBytes.toString(StandardCharsets.UTF_8))
@@ -53,7 +53,7 @@ class CompanionPresetInstallerTest {
             val tx = CompanionPresetInstaller.installInternal(
                 ::realAssetReader,
                 serverDir,
-                CompanionPresetRequest(bundleId = "sc-bordeaux", revision = 2)
+                CompanionPresetRequest(bundleId = "sc-bordeaux", revision = 3)
             )
             assertTrue("Fresh install must apply transaction", tx.applied)
             tx.commit()
@@ -69,7 +69,7 @@ class CompanionPresetInstallerTest {
             assertTrue(settingsFile.isFile)
 
             val marker = JSONObject(markerFile.readText())
-            assertEquals(2, marker.getInt("revision"))
+            assertEquals(3, marker.getInt("revision"))
 
             val settings = JSONObject(settingsFile.readText())
             val powerUser = settings.getJSONObject("power_user")
@@ -87,7 +87,7 @@ class CompanionPresetInstallerTest {
             val tx1 = CompanionPresetInstaller.installInternal(
                 ::realAssetReader,
                 serverDir,
-                CompanionPresetRequest(bundleId = "sc-bordeaux", revision = 2)
+                CompanionPresetRequest(bundleId = "sc-bordeaux", revision = 3)
             )
             assertTrue(tx1.applied)
             tx1.commit()
@@ -95,7 +95,7 @@ class CompanionPresetInstallerTest {
             val tx2 = CompanionPresetInstaller.installInternal(
                 ::realAssetReader,
                 serverDir,
-                CompanionPresetRequest(bundleId = "sc-bordeaux", revision = 2)
+                CompanionPresetRequest(bundleId = "sc-bordeaux", revision = 3)
             )
             assertFalse("Second run should be no-op", tx2.applied)
         } finally {
@@ -141,7 +141,7 @@ class CompanionPresetInstallerTest {
             tx.commit()
 
             val updatedMarker = JSONObject(markerFile.readText())
-            assertEquals(2, updatedMarker.getInt("revision"))
+            assertEquals(3, updatedMarker.getInt("revision"))
 
             val updatedSettings = JSONObject(settingsFile.readText())
             val powerUser = updatedSettings.getJSONObject("power_user")
@@ -186,7 +186,7 @@ class CompanionPresetInstallerTest {
             tx.commit()
 
             val updatedMarker = JSONObject(markerFile.readText())
-            assertEquals(2, updatedMarker.getInt("revision"))
+            assertEquals(3, updatedMarker.getInt("revision"))
 
             // Verify SC Bordeaux theme file on disk is upgraded to new version
             val themeFile = File(serverDir, "data/default-user/themes/SC Bordeaux.json")

@@ -277,48 +277,68 @@ class RuntimeConfiguration(
                     IN_TREE: 'tree',
                   };
                   function simpleGit(optionsOrPath) {
-                    const baseDir = typeof optionsOrPath === 'string'
+                    const requestedBaseDir = typeof optionsOrPath === 'string'
                       ? optionsOrPath
                       : (optionsOrPath && optionsOrPath.baseDir) || process.cwd();
+                    let baseDir = path.resolve(requestedBaseDir);
+                    try { baseDir = fs.realpathSync(baseDir); } catch (_) {}
                     ensureExtensionGitRepo(baseDir);
                     async function doFetch() {
                       const url = getOriginUrl(baseDir);
-                      if (!url) return;
+                      if (!url) { fetchCache.delete(baseDir); return; }
                       const now = Date.now();
                       const cached = fetchCache.get(baseDir);
-                      if (cached && now - cached.time < 3000) return cached.refs;
-                      const refs = await isomorphicGit.listServerRefs({
-                        http,
-                        url,
-                        symrefs: true,
-                        prefix: 'refs/heads/',
-                      });
-                      for (const r of refs) {
-                        if (r.ref && r.ref.startsWith('refs/heads/') && isSha(r.oid)) {
-                          const branchName = r.ref.slice('refs/heads/'.length);
-                          const dest = path.join(baseDir, '.git/refs/remotes/origin', branchName);
-                          fs.mkdirSync(path.dirname(dest), { recursive: true });
-                          fs.writeFileSync(dest, r.oid.toLowerCase() + '\n');
-                        }
+                      if (cached && cached.url === url) {
+                        if (cached.promise) return cached.promise;
+                        if (now >= cached.time && now - cached.time < 3000) return cached.refs;
                       }
-                      const head = getHeadInfo(baseDir);
-                      if (!head.detached && head.current && refs.length > 0) {
-                        const hasCurrentOnRemote = refs.some(r => r.ref === 'refs/heads/' + head.current);
-                        if (!hasCurrentOnRemote) {
-                          const fallbackRef = refs.find(r => r.ref === 'refs/heads/master') || refs[0];
-                          const fallbackBranch = fallbackRef.ref.slice('refs/heads/'.length);
-                          const oldHeadOid = head.oid || '1111111111111111111111111111111111111111';
-                          const newHeadPath = path.join(baseDir, '.git/refs/heads', fallbackBranch);
-                          fs.mkdirSync(path.dirname(newHeadPath), { recursive: true });
-                          if (!fs.existsSync(newHeadPath)) fs.writeFileSync(newHeadPath, oldHeadOid + '\n');
-                          fs.writeFileSync(path.join(baseDir, '.git/HEAD'), 'ref: refs/heads/' + fallbackBranch + '\n');
-                          const aliasDest = path.join(baseDir, '.git/refs/remotes/origin', head.current);
-                          fs.mkdirSync(path.dirname(aliasDest), { recursive: true });
-                          fs.writeFileSync(aliasDest, fallbackRef.oid.toLowerCase() + '\n');
+                      const entry = { url, promise: null, time: 0, refs: null };
+                      fetchCache.set(baseDir, entry);
+                      entry.promise = (async () => {
+                        try {
+                          const refs = await isomorphicGit.listServerRefs({
+                            http,
+                            url,
+                            symrefs: true,
+                            prefix: 'refs/heads/',
+                          });
+                          // A remote change or checkout must invalidate both cached and in-flight results.
+                          if (fetchCache.get(baseDir) !== entry || getOriginUrl(baseDir) !== url) return refs;
+                          for (const r of refs) {
+                            if (r.ref && r.ref.startsWith('refs/heads/') && isSha(r.oid)) {
+                              const branchName = r.ref.slice('refs/heads/'.length);
+                              const dest = path.join(baseDir, '.git/refs/remotes/origin', branchName);
+                              fs.mkdirSync(path.dirname(dest), { recursive: true });
+                              fs.writeFileSync(dest, r.oid.toLowerCase() + '\n');
+                            }
+                          }
+                          const head = getHeadInfo(baseDir);
+                          if (!head.detached && head.current && refs.length > 0) {
+                            const hasCurrentOnRemote = refs.some(r => r.ref === 'refs/heads/' + head.current);
+                            if (!hasCurrentOnRemote) {
+                              const fallbackRef = refs.find(r => r.ref === 'refs/heads/master') || refs[0];
+                              const fallbackBranch = fallbackRef.ref.slice('refs/heads/'.length);
+                              const oldHeadOid = head.oid || '1111111111111111111111111111111111111111';
+                              const newHeadPath = path.join(baseDir, '.git/refs/heads', fallbackBranch);
+                              fs.mkdirSync(path.dirname(newHeadPath), { recursive: true });
+                              if (!fs.existsSync(newHeadPath)) fs.writeFileSync(newHeadPath, oldHeadOid + '\n');
+                              fs.writeFileSync(path.join(baseDir, '.git/HEAD'), 'ref: refs/heads/' + fallbackBranch + '\n');
+                              const aliasDest = path.join(baseDir, '.git/refs/remotes/origin', head.current);
+                              fs.mkdirSync(path.dirname(aliasDest), { recursive: true });
+                              fs.writeFileSync(aliasDest, fallbackRef.oid.toLowerCase() + '\n');
+                            }
+                          }
+                          entry.refs = refs;
+                          entry.time = Date.now();
+                          return refs;
+                        } finally {
+                          if (fetchCache.get(baseDir) === entry) {
+                            if (entry.refs) entry.promise = null;
+                            else fetchCache.delete(baseDir);
+                          }
                         }
-                      }
-                      fetchCache.set(baseDir, { time: Date.now(), refs });
-                      return refs;
+                      })();
+                      return entry.promise;
                     }
                     return {
                       async checkIsRepo() {
@@ -404,40 +424,12 @@ class RuntimeConfiguration(
                         return cleanUrl ? [{ name: 'origin', refs: { fetch: cleanUrl, push: cleanUrl } }] : [];
                       },
                       async pull(_remote = 'origin', branch) {
-                        const head = getHeadInfo(baseDir);
-                        const targetBranch = branch || head.current || 'main';
-                        const url = getOriginUrl(baseDir);
-                        if (!url) throw new Error('No origin remote configured');
-                        const fetchRes = await isomorphicGit.fetch({
-                          fs,
-                          http,
-                          dir: baseDir,
-                          url,
-                          ref: targetBranch,
-                          depth: 1,
-                          singleBranch: true,
-                          tags: false,
-                        });
-                        const latestOid = (fetchRes && fetchRes.fetchHead) || readRef(baseDir, 'refs/remotes/origin/' + targetBranch);
-                        if (!latestOid) throw new Error('Unable to resolve remote HEAD for ' + targetBranch);
-                        const localRefFile = path.join(baseDir, '.git/refs/heads', targetBranch);
-                        fs.mkdirSync(path.dirname(localRefFile), { recursive: true });
-                        fs.writeFileSync(localRefFile, latestOid + '\n');
-                        const remoteRefFile = path.join(baseDir, '.git/refs/remotes/origin', targetBranch);
-                        fs.mkdirSync(path.dirname(remoteRefFile), { recursive: true });
-                        fs.writeFileSync(remoteRefFile, latestOid + '\n');
-                        fs.writeFileSync(path.join(baseDir, '.git/HEAD'), 'ref: refs/heads/' + targetBranch + '\n');
-                        await isomorphicGit.checkout({ fs, dir: baseDir, ref: targetBranch, force: true });
                         fetchCache.delete(baseDir);
-                        return {};
-                      },
-                      async remote() {
-                        return '';
-                      },
-                      async checkout(branch) {
-                        const targetBranch = String(branch).replace(/^origin\//, '');
-                        const url = getOriginUrl(baseDir);
-                        if (url) {
+                        try {
+                          const head = getHeadInfo(baseDir);
+                          const targetBranch = branch || head.current || 'main';
+                          const url = getOriginUrl(baseDir);
+                          if (!url) throw new Error('No origin remote configured');
                           const fetchRes = await isomorphicGit.fetch({
                             fs,
                             http,
@@ -448,15 +440,48 @@ class RuntimeConfiguration(
                             singleBranch: true,
                             tags: false,
                           });
-                          const oid = (fetchRes && fetchRes.fetchHead) || readRef(baseDir, 'refs/remotes/origin/' + targetBranch);
-                          if (oid) {
-                            const localRefFile = path.join(baseDir, '.git/refs/heads', targetBranch);
-                            fs.mkdirSync(path.dirname(localRefFile), { recursive: true });
-                            fs.writeFileSync(localRefFile, oid + '\n');
+                          const latestOid = (fetchRes && fetchRes.fetchHead) || readRef(baseDir, 'refs/remotes/origin/' + targetBranch);
+                          if (!latestOid) throw new Error('Unable to resolve remote HEAD for ' + targetBranch);
+                          const localRefFile = path.join(baseDir, '.git/refs/heads', targetBranch);
+                          fs.mkdirSync(path.dirname(localRefFile), { recursive: true });
+                          fs.writeFileSync(localRefFile, latestOid + '\n');
+                          const remoteRefFile = path.join(baseDir, '.git/refs/remotes/origin', targetBranch);
+                          fs.mkdirSync(path.dirname(remoteRefFile), { recursive: true });
+                          fs.writeFileSync(remoteRefFile, latestOid + '\n');
+                          fs.writeFileSync(path.join(baseDir, '.git/HEAD'), 'ref: refs/heads/' + targetBranch + '\n');
+                          await isomorphicGit.checkout({ fs, dir: baseDir, ref: targetBranch, force: true });
+                          return {};
+                        } finally { fetchCache.delete(baseDir); }
+                      },
+                      async remote() {
+                        return '';
+                      },
+                      async checkout(branch) {
+                        fetchCache.delete(baseDir);
+                        try {
+                          const targetBranch = String(branch).replace(/^origin\//, '');
+                          const url = getOriginUrl(baseDir);
+                          if (url) {
+                            const fetchRes = await isomorphicGit.fetch({
+                              fs,
+                              http,
+                              dir: baseDir,
+                              url,
+                              ref: targetBranch,
+                              depth: 1,
+                              singleBranch: true,
+                              tags: false,
+                            });
+                            const oid = (fetchRes && fetchRes.fetchHead) || readRef(baseDir, 'refs/remotes/origin/' + targetBranch);
+                            if (oid) {
+                              const localRefFile = path.join(baseDir, '.git/refs/heads', targetBranch);
+                              fs.mkdirSync(path.dirname(localRefFile), { recursive: true });
+                              fs.writeFileSync(localRefFile, oid + '\n');
+                            }
                           }
-                        }
-                        fs.writeFileSync(path.join(baseDir, '.git/HEAD'), 'ref: refs/heads/' + targetBranch + '\n');
-                        await isomorphicGit.checkout({ fs, dir: baseDir, ref: targetBranch, force: true });
+                          fs.writeFileSync(path.join(baseDir, '.git/HEAD'), 'ref: refs/heads/' + targetBranch + '\n');
+                          await isomorphicGit.checkout({ fs, dir: baseDir, ref: targetBranch, force: true });
+                        } finally { fetchCache.delete(baseDir); }
                       },
                       async checkoutBranch(localBranch, startPoint) {
                         await this.checkout(localBranch || startPoint);

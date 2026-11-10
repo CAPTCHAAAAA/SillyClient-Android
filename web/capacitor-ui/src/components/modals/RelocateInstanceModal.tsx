@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef, useLayoutEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
+import { Capacitor } from "@capacitor/core";
 import {
   X,
   AlertCircle,
@@ -10,6 +11,8 @@ import { LAYERS } from "../../constants/layers";
 import { LayerBackdrop } from "../common/LayerBackdrop";
 import { TarvenEnv } from "../../capacitor-plugin";
 import type { TavernInstance } from "../../types";
+import { cleanInstallPath, installationSelection, relocationTargetInParent } from "../../lib/install-location";
+import { humanizeNativeError } from "../../lib/native-errors";
 
 
 export interface RelocateInstanceModalProps {
@@ -22,11 +25,20 @@ export interface RelocateInstanceModalProps {
   onRelocated?: (instanceId: string, newPath: string) => void;
 }
 
+interface InstanceSourcePath {
+  instanceId: string;
+  installDir?: string;
+  installPath?: string;
+  status: "loading" | "confirmed" | "failed";
+  path: string;
+  error: string | null;
+}
+
 /**
  * 单实例存储路径无损重定位弹窗 (RelocateInstanceModal)
  * 1. 采用阻断级 Z-Index (LAYERS.DIALOG_SURFACE 与 LAYERS.DIALOG_BACKDROP)；
  * 2. 具有物理弹性入场与离场动画 (.animate-modal-dialog)；
- * 3. 默认目录与自定义目录通过 motion-panel-stack / motion-panel-face 实现平滑高度跟随与交叉溶变；
+ * 3. 目标目录只允许通过目录选择器或路径输入指定；
  * 4. 彻底去除冗余方框嵌套与对勾图标，控件字体与交互行为 100% 对齐向导；
  * 5. 底部保留关于受管实例直接无损迁移的设计哲学说明。
  */
@@ -39,61 +51,44 @@ export const RelocateInstanceModal: React.FC<RelocateInstanceModalProps> = ({
   glassBg,
   onRelocated,
 }) => {
-  const [targetMode, setTargetMode] = useState<"default" | "custom">("default");
+  const isAndroid = Capacitor.getPlatform() === "android";
   const [customPath, setCustomPath] = useState("");
-  const [currentRealPath, setCurrentRealPath] = useState<string>("");
+  const [sourcePath, setSourcePath] = useState<InstanceSourcePath | null>(null);
   const [migrating, setMigrating] = useState(false);
+  const [pickingDirectory, setPickingDirectory] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successInfo, setSuccessInfo] = useState<{ newPath: string } | null>(null);
-
-  const panelContainerRef = useRef<HTMLDivElement>(null);
-  const defaultFaceRef = useRef<HTMLDivElement>(null);
-  const customFaceRef = useRef<HTMLDivElement>(null);
-  const [panelHeight, setPanelHeight] = useState<number | null>(null);
-
-  // 平滑自适应高度测量与交叉溶变过渡
-  useLayoutEffect(() => {
-    if (!isOpen) return;
-    const targetEl = targetMode === "default" ? defaultFaceRef.current : customFaceRef.current;
-    if (!targetEl) return;
-
-    const measureHeight = (entry?: ResizeObserverEntry) => {
-      const h = entry?.borderBoxSize?.[0]?.blockSize ?? targetEl.offsetHeight;
-      if (h > 0) {
-        setPanelHeight(Math.ceil(h));
-      }
-    };
-
-    measureHeight();
-
-    if (typeof ResizeObserver !== "undefined") {
-      const ro = new ResizeObserver(([entry]) => {
-        measureHeight(entry);
-      });
-      ro.observe(targetEl);
-      return () => ro.disconnect();
-    }
-  }, [targetMode, isOpen, customPath]);
-
-  const handleSwitchMode = (mode: "default" | "custom") => {
-    if (mode === targetMode) return;
-    if (panelContainerRef.current) {
-      setPanelHeight(panelContainerRef.current.offsetHeight);
-    }
-    setTargetMode(mode);
-  };
+  const directoryPickerGeneration = useRef(0);
 
   useEffect(() => {
+    setErrorMsg(null);
+    setSuccessInfo(null);
+    setMigrating(false);
+    setCustomPath("");
+  }, [isOpen, instance?.id]);
+
+  useEffect(() => {
+    directoryPickerGeneration.current += 1;
+    setPickingDirectory(false);
     if (!isOpen || !instance) {
-      setErrorMsg(null);
-      setSuccessInfo(null);
-      setMigrating(false);
-      setTargetMode("default");
-      setCustomPath("");
+      setSourcePath(null);
       return;
     }
 
-    // 获取当前实例的真实物理路径
+    const identity = {
+      instanceId: instance.id,
+      installDir: instance.installDir,
+      installPath: instance.installPath,
+    };
+    setSourcePath({
+      ...identity,
+      status: "loading",
+      path: isAndroid ? "" : instance.installPath || "",
+      error: null,
+    });
+
+    // 原生确认的源路径只属于发起查询时的实例身份。
+    let active = true;
     const safeId = instance.installDir || instance.id;
     TarvenEnv.getInstanceInfo({
       instanceId: safeId,
@@ -101,60 +96,102 @@ export const RelocateInstanceModal: React.FC<RelocateInstanceModalProps> = ({
       port: instance.port ?? 8000,
     })
       .then((info) => {
-        if (info.path) setCurrentRealPath(info.path);
-        else setCurrentRealPath(instance.installPath || "—");
+        if (!active) return;
+        const path = isAndroid ? cleanInstallPath(info.path || "") || "" : info.path || instance.installPath || "—";
+        setSourcePath({
+          ...identity,
+          status: isAndroid && !path ? "failed" : "confirmed",
+          path,
+          error: isAndroid && !path ? "无法确认实例的实际存储目录：原生未返回有效路径，请重新打开后重试。" : null,
+        });
       })
-      .catch(() => {
-        setCurrentRealPath(instance.installPath || "—");
+      .catch((error) => {
+        if (!active) return;
+        const reason = humanizeNativeError(error instanceof Error ? error.message : String(error));
+        setSourcePath({
+          ...identity,
+          status: "failed",
+          path: isAndroid ? "" : instance.installPath || "—",
+          error: isAndroid ? `无法读取实例的实际存储目录：${reason}` : null,
+        });
       });
-  }, [isOpen, instance]);
+    return () => {
+      active = false;
+      directoryPickerGeneration.current += 1;
+    };
+  }, [isOpen, instance?.id, instance?.installDir, instance?.installPath, isAndroid]);
 
   if (!isOpen && !isClosing) return null;
   if (!instance) return null;
 
-  const isRunning = instance.status === "running";
+  const isRunning = instance.status === "running" || instance.status === "online";
+  const instanceSourcePath = sourcePath?.instanceId === instance.id &&
+    sourcePath.installDir === instance.installDir && sourcePath.installPath === instance.installPath
+      ? sourcePath : null;
+  const hasConfirmedSourcePath = isOpen && !isClosing && instanceSourcePath?.status === "confirmed";
+  const currentRealPath = instanceSourcePath?.path || (isAndroid ? "" : instance.installPath || "");
+  const visibleError = errorMsg || (isAndroid ? instanceSourcePath?.error : null);
 
   const handlePickDirectory = async () => {
+    if (pickingDirectory || migrating) return;
+    const generation = ++directoryPickerGeneration.current;
+    setPickingDirectory(true);
+    setErrorMsg(null);
     try {
-      const res = await (TarvenEnv as any).pickDirectory({
-        title: "选择实例迁移的目标目录",
-      });
-      if (res?.path) {
-        setCustomPath(res.path.replace(/^["']|["']$/g, "").trim());
+      const selection = installationSelection(await TarvenEnv.pickDirectory({ purpose: "installation" }));
+      if (generation !== directoryPickerGeneration.current) return;
+      if (isAndroid) {
+        try {
+          await TarvenEnv.setInstancesRoot({ path: selection.path });
+        } catch (error) {
+          if (generation !== directoryPickerGeneration.current) return;
+          setCustomPath("");
+          const reason = humanizeNativeError(error instanceof Error ? error.message : String(error));
+          setErrorMsg(`该文件夹不能作为实例存放位置：${reason}`);
+          return;
+        }
       }
-    } catch {
-      /* ignore */
+      if (generation === directoryPickerGeneration.current) setCustomPath(selection.path);
+    } catch (error) {
+      if (generation !== directoryPickerGeneration.current) return;
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/cancel|取消/i.test(message)) setErrorMsg(humanizeNativeError(message));
+    } finally {
+      if (generation === directoryPickerGeneration.current) setPickingDirectory(false);
     }
   };
 
   const handleExecuteRelocate = async () => {
-    if (isRunning || migrating) return;
+    if (isRunning || migrating || pickingDirectory) return;
+    if (isAndroid && !hasConfirmedSourcePath) return;
+    const generation = directoryPickerGeneration.current;
     setErrorMsg(null);
     setMigrating(true);
 
     try {
       const safeId = instance.installDir || instance.id;
-      const target = targetMode === "custom" ? customPath.trim() : undefined;
-
-      if (targetMode === "custom" && !target) {
-        throw new Error("请先选择或输入自定义目标目录");
-      }
+      const selected = cleanInstallPath(customPath);
+      if (!selected) throw new Error("请先选择目标目录");
+      const target = isAndroid ? relocationTargetInParent(selected, currentRealPath) : selected;
 
       const res = await TarvenEnv.relocateInstance({
         instanceId: safeId,
         targetPath: target,
+        installPath: instance.installPath,
       });
 
       if (res.success) {
-        setSuccessInfo({ newPath: res.newPath });
         onRelocated?.(instance.id, res.newPath);
+        if (generation === directoryPickerGeneration.current) setSuccessInfo({ newPath: res.newPath });
       } else {
         throw new Error("迁移未成功完成");
       }
-    } catch (err: any) {
-      setErrorMsg(err?.message || "迁移失败，请检查路径权限后重试");
+    } catch (error) {
+      if (generation === directoryPickerGeneration.current) {
+        setErrorMsg(humanizeNativeError(error instanceof Error ? error.message : "迁移失败，请检查路径权限后重试"));
+      }
     } finally {
-      setMigrating(false);
+      if (generation === directoryPickerGeneration.current) setMigrating(false);
     }
   };
 
@@ -234,7 +271,7 @@ export const RelocateInstanceModal: React.FC<RelocateInstanceModalProps> = ({
               </span>
             </div>
             <div className="text-[11px] font-mono break-all opacity-45 leading-relaxed">
-              当前路径: {currentRealPath || "读取中..."}
+              当前路径: {currentRealPath || (instanceSourcePath?.status === "failed" ? "无法读取" : "读取中...")}
             </div>
           </div>
 
@@ -266,88 +303,20 @@ export const RelocateInstanceModal: React.FC<RelocateInstanceModalProps> = ({
             </div>
           ) : (
             <>
-              {/* 目标位置分段切换器 (完全对齐向导模式切换器) */}
               <div className="space-y-1.5">
                 <label className={cn("text-xs font-medium block", isLight ? "text-[#1a1625]/70" : "text-white/70")}>
-                  目标位置
+                  新目标位置
                 </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => handleSwitchMode("default")}
-                    className={cn(
-                      "ios-choice-control py-2 rounded-xl text-xs font-medium transition-all border",
-                      targetMode === "default"
-                        ? isLight
-                          ? "bg-black/[0.08] border-black/15 text-[#1a1625] shadow-sm"
-                          : "bg-white/[0.10] border-white/20 text-white shadow-sm"
-                        : isLight
-                        ? "bg-transparent border-black/[0.06] text-[#1a1625]/35 hover:text-[#1a1625]/75"
-                        : "bg-transparent border-white/[0.06] text-white/35 hover:text-white/75"
-                    )}
-                  >
-                    默认目录 (instances/)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleSwitchMode("custom")}
-                    className={cn(
-                      "ios-choice-control py-2 rounded-xl text-xs font-medium transition-all border",
-                      targetMode === "custom"
-                        ? isLight
-                          ? "bg-black/[0.08] border-black/15 text-[#1a1625] shadow-sm"
-                          : "bg-white/[0.10] border-white/20 text-white shadow-sm"
-                        : isLight
-                        ? "bg-transparent border-black/[0.06] text-[#1a1625]/35 hover:text-[#1a1625]/75"
-                        : "bg-transparent border-white/[0.06] text-white/35 hover:text-white/75"
-                    )}
-                  >
-                    自定义目录
-                  </button>
-                </div>
               </div>
 
-              {/* 模式配置切换容器 (平滑高度自适应 + 500ms 交叉溶变过渡) */}
-              <div
-                ref={panelContainerRef}
-                className="motion-panel-stack"
-                style={{ height: panelHeight ? `${panelHeight}px` : undefined }}
-              >
-                {/* 默认目录说明 */}
-                <div
-                  ref={defaultFaceRef}
-                  className={cn(
-                    "motion-panel-face w-full space-y-1.5",
-                    targetMode === "default"
-                      ? "is-active relative pointer-events-auto"
-                      : "absolute inset-x-0 top-0 pointer-events-none select-none"
-                  )}
-                  aria-hidden={targetMode !== "default"}
-                  inert={targetMode !== "default"}
-                >
-                  <p className={cn("text-xs leading-relaxed opacity-60", isLight ? "text-[#1a1625]" : "text-white")}>
-                    将实例完整搬迁至客户端根目录下的 <code className="px-1 py-0.5 rounded bg-black/5 dark:bg-white/10 font-mono text-[11px]">instances/</code> 文件夹，消除 C 盘 AppData 碎片，便携性高且便于全量打包备份。
-                  </p>
-                </div>
-
-                {/* 自定义目录表单 */}
-                <div
-                  ref={customFaceRef}
-                  className={cn(
-                    "motion-panel-face w-full space-y-1.5",
-                    targetMode === "custom"
-                      ? "is-active relative pointer-events-auto"
-                      : "absolute inset-x-0 top-0 pointer-events-none select-none"
-                  )}
-                  aria-hidden={targetMode !== "custom"}
-                  inert={targetMode !== "custom"}
-                >
+              <div className="w-full space-y-1.5">
                   <div className="flex items-center gap-2 w-full">
                     <input
                       type="text"
                       value={customPath}
+                      readOnly={isAndroid}
                       onChange={(e) => setCustomPath(e.target.value)}
-                      placeholder="选择或输入完整目标目录绝对路径"
+                      placeholder={isAndroid ? "点击浏览，选择实例存放文件夹" : "选择或输入完整目标目录绝对路径"}
                       className={cn(
                         "ios-field-control motion-control flex-1 min-w-0 h-9 px-3 rounded-xl border text-xs transition-colors",
                         isLight
@@ -358,6 +327,7 @@ export const RelocateInstanceModal: React.FC<RelocateInstanceModalProps> = ({
                     <button
                       type="button"
                       onClick={handlePickDirectory}
+                      disabled={pickingDirectory || migrating}
                       className={cn(
                         "flat-capsule motion-control h-9 px-3 rounded-full text-[11px] font-medium border-0 flex-shrink-0",
                         isLight
@@ -365,20 +335,19 @@ export const RelocateInstanceModal: React.FC<RelocateInstanceModalProps> = ({
                           : "text-white/60 hover:text-white"
                       )}
                     >
-                      浏览
+                      {pickingDirectory ? "选择中..." : "浏览"}
                     </button>
                   </div>
                   <p className={cn("text-[11px] opacity-45 leading-relaxed", isLight ? "text-[#1a1625]" : "text-white")}>
-                    支持任意磁盘或分区路径。跨盘迁移时将执行安全校验并自动清理原位置。
+                    {isAndroid ? "实例保留原目录名，搬迁到所选文件夹的一级子目录。" : "支持任意磁盘或分区路径。跨盘迁移时将执行安全校验并自动清理原位置。"}
                   </p>
-                </div>
               </div>
 
               {/* 异常提示 */}
-              {errorMsg && (
+              {visibleError && (
                 <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs flex items-start gap-2">
                   <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                  <span>{errorMsg}</span>
+                  <span>{visibleError}</span>
                 </div>
               )}
 
@@ -386,7 +355,7 @@ export const RelocateInstanceModal: React.FC<RelocateInstanceModalProps> = ({
               <div className="flex items-start gap-2 pt-1 text-[11px] leading-relaxed opacity-55">
                 <Info className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
                 <p>
-                  向导中的“导入旧酒馆”流程因涉及外部未知数据，需留存充分的备份与补救余地；而对于当前软件已接管或创建的实例，数据与依赖均处于受管状态，支持一键直接原子搬迁并自动重定向注册表与配置，一步到位无损继续运行。
+                  这是已创建实例的存储目录调整，不会改变实例内容或运行配置；数据导入请在实例管理中选择目标实例后使用 ZIP 导入。
                 </p>
               </div>
             </>
@@ -429,7 +398,7 @@ export const RelocateInstanceModal: React.FC<RelocateInstanceModalProps> = ({
               </button>
               <button
                 type="button"
-                disabled={isRunning || migrating || (targetMode === "custom" && !customPath.trim())}
+                disabled={isRunning || migrating || pickingDirectory || !customPath.trim() || (isAndroid && !hasConfirmedSourcePath)}
                 onClick={handleExecuteRelocate}
                 className={cn(
                   "flat-capsule motion-control px-5 h-8 rounded-full text-xs font-medium flex items-center justify-center gap-1.5 border-0 disabled:opacity-40",

@@ -2,7 +2,6 @@ package com.sillyclient.render
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Color
 import android.graphics.Rect
 import android.os.Handler
 import android.view.MotionEvent
@@ -15,8 +14,8 @@ import com.sillyclient.ui.TopScrimBar
 
 /**
  * 变色龙顶栏取色与触控协调器
- * 1. 优先调用 JS ChameleonEngine 秒级直读计算色，0 开销 0 GPU 管线中断；
- * 2. 跨域或首帧异常时自动启用 PixelCopy 零抖动位图采样兜底；
+ * 1. JS 只通知样式变化，最终颜色从 WebView 已合成像素读取；
+ * 2. PixelCopy 单飞并合并最新请求，迟到结果不能跨页面/实例写入；
  * 3. 内存与 SharedPreferences 瞬时对齐，消除进入酒馆首帧色差；
  * 4. 触控手势防抖：滑动期间静默 0 采样，轻触抬手触发光波与平滑取色。
  */
@@ -28,48 +27,93 @@ class ChameleonController(
     private var statusHint: TavernStatusHint? = null,
     private val getFixedStatusBarPx: () -> Int,
     private val isWebViewVisible: () -> Boolean,
+    private val isSampleDocumentCommitted: () -> Boolean,
     private val isPullToRefreshEnabled: () -> Boolean
 ) {
     private var lastAppliedColor: Int? = null
-    private var isSamplingPixelCopy = false
     private var currentInstanceId: String? = null
+    private val oneShotSampleGate = ChameleonSampleGate()
+    private var sampleGeneration = 0L
+    private var nextPixelCopyId = 0L
+    private var pixelCopyInFlight: PixelCopyFlight? = null
+    private var pixelCopyPending: PixelCopyRequest? = null
+
+    private data class SampleContext(
+        val generation: Long,
+        val instanceId: String?,
+        val webView: WebView
+    )
+
+    private data class PixelCopyRequest(
+        val context: SampleContext,
+        val fallbackColor: Int?,
+        val onResult: (Int?) -> Unit
+    )
+
+    private data class PixelCopyFlight(
+        val id: Long,
+        val request: PixelCopyRequest,
+        val bitmap: Bitmap,
+        val width: Int,
+        val height: Int,
+        val pixels: IntArray
+    )
 
     // 沉浸式与低占用渲染配置
     var isColorExtractionEnabled: Boolean = true
     var colorExtractionMode: String = "realtime" // "realtime" | "once"
     var isClickEffectEnabled: Boolean = true
-    private var hasSampledOnce: Boolean = false
 
-    // 触控手势状态
-    private var touchDownX = 0f
-    private var touchDownY = 0f
-    private var pullStartY = 0f
-    private var pullReadyToReload = false
-    private var isTouchScrolling = false
+    private val touchGesture = ChameleonTouchGesture(
+        ViewConfiguration.get(context).scaledTouchSlop.toFloat()
+    )
+    private var touchGeneration = 0L
 
     fun setStatusHint(hint: TavernStatusHint) {
         statusHint = hint
     }
 
     fun setInstanceId(instanceId: String?) {
+        if (currentInstanceId == instanceId) return
         currentInstanceId = instanceId
+        invalidateSamples()
     }
 
     fun updateSettings(colorEnabled: Boolean, mode: String, clickEffect: Boolean) {
+        val normalizedMode = if (mode == "once") "once" else "realtime"
+        val samplingChanged = isColorExtractionEnabled != colorEnabled ||
+            colorExtractionMode != normalizedMode
         isColorExtractionEnabled = colorEnabled
-        colorExtractionMode = if (mode == "once") "once" else "realtime"
+        colorExtractionMode = normalizedMode
         isClickEffectEnabled = clickEffect
+        if (samplingChanged) invalidateSamples()
         if (!colorEnabled) {
             topScrimBar.setColorInstant(0xFF1E1E1E.toInt())
         }
     }
 
     fun reset() {
+        invalidateSamples()
         lastAppliedColor = null
-        isSamplingPixelCopy = false
-        isTouchScrolling = false
-        hasSampledOnce = false
     }
+
+    private fun invalidateSamples() {
+        sampleGeneration++
+        pixelCopyPending?.let { runCatching { it.onResult(null) } }
+        pixelCopyPending = null
+        touchGesture.cancel()
+        touchGeneration++
+        oneShotSampleGate.reset()
+    }
+
+    private fun isCurrent(context: SampleContext): Boolean =
+        context.generation == sampleGeneration &&
+            context.instanceId == currentInstanceId &&
+            isColorExtractionEnabled &&
+            oneShotSampleGate.canSample(colorExtractionMode) &&
+            isSampleDocumentCommitted() &&
+            isWebViewVisible() &&
+            context.webView.isShown
 
     fun getSavedColor(instanceId: String?): Int? {
         val id = instanceId?.takeIf { it.isNotBlank() } ?: currentInstanceId ?: "default"
@@ -87,9 +131,6 @@ class ChameleonController(
     fun applyColor(color: Int, instant: Boolean = false) {
         if (color == 0) return
         saveColor(currentInstanceId, color)
-        if (colorExtractionMode == "once") {
-            hasSampledOnce = true
-        }
         if (!instant && lastAppliedColor == color) {
             statusHint?.onColorChanged(color)
             return
@@ -104,11 +145,19 @@ class ChameleonController(
     }
 
     fun sampleTopColor(webView: WebView, onResult: (Int?) -> Unit) {
+        sampleTopColor(webView, fallbackColor = null, onResult = onResult)
+    }
+
+    fun sampleTopColor(webView: WebView, fallbackColor: Int?, onResult: (Int?) -> Unit) {
         if (!isColorExtractionEnabled) {
             onResult(null)
             return
         }
-        if (colorExtractionMode == "once" && hasSampledOnce) {
+        if (!oneShotSampleGate.canSample(colorExtractionMode)) {
+            onResult(null)
+            return
+        }
+        if (!isSampleDocumentCommitted()) {
             onResult(null)
             return
         }
@@ -116,140 +165,169 @@ class ChameleonController(
             onResult(null)
             return
         }
-        // 引擎 A: 直调前端 ChameleonEngine 缓存与计算，0 开销 0 卡顿
-        val js = "(function(){ try { return window.__scChameleonEngine ? window.__scChameleonEngine.computeTopColor() : null; } catch(_) { return null; } })()"
-        webView.evaluateJavascript(js) { res ->
-            val color = res?.trim('"', ' ', '\'')?.toIntOrNull()
-            if (color != null && color != 0) {
-                onResult(color)
-            } else if (webView.isShown && webView.width > 0) {
-                // 引擎 B: PixelCopy 兜底
-                sampleTopColorPixelCopy(webView) { copyColor ->
-                    onResult(copyColor)
-                }
-            } else {
-                onResult(null)
-            }
-        }
+        enqueuePixelCopy(
+            PixelCopyRequest(
+                context = SampleContext(sampleGeneration, currentInstanceId, webView),
+                fallbackColor = fallbackColor?.takeIf { it != 0 },
+                onResult = onResult
+            )
+        )
     }
 
-    private fun sampleTopColorPixelCopy(webView: WebView, onResult: (Int?) -> Unit) {
-        if (isSamplingPixelCopy) {
-            onResult(null)
+    private fun enqueuePixelCopy(request: PixelCopyRequest) {
+        if (!isCurrent(request.context)) {
+            request.onResult(null)
             return
         }
+        if (pixelCopyInFlight != null) {
+            pixelCopyPending?.let { runCatching { it.onResult(null) } }
+            pixelCopyPending = request
+            return
+        }
+        startPixelCopy(request)
+    }
+
+    private fun startPixelCopy(request: PixelCopyRequest) {
+        if (!isCurrent(request.context)) {
+            request.onResult(null)
+            return
+        }
+        val webView = request.context.webView
         val w = webView.width
-        if (w <= 0 || !webView.isShown) {
-            onResult(null)
+        val webViewHeight = webView.height
+        if (w <= 0 || webViewHeight <= 1) {
+            deliverSampleResult(request, request.fallbackColor)
             return
         }
-        isSamplingPixelCopy = true
         val loc = IntArray(2)
         webView.getLocationInWindow(loc)
         val top = loc[1] + 1
-        val stripH = 3
-        val srcRect = Rect(loc[0], top, loc[0] + w, top + stripH)
-        val bmp = Bitmap.createBitmap(w, stripH, Bitmap.Config.ARGB_8888)
-        val pixels = IntArray(w * stripH)
+        val stripHeight = 3.coerceAtMost(webViewHeight - 1)
+        val srcRect = Rect(loc[0], top, loc[0] + w, top + stripHeight)
+        val bitmap = Bitmap.createBitmap(w, stripHeight, Bitmap.Config.ARGB_8888)
+        val flight = PixelCopyFlight(
+            id = ++nextPixelCopyId,
+            request = request,
+            bitmap = bitmap,
+            width = w,
+            height = stripHeight,
+            pixels = IntArray(w * stripHeight)
+        )
+        pixelCopyInFlight = flight
         try {
-            PixelCopy.request(window, srcRect, bmp, { result ->
-                isSamplingPixelCopy = false
-                if (result == PixelCopy.SUCCESS) {
-                    var rs = 0; var gs = 0; var bs = 0; var n = 0
-                    bmp.getPixels(pixels, 0, w, 0, 0, w, stripH)
-                    for (p in pixels) {
-                        if (Color.alpha(p) > 200) {
-                            rs += Color.red(p); gs += Color.green(p); bs += Color.blue(p); n++
-                        }
-                    }
-                    bmp.recycle()
-                    if (n > 0) {
-                        val avg = (0xFF shl 24) or ((rs / n and 0xFF) shl 16) or
-                                ((gs / n and 0xFF) shl 8) or (bs / n and 0xFF)
-                        onResult(avg)
-                    } else onResult(null)
-                } else {
-                    bmp.recycle()
-                    onResult(null)
-                }
-            }, handler)
+            PixelCopy.request(window, srcRect, bitmap, { result -> finishPixelCopy(flight, result) }, handler)
         } catch (_: Exception) {
-            isSamplingPixelCopy = false
-            bmp.recycle()
-            onResult(null)
+            finishPixelCopy(flight, PixelCopy.ERROR_UNKNOWN)
         }
     }
 
-    fun setupTouchListener(webView: WebView, onReloadRequest: () -> Unit) {
-        val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
-        webView.setOnTouchListener { _, event ->
-            if (!isPullToRefreshEnabled()) {
-                // 下拉刷新已关闭：彻底禁用下拉重载逻辑，原样放行事件供 WebView 正常滚动
-                pullReadyToReload = false
-                isTouchScrolling = false
-                if (event.actionMasked == MotionEvent.ACTION_UP && !isTouchScrolling) {
-                    if (isColorExtractionEnabled && isClickEffectEnabled) {
-                        topScrimBar.sweepGloss()
-                    }
-                    val shouldSample = isColorExtractionEnabled && (colorExtractionMode == "realtime" || !hasSampledOnce)
-                    if (shouldSample) {
-                        handler.postDelayed({
-                            if (isWebViewVisible() && !isTouchScrolling && (colorExtractionMode == "realtime" || !hasSampledOnce)) {
-                                sampleTopColor(webView) { c -> if (c != null) applyColor(c) }
-                            }
-                        }, 500)
-                    }
-                }
-                return@setOnTouchListener false
+    private fun finishPixelCopy(flight: PixelCopyFlight, result: Int) {
+        var sampledColor: Int? = null
+        try {
+            if (result == PixelCopy.SUCCESS && isCurrent(flight.request.context)) {
+                flight.bitmap.getPixels(
+                    flight.pixels, 0, flight.width, 0, 0, flight.width, flight.height
+                )
+                sampledColor = ChameleonPixelSampler.representativeColor(flight.pixels)
             }
+        } catch (_: Exception) {
+            sampledColor = null
+        } finally {
+            if (!flight.bitmap.isRecycled) flight.bitmap.recycle()
+            if (pixelCopyInFlight?.id == flight.id) pixelCopyInFlight = null
+        }
 
+        val request = flight.request
+        deliverSampleResult(
+            request,
+            sampledColor ?: request.fallbackColor,
+            source = if (sampledColor != null) {
+                ChameleonSampleGate.Source.PIXEL_COPY
+            } else {
+                ChameleonSampleGate.Source.CSS_FALLBACK
+            }
+        )
+
+        val pending = pixelCopyPending
+        pixelCopyPending = null
+        if (pending != null) enqueuePixelCopy(pending)
+    }
+
+    private fun deliverSampleResult(
+        request: PixelCopyRequest,
+        color: Int?,
+        source: ChameleonSampleGate.Source = ChameleonSampleGate.Source.CSS_FALLBACK
+    ) {
+        val acceptedColor = color?.takeIf { it != 0 && isCurrent(request.context) }
+        if (acceptedColor != null) {
+            oneShotSampleGate.record(colorExtractionMode, acceptedColor, source)
+        }
+        runCatching { request.onResult(acceptedColor) }
+    }
+
+    private fun scheduleTouchSample(webView: WebView) {
+        val generation = sampleGeneration
+        val gestureGeneration = touchGeneration
+        handler.postDelayed({
+            if (generation == sampleGeneration &&
+                gestureGeneration == touchGeneration &&
+                isSampleDocumentCommitted() &&
+                isWebViewVisible() &&
+                !touchGesture.isActive &&
+                oneShotSampleGate.canSample(colorExtractionMode)
+            ) {
+                sampleTopColor(webView) { color -> if (color != null) applyColor(color) }
+            }
+        }, 500)
+    }
+
+    fun setupTouchListener(webView: WebView, onReloadRequest: () -> Unit) {
+        webView.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
-                    touchDownX = event.rawX
-                    touchDownY = event.rawY
-                    pullStartY = event.rawY
-                    pullReadyToReload = webView.scrollY <= 0
-                    isTouchScrolling = false
+                    touchGeneration++
+                    touchGesture.begin(
+                        event.rawX,
+                        event.rawY,
+                        isPullToRefreshEnabled() && webView.scrollY <= 0
+                    )
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val dx = kotlin.math.abs(event.rawX - touchDownX)
-                    val dy = event.rawY - pullStartY
-                    if (dx > touchSlop || kotlin.math.abs(dy) > touchSlop) {
-                        isTouchScrolling = true
-                        if (dx > kotlin.math.abs(dy) * 0.8f || dy < 0 || webView.scrollY > 0) {
-                            pullReadyToReload = false
-                        }
-                    }
+                    touchGesture.move(
+                        event.rawX,
+                        event.rawY,
+                        isPullToRefreshEnabled() && webView.scrollY <= 0
+                    )
                 }
                 MotionEvent.ACTION_UP -> {
                     val density = context.resources.displayMetrics.density
-                    val isTopZone = pullStartY <= (getFixedStatusBarPx() + density * 80f)
-                    val pullDist = event.rawY - pullStartY
-                    val minPullDist = density * 100f
-                    if (isPullToRefreshEnabled() && pullReadyToReload && isTopZone && pullDist > minPullDist) {
-                        onReloadRequest()
-                        if (isColorExtractionEnabled && isClickEffectEnabled) {
-                            topScrimBar.sweepGloss()
+                    when (touchGesture.finish(
+                        event.rawX,
+                        event.rawY,
+                        isPullToRefreshEnabled() && webView.scrollY <= 0,
+                        getFixedStatusBarPx() + density * 80f,
+                        density * 100f
+                    )) {
+                        ChameleonTouchGesture.Result.RELOAD -> {
+                            onReloadRequest()
+                            if (isColorExtractionEnabled && isClickEffectEnabled) {
+                                topScrimBar.sweepGloss()
+                            }
                         }
-                    } else if (!isTouchScrolling) {
-                        if (isColorExtractionEnabled && isClickEffectEnabled) {
-                            topScrimBar.sweepGloss()
+                        ChameleonTouchGesture.Result.TAP -> {
+                            if (isColorExtractionEnabled && isClickEffectEnabled) {
+                                topScrimBar.sweepGloss()
+                            }
+                            if (isColorExtractionEnabled &&
+                                oneShotSampleGate.canSample(colorExtractionMode)
+                            ) scheduleTouchSample(webView)
                         }
-                        val shouldSample = isColorExtractionEnabled && (colorExtractionMode == "realtime" || !hasSampledOnce)
-                        if (shouldSample) {
-                            handler.postDelayed({
-                                if (isWebViewVisible() && !isTouchScrolling && (colorExtractionMode == "realtime" || !hasSampledOnce)) {
-                                    sampleTopColor(webView) { c -> if (c != null) applyColor(c) }
-                                }
-                            }, 500)
-                        }
+                        ChameleonTouchGesture.Result.NONE -> Unit
                     }
-                    pullReadyToReload = false
-                    isTouchScrolling = false
                 }
-                MotionEvent.ACTION_CANCEL -> {
-                    pullReadyToReload = false
-                    isTouchScrolling = false
+                MotionEvent.ACTION_POINTER_DOWN, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
+                    touchGesture.cancel()
+                    touchGeneration++
                 }
             }
             false

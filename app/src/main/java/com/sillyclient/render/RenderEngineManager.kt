@@ -12,24 +12,26 @@ import android.widget.Toast
 class RenderEngineManager(
     private val context: Context,
     private val hapticController: HapticController,
-    private val onColorChangedListener: (Int) -> Unit
+    private val onColorChangedListener: (Int, Long) -> Unit
 ) {
     private var cachedScript: String? = null
-    private var colorExtractionEnabled = true
-    private var colorExtractionMode = "realtime"
-    private var clickEffectEnabled = true
+    private var settings = RenderSettings.create()
+    @Volatile private var documentToken = 0L
 
-    fun setSettings(colorEnabled: Boolean, mode: String, clickEffect: Boolean) {
-        colorExtractionEnabled = colorEnabled
-        colorExtractionMode = if (mode == "once") "once" else "realtime"
-        clickEffectEnabled = clickEffect
+    fun setDocumentToken(token: Long) {
+        documentToken = token
+    }
+
+    fun isCurrentDocument(token: Long): Boolean = documentToken == token
+
+    fun setSettings(settings: RenderSettings) {
+        this.settings = settings
     }
 
     fun applySettingsToWebView(webView: WebView) {
-        val js = "(function(){ try { if (window.__scUpdateRenderSettings) { window.__scUpdateRenderSettings($colorExtractionEnabled, '$colorExtractionMode', $clickEffectEnabled); } } catch(_) {} })();"
         webView.post {
             try {
-                webView.evaluateJavascript(js, null)
+                webView.evaluateJavascript(settings.updateScript(), null)
             } catch (e: Throwable) {
                 android.util.Log.w("SC_RenderEngine", "Failed to apply render settings to webview", e)
             }
@@ -50,6 +52,7 @@ class RenderEngineManager(
 
     /** 读取并注入 sc-render-engine.js 调度引擎 */
     fun injectEngine(webView: WebView) {
+        val token = documentToken
         try {
             val script = cachedScript ?: context.assets.open("scripts/sc-render-engine.js")
                 .bufferedReader()
@@ -58,9 +61,14 @@ class RenderEngineManager(
 
             webView.post {
                 try {
-                    webView.evaluateJavascript(script) {
-                        applySettingsToWebView(webView)
-                    }
+                    if (!isCurrentDocument(token)) return@post
+                    // Seed before the first script instruction; a saved disabled
+                    // preset must never install and then remove its resources.
+                    webView.evaluateJavascript(
+                        "window.__scRenderDocumentToken = $token;\n" +
+                            settings.initializationScript() + "\n" + script + "\n" + settings.updateScript(),
+                        null
+                    )
                 } catch (e: Throwable) {
                     android.util.Log.w("SC_RenderEngine", "Failed to evaluate script in injectEngine", e)
                 }
@@ -88,9 +96,11 @@ class RenderEngineManager(
 
     /** 强制前端变色龙引擎重新采样并上报 (退出重进或切回前台时唤醒) */
     fun forceChameleonSample(webView: WebView) {
-        if (!colorExtractionEnabled) return
+        val token = documentToken
         webView.post {
             try {
+                if (!isCurrentDocument(token)) return@post
+                if (!settings.colorEnabled) return@post
                 webView.evaluateJavascript(
                     "(function(){ try { if (window.__scChameleonEngine) { window.__scChameleonEngine.lastReportedColor = null; window.__scChameleonEngine.sampleAndReport(true); } } catch(_) {} })();",
                     null
@@ -110,8 +120,9 @@ class RenderEngineManager(
 
     inner class RenderBridge {
         @JavascriptInterface
-        fun onColorChanged(color: Int) {
-            onColorChangedListener(color)
+        fun onColorChanged(color: Int, token: Long) {
+            if (!isCurrentDocument(token)) return
+            onColorChangedListener(color, token)
         }
     }
 }
