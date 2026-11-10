@@ -16,6 +16,7 @@ class InstanceRepository(
     private val clock: () -> Long = System::currentTimeMillis,
     private val installLocations: InstallLocationRegistry? = null,
     private val legacyServersRoot: File? = null,
+    private val usageStore: InstanceUsageStore? = null,
     private val measureSize: (File) -> Long = {
         ManagedFiles.size(it, setOf("node_modules", ".git", ".cache", DependencyRestoreTransaction.STAGING_NAME))
     }
@@ -27,7 +28,9 @@ class InstanceRepository(
         val sizeBytes: Long,
         val hasServer: Boolean,
         val createdAt: String,
-        val status: String
+        val status: String,
+        val lastUsedAt: String? = null,
+        val totalUsageMs: Long = 0L
     )
 
     private data class SizeCache(val bytes: Long, val measuredAt: Long)
@@ -92,10 +95,13 @@ class InstanceRepository(
         val source = File(directory, "server.js")
         val hasServer = source.isFile && ManagedFiles.isWithin(source, directory)
         val version = runCatching { readVersion(directory) }.getOrDefault("unknown")
+        val usage = usageStore?.usageFor(instanceId, directory)
         return Metadata(
             instanceId, version, directory.absolutePath, size, hasServer,
             if (installed) SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(directory.lastModified())) else "",
-            if (!installed) "未安装" else if (hasServer) "已就绪" else "未完成"
+            if (!installed) "未安装" else if (hasServer) "已就绪" else "未完成",
+            usage?.lastUsedAt,
+            usage?.totalUsageMs ?: 0L
         )
     }
 

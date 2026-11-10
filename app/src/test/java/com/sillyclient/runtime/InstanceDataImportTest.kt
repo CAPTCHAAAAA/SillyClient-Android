@@ -1,5 +1,6 @@
 package com.sillyclient.runtime
 
+import com.sillyclient.runtime.InstanceDataImport.ImportFileSizes
 import java.io.File
 import java.nio.channels.FileChannel
 import java.nio.file.Files
@@ -182,6 +183,58 @@ class InstanceDataImportTest {
         assertTrue(limits.archiveBytes >= 5_000_000_000L)
         assertTrue(limits.expandedBytes >= 50_000_000_000L)
         assertTrue(limits.fileBytes >= 5_000_000_000L)
+    }
+
+    @Test
+    fun spacePreflightIncludesPreviouslyAddedFilesWhileReplacingExistingFile() {
+        val gib = 1024L * 1024L * 1024L
+        val required = InstanceDataImport.requiredImportSpace(sequenceOf(
+            ImportFileSizes(incomingBytes = gib, existingBytes = 0),
+            ImportFileSizes(incomingBytes = gib, existingBytes = gib)
+        ))
+
+        assertEquals(2 * gib, required)
+    }
+
+    @Test
+    fun spacePreflightUsesActualImportOrder() {
+        val added = ImportFileSizes(incomingBytes = 100, existingBytes = 0)
+        val replaced = ImportFileSizes(incomingBytes = 100, existingBytes = 100)
+
+        assertEquals(200, InstanceDataImport.requiredImportSpace(sequenceOf(added, replaced)))
+        assertEquals(100, InstanceDataImport.requiredImportSpace(sequenceOf(replaced, added)))
+    }
+
+    @Test
+    fun spacePreflightCountsAllNewFilesAndOnlyOneTemporaryReplacementAtATime() {
+        assertEquals(180, InstanceDataImport.requiredImportSpace(sequenceOf(
+            ImportFileSizes(incomingBytes = 80, existingBytes = 0),
+            ImportFileSizes(incomingBytes = 100, existingBytes = 0)
+        )))
+        assertEquals(100, InstanceDataImport.requiredImportSpace(sequenceOf(
+            ImportFileSizes(incomingBytes = 100, existingBytes = 100),
+            ImportFileSizes(incomingBytes = 100, existingBytes = 100)
+        )))
+    }
+
+    @Test
+    fun spacePreflightAccountsForSpaceReleasedByEarlierShrinkingReplacement() {
+        val shrinking = ImportFileSizes(incomingBytes = 10, existingBytes = 100)
+        val added = ImportFileSizes(incomingBytes = 100, existingBytes = 0)
+
+        assertEquals(10, InstanceDataImport.requiredImportSpace(sequenceOf(shrinking, added)))
+        assertEquals(110, InstanceDataImport.requiredImportSpace(sequenceOf(added, shrinking)))
+    }
+
+    @Test
+    fun emptyImportNeedsNoAdditionalSpaceAndNegativeSizesAreRejected() {
+        assertEquals(0, InstanceDataImport.requiredImportSpace(emptySequence()))
+        assertThrows(IllegalArgumentException::class.java) {
+            InstanceDataImport.requiredImportSpace(sequenceOf(ImportFileSizes(-1, 0)))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            InstanceDataImport.requiredImportSpace(sequenceOf(ImportFileSizes(0, -1)))
+        }
     }
 
     @Test

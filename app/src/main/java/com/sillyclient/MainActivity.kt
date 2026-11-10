@@ -18,7 +18,9 @@ import android.view.MotionEvent
 import android.view.View
 import com.sillyclient.render.ChameleonController
 import com.sillyclient.render.HapticController
+import com.sillyclient.render.RenderDocumentCommitState
 import com.sillyclient.render.RenderEngineManager
+import com.sillyclient.render.RenderSettings
 import com.sillyclient.ui.FileChooserMimeTypes
 import android.view.ViewGroup
 import android.view.WindowInsets
@@ -56,6 +58,7 @@ import com.sillyclient.runtime.RuntimeFileUtils
 import com.sillyclient.runtime.SourceArchiveCache
 import com.sillyclient.runtime.CleanupService
 import com.sillyclient.runtime.InstanceRepository
+import com.sillyclient.runtime.InstanceUsageStore
 import com.sillyclient.runtime.DependencyBank
 import com.sillyclient.runtime.KeepAlive
 import com.sillyclient.runtime.InstanceRemoval
@@ -154,6 +157,7 @@ class MainActivity : BridgeActivity() {
     private lateinit var hapticController: HapticController
     private lateinit var chameleonController: ChameleonController
     private lateinit var renderEngineManager: RenderEngineManager
+    private val renderDocumentCommitState = RenderDocumentCommitState()
 
     // ---- Views ----
     private lateinit var root: FrameLayout
@@ -243,9 +247,18 @@ class MainActivity : BridgeActivity() {
     @Volatile private var serverProcess: Process? = null
     private val operations = OperationCoordinator()
     private val processSupervisor = ProcessSupervisor(operations)
+    val instanceUsageStore by lazy {
+        val paths = RuntimePaths.from(this)
+        InstanceUsageStore.shared(paths.instanceUsageFile)
+    }
     private val instanceRepository by lazy {
         val paths = RuntimePaths.from(this)
-        InstanceRepository(paths.serversDir, installLocations = paths.installLocations, legacyServersRoot = paths.legacyServersDir)
+        InstanceRepository(
+            paths.serversDir,
+            installLocations = paths.installLocations,
+            legacyServersRoot = paths.legacyServersDir,
+            usageStore = instanceUsageStore
+        )
     }
     private val instanceMaintenance by lazy {
         val paths = RuntimePaths.from(this)
@@ -456,7 +469,7 @@ class MainActivity : BridgeActivity() {
         // 启动器 WebView (Capacitor Bridge) 硬件加速与高刷锁定
         try {
             bridge?.webView?.let { lwv ->
-                lwv.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+                lwv.setLayerType(View.LAYER_TYPE_NONE, null)
                 lwv.overScrollMode = View.OVER_SCROLL_NEVER
                 lwv.isVerticalScrollBarEnabled = false
                 lwv.isHorizontalScrollBarEnabled = false
@@ -534,27 +547,25 @@ class MainActivity : BridgeActivity() {
             topScrimBar = topScrimBar,
             getFixedStatusBarPx = { statusBarFixedPx },
             isWebViewVisible = { isWebViewVisible },
+            isSampleDocumentCommitted = { renderDocumentCommitState.isCommitted() },
             isPullToRefreshEnabled = { pullToRefreshEnabled }
         )
         chameleonController.setInstanceId(currentTavernInstanceId)
         renderEngineManager = RenderEngineManager(
             context = this,
             hapticController = hapticController,
-            onColorChangedListener = { color ->
+            onColorChangedListener = { color, token ->
                 runOnUiThread {
-                    if (isWebViewVisible) {
+                    if (isWebViewVisible && renderDocumentCommitState.isCommitted() && token == renderDocumentCommitState.currentToken) {
                         applyTopColor(color)
                     }
                 }
             }
         )
 
-        val renderSp = getSharedPreferences("sc_render_settings", MODE_PRIVATE)
-        val initColorEnabled = renderSp.getBoolean("immersive_color", true)
-        val initMode = renderSp.getString("color_extraction_mode", "realtime") ?: "realtime"
-        val initClickEffect = renderSp.getBoolean("click_effect", true)
-        chameleonController.updateSettings(initColorEnabled, initMode, initClickEffect)
-        renderEngineManager.setSettings(initColorEnabled, initMode, initClickEffect)
+        val renderSettings = getRenderEngineSettings()
+        chameleonController.updateSettings(renderSettings.colorEnabled, renderSettings.mode, renderSettings.clickEffect)
+        renderEngineManager.setSettings(renderSettings)
 
         // 顶部状态栏手势区：透明 View 覆盖 statusBarFixedPx 条带
         // 始终可见（不放在 root 里），支持双向操作：
@@ -699,7 +710,7 @@ class MainActivity : BridgeActivity() {
                 @Suppress("DEPRECATION")
                 settings.forceDark = android.webkit.WebSettings.FORCE_DARK_OFF
             }
-            setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            setLayerType(View.LAYER_TYPE_NONE, null)
             isNestedScrollingEnabled = false
             overScrollMode = View.OVER_SCROLL_NEVER
             CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
@@ -728,11 +739,16 @@ class MainActivity : BridgeActivity() {
                     tavernDocumentGeneration++
                     tavernDocumentFailed = false
                     tavernConsoleErrors = 0
+                    val token = renderDocumentCommitState.advance()
+                    if (::renderEngineManager.isInitialized) {
+                        renderEngineManager.setDocumentToken(token)
+                    }
                     super.onPageStarted(view, url, favicon)
                 }
 
                 override fun onPageCommitVisible(view: WebView?, url: String?) {
                     super.onPageCommitVisible(view, url)
+                    renderDocumentCommitState.markCommitted(renderDocumentCommitState.currentToken)
                     android.util.Log.i(TAG, "Tavern main frame committed")
                 }
 
@@ -1156,6 +1172,7 @@ class MainActivity : BridgeActivity() {
                         processSupervisor.track(launched, id)
                         serverSessions[id] = ServerSession(id, launched, effectivePort, tavernUrl, ready = true)
                     }
+                    instanceUsageStore.begin(id, targetServerDir)
                     // Archive after the server is ready so the heavy tree copy cannot
                     // compete with Node's cold-start dependency reads.
                     archiveDependenciesInBackground(paths, targetServerDir)
@@ -1650,8 +1667,10 @@ class MainActivity : BridgeActivity() {
         if (targetId != null) {
             processSupervisor.stopAllAsync(targetId)
             serverSessions.remove(targetId)?.process = null
+            instanceUsageStore.finish(targetId)
         } else {
             processSupervisor.stopAllAsync()
+            serverSessions.keys.forEach { instanceUsageStore.finish(it) }
             serverSessions.clear()
         }
         if (targetId != null && targetId != currentTavernInstanceId) {
@@ -2125,6 +2144,7 @@ body:has(.popup[opening]) #chat {
             serverSessions.remove(instanceId)
             session.process = null
         }
+        instanceUsageStore.finish(instanceId)
         // 前台缓存同步：仅当死者是前台会话时回落视图状态。
         if (currentTavernInstanceId == instanceId && serverProcess === process) {
             serverProcess = null
@@ -2505,7 +2525,7 @@ body:has(.popup[opening]) #chat {
         }
     )
 
-    /** 扫描本地已存在的酒馆实例。返回强类型实例摘要:instanceId, version, path, sizeBytes, hasServer。 */
+    /** 扫描本地已存在的酒馆实例。返回强类型实例摘要:instanceId, version, path, sizeBytes, hasServer, createdAt, totalUsageMs, lastUsedAt。 */
     fun scanInstances(): List<InstanceSummary> {
         // Console refreshes double as the retry point for interrupted removals:
         // marked or renamed remnants are hidden from the scan and reclaimed here.
@@ -2516,16 +2536,33 @@ body:has(.popup[opening]) #chat {
             runCatching { sweepRemovalRemnants(RuntimePaths.from(this).serversDir, "maintenance") }
         }
         return instanceRepository.scan().map { info ->
-            InstanceSummary(info.instanceId, info.version, info.path, info.sizeBytes, info.hasServer)
+            InstanceSummary(
+                instanceId = info.instanceId,
+                version = info.version,
+                path = info.path,
+                sizeBytes = info.sizeBytes,
+                hasServer = info.hasServer,
+                createdAt = info.createdAt,
+                totalUsageMs = info.totalUsageMs,
+                lastUsedAt = info.lastUsedAt
+            )
         }
     }
 
-    /** 实例详情:version, path, sizeBytes, createdAt, status。 */
+    /** 实例详情:version, path, sizeBytes, createdAt, status, totalUsageMs, lastUsedAt。 */
     fun getInstanceInfo(instanceId: String, port: Int, installPath: String? = null): InstanceDetails {
         val paths = RuntimePaths.from(this)
         val dir = paths.serverDirFor(instanceId, installPath, create = false)
         val info = instanceRepository.info(dir)
-        return InstanceDetails(info.version, info.path, info.sizeBytes, info.createdAt, info.status)
+        return InstanceDetails(
+            version = info.version,
+            path = info.path,
+            sizeBytes = info.sizeBytes,
+            createdAt = info.createdAt,
+            status = info.status,
+            totalUsageMs = info.totalUsageMs,
+            lastUsedAt = info.lastUsedAt
+        )
     }
 
     fun checkLegacyInstances(): List<InstanceRelocation.LegacyInstance> =
@@ -2634,32 +2671,37 @@ body:has(.popup[opening]) #chat {
         pullToRefreshEnabled = enabled
     }
 
-    data class RenderSettings(val colorEnabled: Boolean, val mode: String, val clickEffect: Boolean)
-
     fun getRenderEngineSettings(): RenderSettings {
         val sp = getSharedPreferences("sc_render_settings", MODE_PRIVATE)
-        return RenderSettings(
+        return RenderSettings.create(
             sp.getBoolean("immersive_color", true),
             sp.getString("color_extraction_mode", "realtime") ?: "realtime",
-            sp.getBoolean("click_effect", true)
+            sp.getBoolean("click_effect", true),
+            sp.getBoolean("performance_preset", true)
         )
     }
 
-    fun setRenderEngineSettings(colorEnabled: Boolean, mode: String, clickEffect: Boolean) {
-        val safeMode = if (mode == "once") "once" else "realtime"
-        val safeClick = if (colorEnabled) clickEffect else false
+    fun setRenderEngineSettings(
+        colorEnabled: Boolean? = null,
+        mode: String? = null,
+        clickEffect: Boolean? = null,
+        performancePreset: Boolean? = null
+    ) {
+        val current = getRenderEngineSettings()
+        val next = current.updated(colorEnabled, mode, clickEffect, performancePreset)
         getSharedPreferences("sc_render_settings", MODE_PRIVATE).edit()
-            .putBoolean("immersive_color", colorEnabled)
-            .putString("color_extraction_mode", safeMode)
-            .putBoolean("click_effect", safeClick)
+            .putBoolean("immersive_color", next.colorEnabled)
+            .putString("color_extraction_mode", next.mode)
+            .putBoolean("click_effect", next.clickEffect)
+            .putBoolean("performance_preset", next.performancePreset)
             .apply()
 
         runOnUiThread {
             if (::chameleonController.isInitialized) {
-                chameleonController.updateSettings(colorEnabled, safeMode, safeClick)
+                chameleonController.updateSettings(next.colorEnabled, next.mode, next.clickEffect)
             }
             if (::renderEngineManager.isInitialized) {
-                renderEngineManager.setSettings(colorEnabled, safeMode, safeClick)
+                renderEngineManager.setSettings(next)
                 if (::webView.isInitialized) {
                     renderEngineManager.applySettingsToWebView(webView)
                 }
@@ -2881,6 +2923,7 @@ body:has(.popup[opening]) #chat {
             KeepAlive.release(this)
         }
         instanceRepository.invalidate(targetDir)
+        instanceUsageStore.remove(instanceId, targetDir)
         val safeId = instanceId.replace(Regex("[^a-zA-Z0-9._-]"), "_")
         val coverFile = File(paths.bootstrapDir, "covers/$safeId.png")
         if (coverFile.isFile && ManagedFiles.isWithin(coverFile, paths.bootstrapDir)) {
@@ -2998,14 +3041,19 @@ body:has(.popup[opening]) #chat {
         val version: String,
         val path: String,
         val sizeBytes: Long,
-        val hasServer: Boolean
+        val hasServer: Boolean,
+        val createdAt: String = "",
+        val totalUsageMs: Long = 0L,
+        val lastUsedAt: String? = null
     )
     data class InstanceDetails(
         val version: String,
         val path: String,
         val sizeBytes: Long,
         val createdAt: String,
-        val status: String
+        val status: String,
+        val totalUsageMs: Long = 0L,
+        val lastUsedAt: String? = null
     )
     data class InsetsRect(
         val top: Int,

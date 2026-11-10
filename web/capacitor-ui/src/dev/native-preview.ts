@@ -1,6 +1,7 @@
 import { Capacitor } from "@capacitor/core";
 import type { TarvenEnvPlugin, TarvenEvent, GarbageItem, MaintenanceItem, MaintenanceScan, MaintenanceRecovery } from "../capacitor-plugin";
 import { normalizeRenderEngineSettings } from "../lib/render-settings";
+import type { RenderEngineSettings } from "../lib/render-settings";
 import { exactInstallTarget } from "../lib/install-location";
 import { validateExternalUrl } from "../lib/external-url";
 
@@ -12,17 +13,29 @@ const credentials = new Map<string, string>();
 let listenerDelay = 0;
 let manualProvision = false;
 let failDeletes = new Set<string>();
-let failMigration = false;
 let failCommands = false;
 let status: Awaited<ReturnType<TarvenEnvPlugin["getStatus"]>> = { serverReady: false, mode: "launcher" };
 let openMode: "webview" | "browser" = "webview";
 let renderEngineSettings = normalizeRenderEngineSettings(null);
+interface RenderSettingsFixture {
+  settings?: Partial<RenderEngineSettings>;
+  readDelay?: number;
+  writeDelay?: number;
+  readError?: string | null;
+  writeError?: string | null;
+}
+let renderSettingsFixture: RenderSettingsFixture = {};
 let migrated = new Map<string, string>();
 let scannedInstanceIds = ["preview-local", "preview-second"];
 type DirectorySelection = Awaited<ReturnType<TarvenEnvPlugin["pickDirectory"]>>;
+type ZipSelection = Awaited<ReturnType<TarvenEnvPlugin["pickZipFile"]>>;
+type ExportResult = Awaited<ReturnType<TarvenEnvPlugin["exportInstance"]>>;
 let platform: "windows" | "android" | "ios" = "windows";
 let directorySelection: DirectorySelection | null | undefined;
 let directoryDelay = 0;
+let zipSelection: ZipSelection | null | undefined;
+let exportResult: ExportResult | null = null;
+let exportRejectMessage: string | null = null;
 
 function syntheticRoot() {
   return platform === "windows" ? "D:\\Synthetic" : platform === "android"
@@ -157,9 +170,10 @@ export const nativePreview: TarvenEnvPlugin = {
     return { ...selection };
   },
   async pickImage() { return { path: "" }; },
-  async pickZipFile() { return { path: "D:\\Synthetic\\backup.zip", sizeBytes: 1 }; },
-  async saveTextFile(options) { record("saveTextFile", options); },
-  async readTextFile() { return { content: '{"version":2,"instances":[]}', fileName: "synthetic.json" }; },
+  async pickZipFile() {
+    if (zipSelection === null) throw new Error("cancelled");
+    return zipSelection || { path: "D:\\Synthetic\\backup.zip", sizeBytes: 1 };
+  },
   async scanInstances() {
     return { instances: scannedInstanceIds.map(instanceId => ({
       instanceId, version: "1.19.0", sizeBytes: 1, hasServer: true,
@@ -186,20 +200,33 @@ export const nativePreview: TarvenEnvPlugin = {
   async clearWebViewData() { record("clearWebViewData"); },
   async exportInstance(options: { instanceId: string; installPath?: string; targetZipPath?: string }) {
     record("exportInstance", options);
+    if (exportRejectMessage) throw new Error(exportRejectMessage);
+    if (exportResult) return { ...exportResult };
     return { path: options.targetZipPath || `C:\\exports\\${options.instanceId}.zip`, bytes: 1024 };
   },
-  async inspectImportArchive(options: { archivePath: string }) {
+  async inspectImportArchive(options: { archivePath?: string; archiveUri?: string }) {
     record("inspectImportArchive", options);
     return { importEntries: 10, importBytes: 2048, skippedEntries: 0, skippedBytes: 0, hasSecrets: false, hasConfig: true, importable: true };
   },
-  async importInstanceData(options: { installPath?: string; archivePath: string; includeOptional?: boolean; operationId?: string }) {
+  async importInstanceData(options: { instanceId: string; installPath?: string; archivePath?: string; archiveUri?: string; includeOptional?: boolean; operationId?: string }) {
     record("importInstanceData", options);
     return { imported: 10, bytes: 2048, skipped: 0 };
   },
   async getSafeInsets() { return { top: 0, bottom: 0, left: 0, right: 0 }; },
   async setPullToRefresh() {},
-  async getRenderEngineSettings() { return { ...renderEngineSettings }; },
-  async setRenderEngineSettings(options) { renderEngineSettings = normalizeRenderEngineSettings(options); },
+  async getRenderEngineSettings() {
+    record("getRenderEngineSettings");
+    const settings = { ...renderEngineSettings };
+    if (renderSettingsFixture.readDelay) await new Promise(resolve => setTimeout(resolve, renderSettingsFixture.readDelay));
+    if (renderSettingsFixture.readError) throw new Error(renderSettingsFixture.readError);
+    return settings;
+  },
+  async setRenderEngineSettings(options) {
+    record("setRenderEngineSettings", options);
+    if (renderSettingsFixture.writeDelay) await new Promise(resolve => setTimeout(resolve, renderSettingsFixture.writeDelay));
+    if (renderSettingsFixture.writeError) throw new Error(renderSettingsFixture.writeError);
+    renderEngineSettings = normalizeRenderEngineSettings({ ...renderEngineSettings, ...options });
+  },
   async getContentOpenMode() { return { mode: openMode }; },
   async setContentOpenMode(options) { openMode = options.mode; return options; },
   async setRemoteBasicAuth(options) {
@@ -282,25 +309,10 @@ export const nativePreview: TarvenEnvPlugin = {
       maintenanceRecoveries.get(options.instanceId)!.filter(candidate => candidate.recoveryId !== options.recoveryId));
     return { success: true, recoveryId: options.recoveryId, relativePath: item.relativePath };
   },
-  async migrateInstance(options) {
-    record("migrateInstance", options);
-    if (failMigration) return { success: false, instanceId: options.instanceId };
-    const targetPath = options.mode === "takeover" ? options.sourcePath : options.targetPath || exactInstallTarget(syntheticRoot(), "root", options.instanceId)!;
-    migrated.set(options.instanceId, targetPath);
-    return { success: true, instanceId: options.instanceId, targetPath };
-  },
-  async checkLegacyInstances() {
-    record("checkLegacyInstances", {});
-    return { instances: [] };
-  },
   async relocateInstance(options) {
     record("relocateInstance", options);
     const newPath = options.targetPath || exactInstallTarget(syntheticRoot(), "root", options.instanceId)!;
     return { success: true, instanceId: options.instanceId, oldPath: "C:\\AppData\\Legacy", newPath };
-  },
-  async migrateLegacyInstances(options = {}) {
-    record("migrateLegacyInstances", options);
-    return { success: true, results: [] };
   },
   async renameInstance(options) {
     record("renameInstance", options);
@@ -369,6 +381,10 @@ export function installNativePreview() {
       platform?: "windows" | "android" | "ios";
       directorySelection?: DirectorySelection | null;
       directoryDelay?: number;
+      zipSelection?: ZipSelection | null;
+      exportResult?: ExportResult | null;
+      exportRejectMessage?: string | null;
+      renderSettings?: RenderSettingsFixture;
     };
   };
   if (global.__SILLYCLIENT_PREVIEW_FIXTURE__?.scannedInstanceIds) {
@@ -386,6 +402,15 @@ export function installNativePreview() {
   platform = global.__SILLYCLIENT_PREVIEW_FIXTURE__?.platform || "windows";
   directorySelection = global.__SILLYCLIENT_PREVIEW_FIXTURE__?.directorySelection;
   directoryDelay = global.__SILLYCLIENT_PREVIEW_FIXTURE__?.directoryDelay || 0;
+  if ("zipSelection" in (global.__SILLYCLIENT_PREVIEW_FIXTURE__ || {})) {
+    zipSelection = global.__SILLYCLIENT_PREVIEW_FIXTURE__?.zipSelection;
+  }
+  if ("exportResult" in (global.__SILLYCLIENT_PREVIEW_FIXTURE__ || {})) {
+    exportResult = global.__SILLYCLIENT_PREVIEW_FIXTURE__?.exportResult || null;
+  }
+  exportRejectMessage = global.__SILLYCLIENT_PREVIEW_FIXTURE__?.exportRejectMessage || null;
+  renderSettingsFixture = { ...global.__SILLYCLIENT_PREVIEW_FIXTURE__?.renderSettings };
+  renderEngineSettings = normalizeRenderEngineSettings(renderSettingsFixture.settings);
   global.__SILLYCLIENT_PLATFORM__ = platform;
   Capacitor.isNativePlatform = () => true;
   Capacitor.getPlatform = () => platform;
@@ -393,23 +418,35 @@ export function installNativePreview() {
     calls, emit, complete,
     configure(options: {
       manualProvision?: boolean; listenerDelay?: number; failDeletes?: string[];
-      failMigration?: boolean; failCommands?: boolean;
+      failCommands?: boolean;
       scannedInstanceIds?: string[];
       maintenance?: MaintenanceFixture;
       status?: Awaited<ReturnType<TarvenEnvPlugin["getStatus"]>>;
       directorySelection?: DirectorySelection | null;
       directoryDelay?: number;
+      zipSelection?: ZipSelection | null;
+      exportResult?: ExportResult | null;
+      exportRejectMessage?: string | null;
+      renderSettings?: RenderSettingsFixture;
     }) {
       manualProvision = options.manualProvision ?? manualProvision;
       listenerDelay = options.listenerDelay ?? listenerDelay;
       if (options.failDeletes) failDeletes = new Set(options.failDeletes);
-      failMigration = options.failMigration ?? failMigration;
       failCommands = options.failCommands ?? failCommands;
       if (options.scannedInstanceIds) scannedInstanceIds = [...options.scannedInstanceIds];
       if (options.maintenance) maintenanceFixture = { ...maintenanceFixture, ...options.maintenance };
       if (options.status) status = { ...options.status };
       if ("directorySelection" in options) directorySelection = options.directorySelection;
       if (options.directoryDelay !== undefined) directoryDelay = options.directoryDelay;
+      if ("zipSelection" in options) zipSelection = options.zipSelection;
+      if ("exportResult" in options) exportResult = options.exportResult || null;
+      if (options.exportRejectMessage !== undefined) exportRejectMessage = options.exportRejectMessage;
+      if (options.renderSettings) {
+        renderSettingsFixture = { ...renderSettingsFixture, ...options.renderSettings };
+        if (options.renderSettings.settings) {
+          renderEngineSettings = normalizeRenderEngineSettings({ ...renderEngineSettings, ...options.renderSettings.settings });
+        }
+      }
     },
     pending: () => Array.from(pending.keys()),
     listeners: () => Object.fromEntries(Array.from(listeners, ([name, group]) => [name, group.size])),

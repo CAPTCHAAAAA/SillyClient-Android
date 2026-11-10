@@ -162,6 +162,10 @@ async function setupPage({ initiallyHidden = false, idleCallback = true } = {}) 
       activeObservers(kind) {
         return observers.filter(item => (!kind || item.kind === kind) && item.targets.size > 0).length;
       },
+      chameleonJobs() {
+        return Array.from(timers.values()).map(item => item.delay)
+          .filter(delay => [120, 400, 500, 1500].includes(delay)).sort((a, b) => a - b);
+      },
     };
   }, { initiallyHidden, idleCallback });
   await injectRenderer();
@@ -547,6 +551,179 @@ test("chameleon reports changed theme color once when a hidden page resumes", as
   });
   assert.deepEqual(result, { colors: [-16116706, -14142916], hiddenTimers: 0, current: -14142916 });
 });
+
+test("once completion cancels owned jobs and stale startup or mutation callbacks cannot reobserve", async () => {
+  const result = await page.evaluate(() => {
+    const colors = [];
+    window.SillyClientRenderBridge = { onColorChanged: color => colors.push(color) };
+    document.getElementById("top-bar").style.backgroundColor = "rgb(10, 20, 30)";
+    window.__scUpdateRenderSettings(true, "once", true);
+    renderTest.timeout(400);
+    const settled = {
+      sampled: SillyClientEngine.chameleon.hasSampledOnce,
+      observers: renderTest.activeObservers("mutation"), jobs: renderTest.chameleonJobs(),
+    };
+    renderTest.timeout(1500);
+    SillyClientEngine.chameleon.onTargetMutated();
+    renderTest.timeout(120);
+    renderTest.timeout(500);
+    return {
+      settled, observers: renderTest.activeObservers("mutation"),
+      jobs: renderTest.chameleonJobs(), reports: colors.length,
+    };
+  });
+  assert.deepEqual(result, {
+    settled: { sampled: true, observers: 0, jobs: [] },
+    observers: 0, jobs: [], reports: 2,
+  });
+});
+
+test("disabled extraction cancels startup and ignores late mutation notifications", async () => {
+  const result = await page.evaluate(() => {
+    window.__scUpdateRenderSettings(false, "realtime", false);
+    const disabled = {
+      observers: renderTest.activeObservers("mutation"), jobs: renderTest.chameleonJobs(),
+    };
+    renderTest.timeout(1500);
+    SillyClientEngine.chameleon.onTargetMutated();
+    renderTest.timeout(120);
+    return { disabled, observers: renderTest.activeObservers("mutation"), jobs: renderTest.chameleonJobs() };
+  });
+  assert.deepEqual(result, {
+    disabled: { observers: 0, jobs: [] }, observers: 0, jobs: [],
+  });
+});
+
+test("completed once extraction remains dormant across repeated visibility and BFCache restores", async () => {
+  const result = await page.evaluate(() => {
+    document.getElementById("top-bar").style.backgroundColor = "rgb(10, 20, 30)";
+    window.__scUpdateRenderSettings(true, "once", true);
+    renderTest.timeout(400);
+    for (let index = 0; index < 3; index++) {
+      renderTest.hide(true);
+      renderTest.hide(false);
+      window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+      renderTest.timeout(1500);
+    }
+    return {
+      sampled: SillyClientEngine.chameleon.hasSampledOnce,
+      observers: renderTest.activeObservers("mutation"), jobs: renderTest.chameleonJobs(),
+    };
+  });
+  assert.deepEqual(result, { sampled: true, observers: 0, jobs: [] });
+});
+
+test("explicit native refresh can recalibrate completed once extraction without restarting automatic work", async () => {
+  const result = await page.evaluate(() => {
+    const colors = [];
+    window.SillyClientRenderBridge = { onColorChanged: color => colors.push(color) };
+    const topBar = document.getElementById("top-bar");
+    topBar.style.backgroundColor = "rgb(10, 20, 30)";
+    window.__scUpdateRenderSettings(true, "once", true);
+    renderTest.timeout(400);
+    topBar.style.backgroundColor = "rgb(40, 50, 60)";
+    SillyClientEngine.chameleon.lastReportedColor = null;
+    SillyClientEngine.chameleon.sampleAndReport(true);
+    return {
+      lastColor: colors.at(-1), sampled: SillyClientEngine.chameleon.hasSampledOnce,
+      observers: renderTest.activeObservers("mutation"), jobs: renderTest.chameleonJobs(),
+    };
+  });
+  assert.deepEqual(result, {
+    lastColor: 0xff000000 | 40 << 16 | 50 << 8 | 60, sampled: true, observers: 0, jobs: [],
+  });
+});
+
+test("hiding cancels the pending once-settle task before it can complete", async () => {
+  const result = await page.evaluate(() => {
+    document.getElementById("top-bar").style.backgroundColor = "rgb(10, 20, 30)";
+    window.__scUpdateRenderSettings(true, "once", true);
+    renderTest.hide(true);
+    const hiddenJobs = renderTest.chameleonJobs();
+    renderTest.timeout(400);
+    return {
+      hiddenJobs, sampled: SillyClientEngine.chameleon.hasSampledOnce,
+      observers: renderTest.activeObservers(), jobs: renderTest.chameleonJobs(),
+    };
+  });
+  assert.deepEqual(result, { hiddenJobs: [], sampled: false, observers: 0, jobs: [] });
+});
+
+test("disposal cancels pending once-settle tasks and settings cannot restart them", async () => {
+  const result = await page.evaluate(() => {
+    document.getElementById("top-bar").style.backgroundColor = "rgb(10, 20, 30)";
+    window.__scUpdateRenderSettings(true, "once", true);
+    SillyClientEngine.dispose();
+    window.__scUpdateRenderSettings(true, "once", true);
+    return { timers: renderTest.timers.size, observers: renderTest.activeObservers() };
+  });
+  assert.deepEqual(result, { timers: 0, observers: 0 });
+});
+
+test("changing completed once extraction to realtime restores observation and changed-color reports", async () => {
+  const result = await page.evaluate(() => {
+    const colors = [];
+    window.SillyClientRenderBridge = { onColorChanged: color => colors.push(color) };
+    const topBar = document.getElementById("top-bar");
+    topBar.style.backgroundColor = "rgb(10, 20, 30)";
+    window.__scUpdateRenderSettings(true, "once", true);
+    renderTest.timeout(400);
+    topBar.style.backgroundColor = "rgb(40, 50, 60)";
+    window.__scUpdateRenderSettings(true, "realtime", true);
+    topBar.style.backgroundColor = "rgb(70, 80, 90)";
+    SillyClientEngine.chameleon.onTargetMutated();
+    renderTest.timeout(120);
+    return {
+      sampled: SillyClientEngine.chameleon.hasSampledOnce,
+      observers: renderTest.activeObservers("mutation"), recentColors: colors.slice(-2),
+    };
+  });
+  assert.deepEqual(result, {
+    sampled: false, observers: 1,
+    recentColors: [0xff000000 | 40 << 16 | 50 << 8 | 60, 0xff000000 | 70 << 16 | 80 << 8 | 90],
+  });
+});
+
+test("changing pending once extraction to realtime cancels both once-settle paths", async () => {
+  const result = await page.evaluate(() => {
+    document.getElementById("top-bar").style.backgroundColor = "rgb(10, 20, 30)";
+    window.__scUpdateRenderSettings(true, "once", true);
+    SillyClientEngine.chameleon.onTargetMutated();
+    renderTest.timeout(120);
+    window.__scUpdateRenderSettings(true, "realtime", true);
+    const pendingAfterChange = renderTest.chameleonJobs();
+    renderTest.timeout(400);
+    renderTest.timeout(500);
+    return {
+      sampled: SillyClientEngine.chameleon.hasSampledOnce,
+      observers: renderTest.activeObservers("mutation"), pendingAfterChange, jobs: renderTest.chameleonJobs(),
+    };
+  });
+  assert.deepEqual(result, { sampled: false, observers: 1, pendingAfterChange: [1500], jobs: [1500] });
+});
+
+for (const mode of ["once", "realtime"]) {
+  test(`reenabling ${mode} extraction restores only its intended sampling lifecycle`, async () => {
+    const result = await page.evaluate(mode => {
+      window.__scUpdateRenderSettings(false, mode, false);
+      const colors = [];
+      window.SillyClientRenderBridge = { onColorChanged: color => colors.push(color) };
+      document.getElementById("top-bar").style.backgroundColor = "rgb(10, 20, 30)";
+      window.__scUpdateRenderSettings(true, mode, true);
+      renderTest.timeout(400);
+      return {
+        sampled: SillyClientEngine.chameleon.hasSampledOnce,
+        observers: renderTest.activeObservers("mutation"), jobs: renderTest.chameleonJobs(),
+        lastColor: colors.at(-1),
+      };
+    }, mode);
+    assert.deepEqual(result, {
+      sampled: mode === "once", observers: mode === "once" ? 0 : 1,
+      jobs: mode === "once" ? [] : [1500], lastColor: 0xff000000 | 10 << 16 | 20 << 8 | 30,
+    });
+  });
+}
 
 test("stream diagnostics coalesce at the native frame rate without touching HTML", async () => {
   await page.evaluate(() => SillyClientEngine.toggleHud());

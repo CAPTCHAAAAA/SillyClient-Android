@@ -20,6 +20,8 @@ data class RuntimePaths(
 ) {
     val installationsDir: File get() = File(tarvenHome, "installations")
     val instancePasswordsFile: File get() = File(tarvenHome, "instance-passwords.json")
+    /** App-private usage metadata; never placed below a user-selected instance root. */
+    val instanceUsageFile: File get() = InstanceUsageStore.ledgerFile(tarvenHome)
     val instanceLock: InstanceLock by lazy { InstanceLock(instancePasswordsFile) }
     val installLocations: InstallLocationRegistry by lazy {
         InstallLocationRegistry(

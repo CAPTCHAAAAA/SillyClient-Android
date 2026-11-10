@@ -42,12 +42,34 @@ test("only an explicit root selection adds the dedicated instance folder", () =>
   assert.equal(location.exactInstallTarget(exact.path, exact.mode, "New instance"), "/external/Selected");
 });
 
-test("copy migration turns a selected root into a new exact target without changing identity", () => {
+test("a selected root produces an immediate child without changing identity", () => {
   assert.equal(location.exactInstallTarget("D:\\Custom\\", "root", "local-100"), "D:\\Custom\\local-100");
   assert.equal(location.exactInstallTarget("/private/Custom/", "root", "local-100"), "/private/Custom/local-100");
   assert.equal(location.exactInstallTarget("/", "root", "local-100"), "/local-100");
   assert.equal(location.exactInstallTarget("D:\\Custom\\chosen-name", "exact", "local-100"), "D:\\Custom\\chosen-name");
   assert.equal(location.exactInstallTarget("", "root", "local-100"), undefined);
+});
+
+test("a same-named parent never substitutes for a new instance directory", () => {
+  assert.equal(location.buildInstanceSubfolder("/storage/My Tavern", "My Tavern"), "/storage/My Tavern/My Tavern");
+  assert.equal(location.buildInstanceSubfolder("D:\\Tavern\\", "Tavern"), "D:\\Tavern\\Tavern");
+  assert.equal(location.buildInstanceSubfolder("/", "Tavern"), "/Tavern");
+});
+
+test("relocation preserves the physical directory name under the selected parent", () => {
+  assert.equal(location.relocationTargetInParent("/storage/New", "/storage/Old/Actual name"), "/storage/New/Actual name");
+  assert.equal(location.relocationTargetInParent("/storage/Actual name", "/storage/Old/Actual name"), "/storage/Actual name/Actual name");
+  assert.equal(location.relocationTargetInParent(" '/storage/New/' ", "/storage/Old/Original?name"), "/storage/New/Original?name");
+  assert.equal(location.relocationTargetInParent("/", "/storage/Old/Tavern"), "/Tavern");
+  assert.equal(location.relocationTargetInParent("E:\\Taverns\\", "D:\\Old\\Actual name"), "E:\\Taverns\\Actual name");
+});
+
+test("relocation rejects a missing parent or unresolved physical directory", () => {
+  for (const [parent, source] of [["", "/storage/Old/Tavern"], ["/storage/New", ""], ["/storage/New", "/"], ["/storage/New", ".."]]) {
+    assert.throws(() => location.relocationTargetInParent(parent, source));
+  }
+  assert.throws(() => location.relocationTargetInParent("content://provider/tree/test", "/storage/Old/Tavern"));
+  assert.throws(() => location.relocationTargetInParent("/storage/New", "content://provider/tree/test"));
 });
 
 test("document-provider URIs cannot be disguised as executable install paths", () => {
