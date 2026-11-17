@@ -9,6 +9,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 class BundledDependencyArchivesTest {
@@ -77,6 +78,12 @@ class BundledDependencyArchivesTest {
             .firstOrNull { File(it, "sillytavern-release.zip").isFile }
         assertNotNull("Bundled source must be available to the build", assets)
         val bundled = requireNotNull(assets)
+        // Dependency archives are local-only release inputs, absent from clean CI checkouts.
+        assumeTrue("Local bundled dependency archives are required for this integration test",
+            bundled.listFiles()!!.any {
+                it.isFile && it.name.startsWith("dependency") &&
+                    (it.name.endsWith(".tar") || it.name.endsWith(".tar.gz"))
+            })
         val target = File(root, "instance").apply { mkdirs() }
         ZipFile(File(bundled, "sillytavern-release.zip")).use { zip ->
             for (name in listOf("package.json", "package-lock.json")) {

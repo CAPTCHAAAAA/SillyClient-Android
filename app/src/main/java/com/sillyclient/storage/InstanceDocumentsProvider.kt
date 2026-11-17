@@ -93,7 +93,7 @@ class InstanceDocumentsProvider : DocumentsProvider() {
         require(file.isFile) { "Directories cannot be opened as files" }
         val expected = Os.lstat(file.absolutePath)
         val descriptor = Os.open(file.absolutePath,
-            OsConstants.O_RDONLY or OsConstants.O_NOFOLLOW or OsConstants.O_CLOEXEC or OsConstants.O_NONBLOCK, 0)
+            OsConstants.O_RDONLY or OsConstants.O_NOFOLLOW or OPEN_CLOEXEC or OsConstants.O_NONBLOCK, 0)
         try {
             signal?.throwIfCanceled()
             policy.resolve(reference, sources())
@@ -176,6 +176,8 @@ class InstanceDocumentsProvider : DocumentsProvider() {
     }
 
     companion object {
+        // Linux O_CLOEXEC is supported on API 26; its Java field was exposed in API 27.
+        private const val OPEN_CLOEXEC = 0x80000
         private const val ROOT_ID = "sillyclient-instances"
         private const val ROOT_DOCUMENT = "root"
         private val ROOT_COLUMNS = arrayOf(Root.COLUMN_ROOT_ID, Root.COLUMN_DOCUMENT_ID, Root.COLUMN_TITLE,

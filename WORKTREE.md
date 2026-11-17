@@ -18,6 +18,15 @@
 
 ## 二、 当前现场明细 (Current State)
 
+### 2026-11-18 Android 1.15.0 正式包清理、重建与覆盖安装
+
+- **范围**：删除软件层合成故障实例、620ms Logo 长按注入及专用预览测试；真实异常捕获、Sentry 反馈、正常实例与新手引导保留。版本维持 `1.15.0 / 77`。
+- **构建修复**：使用工作区本地 SDK 和历史升级签名，仅在构建子进程移除冲突环境变量；以 API 26 可用的 Linux `O_CLOEXEC` 数值替代 API 27 才公开的 Java 字段，并显式标注 Android R 权限检查分支，保持存储访问行为。无本地依赖归档的干净 CI checkout 仅跳过该真实归档集成用例，合成归档回归继续执行。
+- **本轮门禁**：前端 131/131；完整 JVM 521 项（497 通过、24 环境跳过、0 失败/错误）；fixture 条件修正后额外定向重跑归档用例 2/2；Release lint 0 错误 / 33 警告；`assembleRelease`、历史签名校验、前端官方资源同步及校验通过。
+- **正式 APK**：199,925,331 字节，SHA-256 `5ae1db50c8d72706d040ff9025f83875a413baef54b8e13c84146d027906fa2b`；全部 ZIP CRC 通过，29/29 前端资源与生成目录逐字节一致，合成故障标记为 0，真实 Sentry 传输保留。最终统一归档路径为 `Local/artifacts/v1.15.0/SillyClient-Android-v1.15.0.apk`。
+- **用户授权覆盖安装**：设备 `af72222f` 于 `2026-11-18 01:28:58` 执行 `adb install -r` 成功；设备 base.apk 摘要与上述正式包一致，版本 `1.15.0 / 77`，首次安装时间仍为 `2026-11-08 05:11:06`。未清除应用数据，未自动启动或操作 UI。回执：`Local/evidence/android-install-20261118-no-fault-demo/installation.json`。
+- **证据**：`Local/evidence/android-release-audit-20261118/` 保存完整测试、lint、构建日志与包内容核验。下方 11 月 17 日的 SDK 缺失和旧包记录属于历史，已由本轮正式包与重跑结果替代。提交、远端同步及 CI 最终回执以 Git 与工作区统一发布记录为准。
+
 ### 2026-11-17 Android 1.15.0 前端同步与 Sentry 反馈验收交付
 
 - **范围与授权**：用户确认 Android 与 Windows 的反馈功能均成功，要求两个仓库提交、推送、同步并更新记录；本次在 Android LTS 提交，并快进同步 `SillyClient_Android/main`。

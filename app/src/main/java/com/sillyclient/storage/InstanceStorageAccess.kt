@@ -16,7 +16,7 @@ object InstanceStorageAccess {
 
     fun usesAllFilesAccess(sdk: Int): Boolean = sdk >= 30
 
-    fun isGranted(context: Context): Boolean = if (usesAllFilesAccess(Build.VERSION.SDK_INT)) {
+    fun isGranted(context: Context): Boolean = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
         Environment.isExternalStorageManager()
     } else {
         context.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
