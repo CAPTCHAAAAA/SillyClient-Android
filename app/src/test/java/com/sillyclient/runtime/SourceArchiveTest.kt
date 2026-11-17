@@ -130,12 +130,26 @@ class SourceArchiveTest {
     fun excludesImportedHostIdentityAndTransactionMarkers() = withRoot { root ->
         val destination = File(root, "destination").apply { mkdirs() }
         val marker = File(destination, ".sillyclient-install-current").apply { writeText("current") }
+        val nomedia = File(destination, ".nomedia").apply { writeBytes(ByteArray(0)) }
         val zip = archive(root, "server.js" to "server", ".sc-identity" to "old identity",
-            InstanceInstaller.DEPENDENCY_MARKER to "old pending", ".sillyclient-install-current" to "old owner")
+            InstanceInstaller.DEPENDENCY_MARKER to "old pending", ".sillyclient-install-current" to "old owner",
+            ".nomedia" to "upstream nomedia")
         assertEquals(1, extract(zip, destination))
         assertEquals("current", marker.readText())
+        assertEquals(0, nomedia.length())
         assertFalse(File(destination, ".sc-identity").exists())
         assertFalse(File(destination, InstanceInstaller.DEPENDENCY_MARKER).exists())
+    }
+
+    @Test
+    fun ignoresRootNomediaConflictWithPreCreatedHostFile() = withRoot { root ->
+        val destination = File(root, "destination").apply { mkdirs() }
+        val nomedia = File(destination, ".nomedia").apply { writeBytes(ByteArray(0)) }
+        val zip = archive(root, "SillyTavern-1.14.0/server.js" to "server", "SillyTavern-1.14.0/.nomedia" to "")
+        assertEquals(1, extract(zip, destination))
+        assertEquals("server", File(destination, "server.js").readText())
+        assertTrue(nomedia.isFile)
+        assertEquals(0L, nomedia.length())
     }
 
     @Test

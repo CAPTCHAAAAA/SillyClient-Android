@@ -10,13 +10,35 @@
 - **工作树物理绝对路径**: `D:\BACKUP\Project\SillyClient\.worktrees\release-hardening-android`
 - **所属产品仓库**: `SillyClient_Android` (GitHub: `CAPTCHAAAAA/SillyClient-Android`)
 - **当前本地分支**: `lts/android-release-hardening`
-- **跟踪远端分支**: `origin/feature/release-hardening`
-- **当前基线提交**: `12196ae`（`1.14.1` / `versionCode=76`）；与 `origin/lts/android-release-hardening` 一致。Android `main` 为 `f53d87f`；旧 upstream 仍为 `origin/feature/release-hardening`，status 的 ahead 3 不代表本轮已提交或 LTS 尚未推送。
+- **跟踪远端分支**: `origin/lts/android-release-hardening`
+- **本轮交付基线**: `16fb3a6`（先快进纳入 `origin/main` 的 README 更新，包含原 LTS `bfe5b0e`）；当前版本为 `1.15.0` / `versionCode=77`。最终交付提交以本树 `git log` 及工作区 `Local/docs/CURRENT_STATE.md` 的远端核验记录为准。
 - **工作区定位**: Android 平台主力发布加固、SAF 存储访问框架对接、设置面板精简与实例导出重构的唯一主力工作树。
 
 ---
 
 ## 二、 当前现场明细 (Current State)
+
+### 2026-11-17 Android 1.15.0 前端同步与 Sentry 反馈验收交付
+
+- **范围与授权**：用户确认 Android 与 Windows 的反馈功能均成功，要求两个仓库提交、推送、同步并更新记录；本次在 Android LTS 提交，并快进同步 `SillyClient_Android/main`。
+- **交付内容**：同步通用前端 `a4308d9`（包含引导启动修复、全局原样报错与脱敏、Sentry 反馈/草稿兜底、界面缩放、溶解羽化、抽屉虚化与浮层退场），保持 Android 插件、SAF 目录选择、ZIP 导入导出及创建意图保护；一并提交下述 `.nomedia` 解压冲突修复与回归用例。版本更新为 `1.15.0 / 77`。
+- **本轮验证**：前端 `node --test web/capacitor-ui/tests/*.test.cjs` 133/133 通过；`pnpm run build:android`（TypeScript + Vite + 官方资源同步）、`verify-frontend-assets.mjs` 与 `git diff --check` 通过。构建资源由脚本生成，未手改打包文件。
+- **原生验证边界**：本轮重跑 `:app:testDebugUnitTest :app:assembleRelease` 先遇 `ANDROID_SDK_HOME` / `ANDROID_USER_HOME` 冲突；仅在构建子进程移除废弃变量后，确认 ignored `local.properties` 指向的 `D:\BACKUP\AndroidStudio\System\SDK` 已不存在，未能重新执行原生测试和打包。现有 2026-11-17 01:44 JVM XML 报告共 521 项（460 通过、61 跳过、0 失败/错误，含 `.nomedia` 冲突用例），这是既有结果，不能写成本轮新跑通过；未下载安装 SDK 或修改系统环境。
+- **既有安装包与反馈验收**：`Local/artifacts/v1.15.0/SillyClient-Android-v1.15.0.apk` 为 199,925,995 字节，SHA-256 `751793120b8ab2455aadc7b823bce283af19bd51f3739cbd583c0512526b3f06`，与 `Local/evidence/android-install-20261117-203053-75179312/installation.json` 中设备 `af72222f` 的 `1.15.0 / 77` 安装回执一致。本次前端重建不代表新包已装机。
+- **Sentry 已收到并入库**：真机反馈编号 `SC-C7A0FFE1`；Sentry `SILLYCLIENT-CONSOLE-5` / `7852554349`（`android`、`sillyclient@1.15.0`、累计 2 次、指纹 `sc-4604fa28`）。手动执行主仓 `sync-sentry-issues.yml`，Actions Run `44104671932` 成功并镜像为 GitHub Issue `CAPTCHAAAAA/SillyClient#10`。证据在 `Local/evidence/1.15.0-feedback-diagnosis/manual-sync-44104671932/`；先前仅有 HTTP 200 的诊断记录已由入库证据补全。
+- **交付回执**：本轮检查及提交同步结果统一保存在 `Local/evidence/v1.15.0-repository-delivery-20261117/`。以下旧版“未提交 / 暂不打包”段落保留为历史现场。
+
+### 2026-11-16 修复在线下载旧版本/非内置酒馆源码解压触发 .nomedia 冲突导致创建失败的问题（测试全绿，暂不打包）
+
+- **范围**：本 Android 工作树（`.worktrees/release-hardening-android`），版本保持 `1.14.1 / 76`。
+- **问题与根因**：
+  - 用户反馈选择在线旧版本（如 1.14.0 或其他历史版本）时创建实例在 78% 阶段报错：`[ERR] Source extraction failed: Source archive would replace existing files; existing files were preserved` 并回滚失败；
+  - 根因：`InstanceInstaller.kt` 在准备 `staging` 临时目录时，会先写入一个空的 `.nomedia` 文件以防 MediaProvider 触发大开销媒体扫描；而 SillyTavern 官方 GitHub 发行包根目录下本身也自带 `.nomedia`；`SourceArchive.kt` 的防覆盖白名单 `isHostMetadata(path)` 漏掉了 `.nomedia`，导致解压时判定为冲突覆盖而抛出异常；
+  - 默认内置版本直接通过缓存的 tar 管道提取，不经过该校验，故仅在线下载/非内置版本 100% 复现该拦截。
+- **修复方案与交付**：
+  1. `SourceArchive.kt`：在 `isHostMetadata(path)` 中将 `path == ".nomedia"` 加入白名单，解压时自动忽略与宿主预置 `.nomedia` 的覆盖冲突；
+  2. `SourceArchiveTest.kt`：更新 `excludesImportedHostIdentityAndTransactionMarkers` 并新增 `ignoresRootNomediaConflictWithPreCreatedHostFile` 测试用例，断言解压带 `.nomedia` 的 ZIP 时宿主已有 `.nomedia` 保持 0 字节且其余文件正常解压；
+  3. 测试验证：运行 `SourceArchiveTest` 与完整 `testDebugUnitTest` 全量绿灯通过（24 actionable tasks PASS）。根据用户指令，暂不打包，等待后续更新统一打包。
 
 ### 2026-11-10 最新交付：根除引导画面撕裂与频闪（SVG Mask 视口切割 + 模态框平滑淡出 + SC Bordeaux Revision 3 冻结，已覆盖安装真机 af72222f，未提交）
 
@@ -234,6 +256,7 @@ cd D:\BACKUP\Project\SillyClient\.worktrees\release-hardening-android
 
 | 日期 | 操作人 | 改动摘要与内部验证结果 | 状态 |
 | :--- | :--- | :--- | :---: |
+| 2026-11-17 | Agent | 1.15.0 / 77：同步 common `a4308d9`，提交 Sentry 诊断、缩放与动效及 `.nomedia` 修复；前端 133/133、生产构建及资源校验通过；既有真机 APK 与回执哈希一致，Sentry `SILLYCLIENT-CONSOLE-5` 已入库并镜像 #10；本轮原生重跑因本机 SDK 缺失未完成，完整限制见上文 | 用户验收后提交同步，远端回执见 CURRENT_STATE |
 | 2026-10-08 | Agent (77d088b) | Android 1.12.0：压缩包数据无损导入 + 迁移链路下线，436 项单测全绿，产出 APK a9e27af9 | 已交付 |
 | 2026-10-09 | Agent (9912e36) | 纯净后端骨架重构：强类型领域模型取代元组，死代码剥离，清零编译器告警并推送远端 | 已推送 |
 | 2026-10-09 | Agent | 实例导出（ZIP）纯净重构：彻底消灭硬编码路径，新增 `InstanceExport` 领域服务与 `InstanceExportTest`，接入 SAF 另存为选择器，全量单测通过 | 已入库 (a5b2043) |

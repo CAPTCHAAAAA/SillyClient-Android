@@ -170,6 +170,7 @@ object SourceArchive {
 
     internal fun isHostMetadata(path: String): Boolean =
         path == ".sc-identity" || path == InstanceInstaller.DEPENDENCY_MARKER ||
+            path == ".nomedia" ||
             (!path.contains('/') && path.startsWith(InstanceInstaller.STAGING_PREFIX))
 
     private fun exists(file: File): Boolean = Files.exists(file.toPath(), LinkOption.NOFOLLOW_LINKS)

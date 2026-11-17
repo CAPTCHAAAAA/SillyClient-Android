@@ -105,8 +105,9 @@ function deferred() {
 function routeFixture(options = {}) {
   const state = { settings: normalizeRenderEngineSettings(), pending: false, error: null };
   const scope = {
-    isMobile: true, canPreviewRenderSettings: false,
+    isMobile: true, canPreviewRenderSettings: false, platformTag: "android",
     normalizeRenderEngineSettings, humanizeNativeError: text => text,
+    createDiagnosticContext: () => null, reportGlobalError: () => {},
     renderHydrated: { current: true },
     renderSettingsRef: { current: state.settings },
     renderSavePending: { current: false },
@@ -114,6 +115,7 @@ function routeFixture(options = {}) {
     setRenderSettings: value => { state.settings = value; },
     setRenderSettingsPending: value => { state.pending = value; },
     setRenderSettingsError: value => { state.error = value; },
+    setRenderSettingsDiagnostic: () => {},
     ...options,
   };
   return { state, scope, save: evaluate(save, scope), hydrate: evaluate(hydrate, scope) };

@@ -107,7 +107,12 @@ function nativeFixture(overrides = {}) {
     enterImmersive: async () => {},
     getInstanceInfo: async options => ({ path: options.installPath, version: "1.19.0" }),
     fetchReleases: async () => ({ releases: [release] }),
-    relocateInstance: async options => ({ success: true, newPath: options.targetPath }),
+    relocateInstance: async options => ({
+      success: true,
+      instanceId: options.instanceId || "native-id",
+      oldPath: options.installPath || "/old",
+      newPath: options.targetPath,
+    }),
     pickZipFile: async () => ({ path: "/imports/data.zip" }),
     inspectImportArchive: async () => summary,
     importInstanceData: async () => ({ imported: 3, bytes: 4096 }),
@@ -131,7 +136,10 @@ function routeFixture(values = {}, overrides = {}) {
     React: { createElement: (type, props) => ({ type, props }) }, Folder: "Folder", Cloud: "Cloud",
     operations: new OperationCoordinator(), directoryPickerGeneration: { current: 0 },
     lastLaunchCreateIntentRef: { current: false },
-    isWeb: false, isAndroid: true, showNewInstancePanel: true, newInstanceMode: "local",
+    isWeb: false, isAndroid: true, isIOS: false, platformTag: "android",
+    reportGlobalError: () => {},
+    ClientValidationError: class ClientValidationError extends Error {},
+    showNewInstancePanel: true, newInstanceMode: "local", newInstancePathMode: "exact",
     newInstanceDir: "/picked/Parent", newInstanceName: "New instance", newInstanceLocalZip: null,
     newInstanceVersion: "1.19.0", newInstanceUrl: "http://", newInstanceExtensionIds: [],
     newInstanceCompanionPresetEnabled: false, newRemoteAuthEnabled: false,
@@ -218,7 +226,11 @@ function relocateFixture(overrides = {}, props = {}, platform = "android") {
   const host = hookHost();
   const react = {
     ...host.hooks, Fragment: "Fragment",
-    createElement: (type, attributes, ...children) => ({ type, props: { ...attributes, children } }),
+    createElement: (type, attributes, ...children) => (
+      typeof type === "function"
+        ? type({ ...attributes, children })
+        : { type, props: { ...attributes, children } }
+    ),
   };
   const filename = path.join(src, "components/modals/RelocateInstanceModal.tsx");
   const scope = context({ require: name => {
@@ -228,9 +240,17 @@ function relocateFixture(overrides = {}, props = {}, platform = "android") {
     if (name.endsWith("/utils")) return { cn: (...parts) => parts.filter(Boolean).join(" "), formatDisplayVersion: String };
     if (name.endsWith("/layers")) return { LAYERS: { DIALOG_SURFACE: 2, DIALOG_BACKDROP: 1 } };
     if (name.endsWith("/LayerBackdrop")) return { LayerBackdrop: "LayerBackdrop" };
+    if (name.endsWith("/ActionButton")) return {
+      ActionButton: ({ children, ...rest }) => react.createElement("button", { type: "button", ...rest }, children),
+    };
+    if (name.endsWith("/ErrorReportAlert")) return {
+      ErrorReportAlert: ({ error }) => (error ? react.createElement("div", { role: "alert" }, error) : null),
+    };
     if (name.endsWith("/capacitor-plugin")) return { TarvenEnv: native.api };
     if (name.endsWith("/install-location")) return location;
+    if (name.endsWith("/instance-location-state")) return loadSource(path.join(src, "lib/instance-location-state.ts"));
     if (name.endsWith("/native-errors")) return nativeErrors;
+    if (name.endsWith("/global-error-store")) return { reportGlobalError: () => {} };
     throw new Error(`Unexpected component import: ${name}`);
   } });
   scope.module = { exports: {} };
@@ -242,7 +262,7 @@ function relocateFixture(overrides = {}, props = {}, platform = "android") {
   vm.runInContext(code, scope, { filename });
   const committed = [];
   let currentProps = { instance: local, isOpen: true, isLight: true, glassBg: "",
-    onClose() {}, onRelocated: (id, newPath) => committed.push({ id, newPath }), ...props };
+    onClose() {}, onRelocated: (id, result) => committed.push({ id, newPath: result?.newPath }), ...props };
   const render = changes => {
     currentProps = { ...currentProps, ...changes };
     return host.render(scope.module.exports.RelocateInstanceModal, currentProps);
@@ -275,14 +295,20 @@ function manageFixture(instance = local, overrides = {}) {
   const native = nativeFixture(overrides);
   const host = hookHost();
   const names = ["exportStatus", "isExporting", "importArchive", "importIncludeOptional", "importStatus",
-    "isInspectingImport", "isImporting", "localAboutInfo", "mp", "isLocalInstance", "isInstanceRunning",
-    "selectImportArchive", "importSelectedArchive", "exportInstanceArchive"];
+    "storageDiagnostic", "isInspectingImport", "isImporting", "localAboutInfo", "mp", "isLocalInstance",
+    "isInstanceRunning", "selectImportArchive", "importSelectedArchive", "exportInstanceArchive"];
   const statements = names.map(name => declaration(manageFile, name).parent.parent.getText(ast(manageFile)));
   const reset = nodes(manageFile, node => ts.isExpressionStatement(node) && ts.isCallExpression(node.expression) &&
     node.expression.expression.getText(ast(manageFile)) === "useEffect" &&
     node.expression.arguments[0]?.getText(ast(manageFile)).includes("setImportIncludeOptional(false)"));
   assert.equal(reset.length, 1);
-  const scope = context({ ...host.hooks, TarvenEnv: native.api });
+  const scope = context({
+    ...host.hooks,
+    ...nativeErrors,
+    TarvenEnv: native.api,
+    isIOS: false,
+    reportGlobalError: () => {},
+  });
   scope.formatArchiveBytes = functionFromSource(manageFile, "formatArchiveBytes", scope);
   scope.isNativeCancelError = functionFromSource(manageFile, "isNativeCancelError", scope);
   const component = evaluate(`(instance: any) => {
@@ -605,7 +631,7 @@ test("an already committed relocation persists its result after the old modal cl
   const pending = f.button("开始无损迁移").props.onClick();
   f.render({ isOpen: false });
   f.render({ isOpen: true, instance: { ...local, id: "another-card" } });
-  response.resolve({ success: true, newPath: "/native/actual-result" });
+  response.resolve({ success: true, instanceId: local.installDir, oldPath: local.installPath, newPath: "/native/actual-result" });
   await pending;
   assert.deepEqual(f.committed, [{ id: local.id, newPath: "/native/actual-result" }]);
   assert.doesNotMatch(f.text(), /实例数据无损迁移完成|actual-result/);

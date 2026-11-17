@@ -76,3 +76,41 @@ test("document-provider URIs cannot be disguised as executable install paths", (
   assert.throws(() => location.installationSelection({ path: "content://provider/tree/test" }));
   assert.throws(() => location.exactInstallTarget("content://provider/tree/test", "exact", "local-100"));
 });
+
+test("validateInstallPathInput rejects URIs, breadcrumb labels, relative iOS paths, and parent traversals", () => {
+  assert.equal(location.validateInstallPathInput("", { isIOS: true }), null);
+  assert.equal(location.validateInstallPathInput("/var/mobile/Containers/Data/SillyClient", { isIOS: true }), null);
+  assert.match(
+    location.validateInstallPathInput("我的 iPhone ▸ SillyClient", { isIOS: true }),
+    /浏览/
+  );
+  assert.match(
+    location.validateInstallPathInput("relative/path", { isIOS: true }),
+    /浏览/
+  );
+  assert.match(
+    location.validateInstallPathInput("/var/mobile/../escape", { isIOS: true }),
+    /\.\./
+  );
+  assert.match(
+    location.validateInstallPathInput("content://com.android.externalstorage/tree", { isIOS: false }),
+    /本地路径/
+  );
+  assert.match(
+    location.validateInstallPathInput("C:\\Users\\test\\..\\escape", { isIOS: false }),
+    /\.\./
+  );
+  assert.equal(location.validateInstallPathInput("D:\\Tavern\\Instances\\demo", { isIOS: false }), null);
+
+  assert.equal(location.normalizeInstanceIdentity("测试中文", "fallback-id"), "fallback-id");
+  assert.equal(location.normalizeInstanceIdentity("My Instance 01"), "My-Instance-01");
+});
+
+test("iOS picker hides only its explicit cancellation code, not provider errors or unexpected dismissals", () => {
+  assert.equal(location.shouldShowDirectoryPickerError({ code: "PICKER_CANCELLED", message: "Selection cancelled" }, true), false);
+  assert.equal(location.shouldShowDirectoryPickerError(new Error("PICKER_CANCELLED"), true), false);
+  assert.equal(location.shouldShowDirectoryPickerError({ code: "PICKER_DISMISSED_WITHOUT_RESULT", message: "PICKER_DISMISSED_WITHOUT_RESULT" }, true), true);
+  assert.equal(location.shouldShowDirectoryPickerError(new Error("PICKER_DISMISSED_WITHOUT_RESULT"), true), true);
+  assert.equal(location.shouldShowDirectoryPickerError(new Error("NSFileProviderError: operation cancelled by provider"), true), true);
+  assert.equal(location.shouldShowDirectoryPickerError(new Error("Selection cancelled"), true), true);
+});
