@@ -11,12 +11,18 @@
 - **所属产品仓库**: `SillyClient_Android` (GitHub: `CAPTCHAAAAA/SillyClient-Android`)
 - **当前本地分支**: `lts/android-release-hardening`
 - **跟踪远端分支**: `origin/lts/android-release-hardening`
-- **本轮交付基线**: `16fb3a6`（先快进纳入 `origin/main` 的 README 更新，包含原 LTS `bfe5b0e`）；当前版本为 `1.15.0` / `versionCode=77`。最终交付提交以本树 `git log` 及工作区 `Local/docs/CURRENT_STATE.md` 的远端核验记录为准。
+- **本轮交付基线**: `f9a4d54` -> `1.15.1` / `versionCode=78`；同步 `common-frontend`（`d946b58`）统一前端更新，最终交付提交以本树 `git log` 及工作区 `Local/docs/CURRENT_STATE.md` 的远端核验记录为准。
 - **工作区定位**: Android 平台主力发布加固、SAF 存储访问框架对接、设置面板精简与实例导出重构的唯一主力工作树。
 
 ---
 
 ## 二、 当前现场明细 (Current State)
+
+### 2026-11-19 Android 1.15.1 前端同步与统一发布
+
+- **同步范围**：从 `common-frontend`（`d946b58`）同步统一前端更新（`ManageFolderShell` + `folder-tab-geometry.ts` 一体 SVG 文件夹耳标页签与 `manage-shared-transition.ts` 780ms 刚性同向平切、`HeaderClock`、`CornerResizeCurve` hover/激活态、`interactionLocks`、按需远程轮询、取消/未实现错误收敛及业务源码 `src/dev/` 物理隔离）；严格剔除 `src/dev/DevDebugOverlay.tsx` 与 `src/dev/dev-fixtures.tsx`（保留 `src/main.tsx` 与 `src/dev/native-preview.ts` 既有测试边界）；`src/routes/index.tsx` 三方合并保留 `directoryPickerGeneration` 防抖守卫与 `provisionCreatedInstance` 后置 `!isAndroid` 的 `setInstancesRoot` 写入。原生 Kotlin/SAF 与签名配置保持不变。
+- **版本与门禁**：`web/capacitor-ui/package.json` 升为 `1.15.1`，`app/build.gradle.kts` 升为 `versionCode = 78` / `versionName = "1.15.1"`。前端 `tsc --noEmit`、Vite 生产构建（1956 modules）、前后两次 `node --test web/capacitor-ui/tests/*.test.cjs`（143/143，含 `dev-isolation.test.cjs`）、`sync-frontend.mjs` 与 `verify-frontend-assets.mjs` 全通；Gradle `lintDebug`（0 errors, 41 warnings）、Release lintVital（0 errors, 33 warnings）、`assembleRelease`、`verifyUpgradeSigning` 与完整 JVM 单元测试（`SILLYCLIENT_TEST_TEMP_DIR` 完整规范路径下 45 suites / 521 tests: 460 passed, 61 skipped, 0 failed, 0 errors）全绿通过。
+- **正式 APK**：归档至 `Local/artifacts/v1.15.1/SillyClient-Android-v1.15.1.apk`（199,932,927 字节，SHA-256 `87e7498f9619478cbecd40eed63b0be3cf5056f0a8ce6b3e634fca6c32d78b37`）；ZIP CRC 全部通过，29/29 打包前端资产与 `app/src/main/assets/public` 逐字节一致，含 Sentry 传输与 `1.15.1 / 78`，合成与开发测试标记为零，`apksigner` 确认 V2 升级证书 SHA-256 `97f0958bcce5ab059cb31bed5826303168b6877f22e0385de3058c2a21dbecbf`（证据：`Local/evidence/v1.15.1-release/android-package-audit.json`）。遵守零真机操控原则，未安装或启动应用。
 
 ### 2026-11-18 Android 1.15.0 正式包清理、重建与覆盖安装
 
