@@ -11,12 +11,21 @@
 - **所属产品仓库**: `SillyClient_Android` (GitHub: `CAPTCHAAAAA/SillyClient-Android`)
 - **当前本地分支**: `lts/android-release-hardening`
 - **跟踪远端分支**: `origin/lts/android-release-hardening`
-- **本轮交付基线**: `f9a4d54` -> `1.15.1` / `versionCode=78`；同步 `common-frontend`（`d946b58`）统一前端更新，最终交付提交以本树 `git log` 及工作区 `Local/docs/CURRENT_STATE.md` 的远端核验记录为准。
+- **本轮交付基线**: `adf3acc` -> `1.15.3` / `versionCode=79`；同步 `common-frontend` `v1.15.3` 修复与 Android 原生冷启动超时/删目录残留修复，待用户敲板后快进合入 `main` 发布。
 - **工作区定位**: Android 平台主力发布加固、SAF 存储访问框架对接、设置面板精简与实例导出重构的唯一主力工作树。
 
 ---
 
 ## 二、 当前现场明细 (Current State)
+
+### 2026-11-24 Android 1.15.3 Issue 全量修复与 Release APK 打包就绪（待用户敲板发布）
+
+- **问题修复范围（对应 `#17/#14`、`#11`、`#13`、`#20/#18/#19`）**：
+  - **冷启动探活超时与活动续期（`#17/#14`）**：新增 `app/src/main/java/com/sillyclient/runtime/StartupReadinessPolicy.kt` 并接入 `MainActivity.kt`：单次探活超时 `300ms → 2000ms`、基础冷启动超时 `60s → 120s`、Node 有标准输出/错误输出时按 `30s` 活动宽限续期至最高 `180s`，超时文案给出无路径泄漏的脱敏诊断（进程存活/已退出、已等时长、是否仍在输出）；
+  - **卸载目录残留兜底与脱敏诊断（`#13`）**：`MainActivity.kt` 停止服务等待由 `3s → 5s` 并启用 `NativeTreeRemoval(..., fallbackRetries = 3)`；`NativeTreeRemoval.kt` 保持「目录未删净绝不注销实例」与「保留 `.sc-identity`」不变量，在 `/system/bin/rm` 返回 0 但目录仍有残留时通过 `NOFOLLOW_LINKS` 有限退避重删（严格跳过 `.sc-identity`、不穿透符号链接），最终仍残留时返回不含路径的脱敏统计（顶层条目数与 `.fuse_hidden` 占用提示）；
+  - **通用前端同步（`#11`、`#14/#17`、`#20/#18/#19`）**：同步 `provision-timeout.ts`（`ProvisionTimeoutTracker`：5 分钟无进展空闲超时 + 25 分钟总上限，由 `progress`/`log` 心跳续期，替代旧 600s 固定死线）、`native-errors.ts`（`RESERVED_DIAGNOSTIC_TOKENS` 保护产品常见词防止指纹分裂）、`sentry-diagnostic.ts` / `submit-diagnostic-report.ts`（默认内置生产 DSN 仅在原生生产环境启用）与 `routes/index.tsx` Web 演示端兜底；严格剔除 `src/dev/`。
+- **版本与本机门禁**：`app/build.gradle.kts` 升为 `versionCode = 79` / `versionName = "1.15.3"`，`web/capacitor-ui/package.json` 升为 `1.15.3`。前端 `tsc --noEmit`、Vite 生产构建（1957 modules）、`node --test web/capacitor-ui/tests/*.test.cjs`（148/148，含 `dev-isolation.test.cjs` 与 `provision-timeout.test.cjs`）、`sync-frontend.mjs` 与 `verify-frontend-assets.mjs` 全通；Gradle `testDebugUnitTest`（`SILLYCLIENT_TEST_TEMP_DIR` 完整规范路径下 45 suites / 523 tests：487 passed, 36 skipped, 0 failed, 0 errors，含新增 `StartupReadinessPolicy` 与 `NativeTreeRemoval` 兜底回归）、`:app:lintDebug`、`:app:lintVitalRelease`、`:app:verifyUpgradeSigning` 与 `:app:assembleRelease` 全绿。
+- **正式 APK 验真与归档**：已归档至 `Local/artifacts/v1.15.3/SillyClient-Android-v1.15.3.apk`（199,939,347 字节，SHA-256 `0f6aff03f7cd73c9f3160e22e0e2baacaa81aa5461385fd52d210ad456d8781e`）；ZIP 576 条目 CRC 通过，28/28 前端资产与 `web/capacitor-ui/dist` 逐字节一致（另含 `sillyclient-build.json`），零 `src/dev` 残留；`apksigner` 核验 V2 历史升级签名证书 SHA-256 `97f0958bcce5ab059cb31bed5826303168b6877f22e0385de3058c2a21dbecbf`，`aapt2` 核验 `com.sillyclient` / `versionCode='79'` / `versionName='1.15.3'`。未安装或操控物理设备（`physicalDeviceTested: false`、`uiInteractionTested: false`）；未合入 `main` 或创建 Release，等待用户敲板发布。
 
 ### 2026-11-19 Android 1.15.1 前端同步与统一发布
 

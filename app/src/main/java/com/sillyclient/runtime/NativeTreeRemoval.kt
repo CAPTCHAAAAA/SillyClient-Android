@@ -1,8 +1,12 @@
 package com.sillyclient.runtime
 
 import java.io.File
+import java.io.IOException
+import java.nio.file.FileVisitResult
 import java.nio.file.Files
 import java.nio.file.LinkOption
+import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -13,7 +17,8 @@ class NativeTreeRemoval(
     private val idleTimeoutMillis: Long = 120_000,
     private val command: List<String> = listOf("/system/bin/rm"),
     private val progressIntervalMillis: Long = 1_000,
-    private val identityFileName: String = ".sc-identity"
+    private val identityFileName: String = ".sc-identity",
+    private val fallbackRetries: Int = 0
 ) {
     data class Progress(val removedEntries: Long, val elapsedMillis: Long)
 
@@ -90,14 +95,138 @@ class NativeTreeRemoval(
                     "系统删除命令失败（退出码 ${result.exitCode}）" + if (detail.isEmpty()) "" else "：$detail"
                 }
                 requireSameDirectory(owner, canonicalOwner, original)
-                check(batch.none { Files.exists(it.toPath(), LinkOption.NOFOLLOW_LINKS) }) {
-                    "实例目录仍有残留文件；实例标识已保留，请重试删除"
+                var remaining = batch.filter { Files.exists(it.toPath(), LinkOption.NOFOLLOW_LINKS) }
+                if (remaining.isNotEmpty() && fallbackRetries > 0) {
+                    remaining = removeRemainingWithFallback(remaining, owner, canonicalOwner, original, ensureActive, removed, ::report)
+                }
+                check(remaining.isEmpty()) {
+                    val summary = summarizeRemaining(remaining, owner)
+                    "实例目录仍有残留文件（$summary）；实例标识已保留，请重试删除"
                 }
             }
             return progress()
         } finally {
             report(force = true)
         }
+    }
+
+    /**
+     * Bounded NOFOLLOW_LINKS fallback sweep when `/system/bin/rm` exited 0 yet FUSE visibility lag
+     * or a releasing handle left entries behind. Never follows symlinks and never touches identityFileName.
+     */
+    private fun removeRemainingWithFallback(
+        initialRemaining: List<File>,
+        owner: File,
+        canonicalOwner: File,
+        original: BasicFileAttributes,
+        ensureActive: () -> Unit,
+        removed: AtomicLong,
+        report: (Boolean) -> Unit
+    ): List<File> {
+        var remaining = initialRemaining
+        val delays = longArrayOf(200L, 500L, 1_000L)
+        for (attempt in 0 until fallbackRetries) {
+            ensureActive()
+            requireSameDirectory(owner, canonicalOwner, original)
+            val delayMillis = delays[attempt.coerceAtMost(delays.lastIndex)]
+            try {
+                Thread.sleep(delayMillis)
+            } catch (interrupted: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw interrupted
+            }
+            ensureActive()
+            requireSameDirectory(owner, canonicalOwner, original)
+            for (target in remaining) {
+                ensureActive()
+                if (!Files.exists(target.toPath(), LinkOption.NOFOLLOW_LINKS)) continue
+                if (target.name == identityFileName) continue
+                deleteTreeNoFollow(target.toPath(), owner.toPath(), ensureActive, removed, report)
+            }
+            remaining = remaining.filter { Files.exists(it.toPath(), LinkOption.NOFOLLOW_LINKS) }
+            if (remaining.isEmpty()) break
+        }
+        return remaining
+    }
+
+    private fun deleteTreeNoFollow(
+        target: Path,
+        ownerPath: Path,
+        ensureActive: () -> Unit,
+        removed: AtomicLong,
+        report: (Boolean) -> Unit
+    ) {
+        val attrs = runCatching { Files.readAttributes(target, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS) }
+            .getOrNull() ?: return
+        if (attrs.isSymbolicLink || !attrs.isDirectory) {
+            if (target.fileName?.toString() != identityFileName && runCatching { Files.deleteIfExists(target) }.getOrDefault(false)) {
+                removed.incrementAndGet()
+                report(false)
+            }
+            return
+        }
+        runCatching {
+            Files.walkFileTree(target, emptySet(), 64, object : SimpleFileVisitor<Path>() {
+                override fun visitFile(file: Path, fileAttrs: BasicFileAttributes): FileVisitResult {
+                    ensureActive()
+                    if (file.parent == ownerPath && file.fileName?.toString() == identityFileName) {
+                        return FileVisitResult.CONTINUE
+                    }
+                    if (runCatching { Files.deleteIfExists(file) }.getOrDefault(false)) {
+                        removed.incrementAndGet()
+                        report(false)
+                    }
+                    return FileVisitResult.CONTINUE
+                }
+
+                override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult = FileVisitResult.CONTINUE
+
+                override fun postVisitDirectory(dir: Path, exc: IOException?): FileVisitResult {
+                    ensureActive()
+                    if (runCatching { Files.deleteIfExists(dir) }.getOrDefault(false)) {
+                        removed.incrementAndGet()
+                        report(false)
+                    }
+                    return FileVisitResult.CONTINUE
+                }
+            })
+        }
+    }
+
+    /** Produce sanitized residual counts without leaking any user filenames or absolute paths. */
+    private fun summarizeRemaining(remaining: List<File>, owner: File): String {
+        var fuseHidden = false
+        var scanned = 0
+        var dirCount = 0
+        var fileCount = 0
+        for (item in remaining) {
+            val path = item.toPath()
+            val attrs = runCatching { Files.readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS) }.getOrNull()
+            if (attrs?.isDirectory == true && !attrs.isSymbolicLink) {
+                dirCount++
+                runCatching {
+                    Files.walkFileTree(path, emptySet(), 16, object : SimpleFileVisitor<Path>() {
+                        override fun visitFile(file: Path, a: BasicFileAttributes): FileVisitResult {
+                            scanned++
+                            if (file.fileName?.toString()?.startsWith(".fuse_hidden") == true) fuseHidden = true
+                            return if (scanned >= 128) FileVisitResult.TERMINATE else FileVisitResult.CONTINUE
+                        }
+
+                        override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult = FileVisitResult.CONTINUE
+                    })
+                }
+            } else {
+                fileCount++
+                if (item.name.startsWith(".fuse_hidden")) fuseHidden = true
+            }
+            if (!ManagedFiles.isWithin(item, owner)) break
+        }
+        val parts = mutableListOf<String>()
+        parts.add("顶层 ${remaining.size} 项")
+        if (dirCount > 0) parts.add("目录 $dirCount")
+        if (fileCount > 0) parts.add("文件 $fileCount")
+        if (fuseHidden) parts.add("含进程占用句柄(.fuse_hidden)")
+        return parts.joinToString("，")
     }
 
     private fun batches(files: List<File>): List<List<File>> {

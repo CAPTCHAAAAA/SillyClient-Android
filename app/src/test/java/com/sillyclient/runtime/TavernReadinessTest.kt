@@ -98,4 +98,32 @@ class TavernReadinessTest {
             assertThrows(IllegalArgumentException::class.java) { TavernReadiness().probe(url) }
         }
     }
+
+    @Test
+    fun startupReadinessPolicyAllowsColdStartBaseBudgetExtendsOnOutputAndCapsAtMax() {
+        val sec = java.util.concurrent.TimeUnit.SECONDS.toNanos(1)
+        val t0 = 10_000_000_000L
+        assertEquals(2_000, StartupReadinessPolicy.PROBE_TIMEOUT_MILLIS)
+        // Within 120s base budget, never times out even if output is temporarily silent
+        assertFalse(StartupReadinessPolicy.isTimedOut(t0, t0 + 60 * sec, t0))
+        assertFalse(StartupReadinessPolicy.isTimedOut(t0, t0 + 119 * sec, t0))
+        // Past 120s with recent Node/Webpack output (<30s silent), continues up to 180s
+        assertFalse(StartupReadinessPolicy.isTimedOut(t0, t0 + 150 * sec, t0 + 135 * sec))
+        // Past 120s when output has been silent >=30s, times out
+        assertTrue(StartupReadinessPolicy.isTimedOut(t0, t0 + 150 * sec, t0 + 120 * sec))
+        // At 180s hard cap, always times out regardless of output
+        assertTrue(StartupReadinessPolicy.isTimedOut(t0, t0 + 180 * sec, t0 + 179 * sec))
+
+        val diag = StartupReadinessPolicy.formatTimeoutDiagnostic(
+            elapsedSeconds = 180,
+            processAlive = true,
+            lastFailure = TavernReadiness.Failure.CONNECTION,
+            lastStatus = null,
+            silentSeconds = 12
+        )
+        assertTrue(diag.startsWith("酒馆启动超时"))
+        assertTrue(diag.contains("CONNECTION"))
+        assertTrue(diag.contains("180s"))
+        assertFalse(diag.contains("/storage/"))
+    }
 }

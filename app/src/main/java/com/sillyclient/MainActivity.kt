@@ -1153,11 +1153,14 @@ class MainActivity : BridgeActivity() {
                         runtimeDiagnostic("webpack.seeded key=${key.take(12)}")
                     }
                 }
-                launched = startServer(paths, targetServerDir, effectivePort, config, operation)
+                val lastServerOutputNanos = java.util.concurrent.atomic.AtomicLong(System.nanoTime())
+                launched = startServer(paths, targetServerDir, effectivePort, config, operation) {
+                    lastServerOutputNanos.set(System.nanoTime())
+                }
                 check(launched != null) { "Node.js 服务启动失败，请检查实例完整性" }
                 appendLog("[OK] Node.js process launched")
                 updateProgress(99, "Waiting for server")
-                if (pollUntilReady(tavernUrl, launched, operation)) {
+                if (pollUntilReady(tavernUrl, launched, operation, lastServerOutputNanos)) {
                     // The first successful start compiled the frontend libraries;
                     // harvest that cache so later instances start warm.
                     bundledDependencyArchive(paths) { operations.ensureCurrent(operation) }?.let { (key, _) ->
@@ -2083,7 +2086,8 @@ body:has(.popup[opening]) #chat {
         targetServerDir: File,
         port: Int,
         config: InstanceConfig,
-        operation: OperationCoordinator.Operation
+        operation: OperationCoordinator.Operation,
+        onOutputActivity: (() -> Unit)? = null
     ): Process? {
         operations.ensureCurrent(operation)
         paths.logsDir.mkdirs()
@@ -2118,6 +2122,7 @@ body:has(.popup[opening]) #chat {
                     serverProcess = process
                     processSupervisor.watch(process, onLine = { line ->
                         if (operations.isCurrent(operation)) {
+                            onOutputActivity?.invoke()
                             LogService.append(File(paths.logsDir, "server.log"), line)
                             pushLog(line, operation)
                         }
@@ -2745,7 +2750,7 @@ body:has(.popup[opening]) #chat {
         return try {
             operations.run(operation) {
                 try {
-                    stopped.get(3, TimeUnit.SECONDS)
+                    stopped.get(5, TimeUnit.SECONDS)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (interrupted: InterruptedException) {
@@ -2906,7 +2911,7 @@ body:has(.popup[opening]) #chat {
                 },
                 ensureActive = { operations.ensureCurrent(operation) },
                 removeChildren = { children ->
-                    NativeTreeRemoval(processSupervisor).remove(
+                    NativeTreeRemoval(processSupervisor, fallbackRetries = 3).remove(
                         children, targetDir, instanceId, operation,
                         ensureActive = { operations.ensureCurrent(operation) },
                         onProgress = { progress ->
@@ -3065,16 +3070,18 @@ body:has(.popup[opening]) #chat {
     private fun pollUntilReady(
         url: String,
         process: Process,
-        operation: OperationCoordinator.Operation
+        operation: OperationCoordinator.Operation,
+        lastOutputNanos: java.util.concurrent.atomic.AtomicLong = java.util.concurrent.atomic.AtomicLong(System.nanoTime())
     ): Boolean {
         val started = System.nanoTime()
-        val deadline = started + TimeUnit.SECONDS.toNanos(60)
         var nextLog = started + TimeUnit.SECONDS.toNanos(5)
-        val readiness = TavernReadiness(timeoutMillis = 300)
-        while (System.nanoTime() < deadline) {
+        val readiness = TavernReadiness(timeoutMillis = com.sillyclient.runtime.StartupReadinessPolicy.PROBE_TIMEOUT_MILLIS)
+        var lastProbe: TavernReadiness.Result? = null
+        while (!com.sillyclient.runtime.StartupReadinessPolicy.isTimedOut(started, System.nanoTime(), lastOutputNanos.get())) {
             operations.ensureCurrent(operation)
             if (process.isAlive) {
                 val result = readiness.probe(url)
+                lastProbe = result
                 if (result.terminal) {
                     pushError("本地酒馆拒绝访问 (HTTP ${result.status})，请检查实例认证和白名单配置")
                     return false
@@ -3107,9 +3114,19 @@ body:has(.popup[opening]) #chat {
             }
             Thread.sleep(200)
         }
-        appendLog("[ERR] Backend not ready after timeout")
+        val now = System.nanoTime()
+        val elapsedSec = TimeUnit.NANOSECONDS.toSeconds(now - started)
+        val silentSec = TimeUnit.NANOSECONDS.toSeconds((now - lastOutputNanos.get()).coerceAtLeast(0L))
+        val timeoutMessage = com.sillyclient.runtime.StartupReadinessPolicy.formatTimeoutDiagnostic(
+            elapsedSeconds = elapsedSec,
+            processAlive = process.isAlive,
+            lastFailure = lastProbe?.failure,
+            lastStatus = lastProbe?.status,
+            silentSeconds = silentSec
+        )
+        appendLog("[ERR] Backend not ready after ${elapsedSec}s (probe=${lastProbe?.failure}/${lastProbe?.status}, silent=${silentSec}s)")
         setStatus("No response")
-        pushError("酒馆启动超时，请检查实例日志")
+        pushError(timeoutMessage)
         return false
     }
 

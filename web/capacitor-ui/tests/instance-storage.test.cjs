@@ -132,6 +132,7 @@ function routeFixture(values = {}, overrides = {}) {
   const native = nativeFixture(overrides);
   const scope = context({
     ...location, ...nativeErrors, ...loadSource(path.join(src, "lib/tavern-release.ts")),
+    ...loadSource(path.join(src, "lib/provision-timeout.ts")),
     TarvenEnv: native.api, OperationCancelledError,
     React: { createElement: (type, props) => ({ type, props }) }, Folder: "Folder", Cloud: "Cloud",
     operations: new OperationCoordinator(), directoryPickerGeneration: { current: 0 },

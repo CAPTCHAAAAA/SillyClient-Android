@@ -212,6 +212,41 @@ class NativeTreeRemovalTest {
         assertEquals("keep", data.readText())
     }
 
+    @Test
+    fun fallbackSweepCleansRemainingEntriesWhenRmExitsZeroWithoutTouchingIdentityOrSymlinkTarget() {
+        val node = System.getenv("SILLYCLIENT_CONFIGURATION_NODE")?.let(::File)
+        assumeTrue("A local Node executable is required for controlled child process tests", node?.isFile == true)
+        val parent = System.getenv("SILLYCLIENT_TEST_TEMP_DIR")?.let(::File)
+        val root = if (parent != null) {
+            parent.mkdirs()
+            Files.createTempDirectory(parent.toPath(), "sillyclient-removal-fb-").toFile()
+        } else Files.createTempDirectory("sillyclient-removal-fb-").toFile()
+        try {
+            val scriptFile = File(root, ".native-removal-fixture.cjs").apply {
+                writeText("console.log(\"rm 'partial'\");")
+            }
+            val marker = File(root, ".sc-identity").apply { writeText("owned") }
+            val leftover = File(root, "node_modules/pkg").apply { mkdirs() }
+            File(leftover, "index.js").writeText("leftover")
+            OperationCoordinator().use { operations ->
+                ProcessSupervisor(operations).use { supervisor ->
+                    val removal = NativeTreeRemoval(
+                        supervisor,
+                        idleTimeoutMillis = 2_000,
+                        command = listOf(requireNotNull(node).absolutePath, scriptFile.absolutePath),
+                        fallbackRetries = 2
+                    )
+                    removal.remove(listOf(File(root, "node_modules")), root, "test")
+                }
+            }
+            assertFalse(File(root, "node_modules").exists())
+            assertEquals("owned", marker.readText())
+        } finally {
+            if (parent != null) require(ManagedFiles.isWithin(root, parent))
+            root.deleteRecursively()
+        }
+    }
+
     companion object {
         private const val REMOVE_SCRIPT = """
             const fs=require('node:fs');
