@@ -9,7 +9,9 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 import java.util.zip.ZipFile
+import org.json.JSONArray
 import org.json.JSONObject
 
 data class PreinstalledExtensionsRequest(val revision: Int, val extensionIds: List<String>)
@@ -29,6 +31,13 @@ object PreinstalledExtensionInstaller {
     private const val MAX_UNPACKED = 128L * 1024 * 1024
     private const val MAX_FILE = 32L * 1024 * 1024
     private const val MAX_ENTRIES = 8192
+    private val mirrorPrefixes = listOf(
+        "https://gh-proxy.com/",
+        "https://gh-proxy.org/",
+        "https://edgeone.gh-proxy.com/",
+        "https://ghproxy.vip/",
+        "https://v6.gh-proxy.org/"
+    )
     private val repositories = mapOf(
         "tavern-helper" to "N0VI028/JS-Slash-Runner",
         "littlewhitebox" to "RT15548/LittleWhiteBox",
@@ -79,13 +88,38 @@ object PreinstalledExtensionInstaller {
     fun install(
         context: Context, directory: File, request: PreinstalledExtensionsRequest,
         operations: OperationCoordinator, operation: OperationCoordinator.Operation,
-        onLog: (String) -> Unit
+        onLog: (String) -> Unit,
+        onProgress: ((Int, String) -> Unit)? = null
     ): PreinstalledExtensionsTransaction {
         val catalog = context.assets.open("preinstalled-extensions/catalog.json").bufferedReader().use { it.readText() }
+        val selected = selection(catalog, request)
+        val totalCount = selected.size.coerceAtLeast(1)
+        val preferredMirrorPrefix = AtomicReference<String?>(null)
+        var currentIndex = 0
+        var lastLogAt = 0L
+        var lastPctReported = -1
         return installInternal(
             catalog, directory, request, { operations.ensureCurrent(operation) }, onLog,
             download = { extension, destination ->
-                download(extension, destination, operations, operation)
+                val index = currentIndex++
+                val basePct = 92 + (index * 2) / totalCount
+                onProgress?.invoke(basePct.coerceIn(92, 94), "Downloading extension: ${extension.name}")
+                download(
+                    extension, destination, operations, operation,
+                    preferredMirrorPrefix = preferredMirrorPrefix,
+                    onDownloadProgress = { downloaded, totalBytes ->
+                        val fraction = if (totalBytes > 0L) downloaded.toDouble() / totalBytes.toDouble() else 0.0
+                        val pct = (92.0 + ((index + fraction) / totalCount.toDouble()) * 2.0).toInt().coerceIn(92, 94)
+                        val now = System.currentTimeMillis()
+                        if (pct != lastPctReported || now - lastLogAt >= 2_000L) {
+                            lastPctReported = pct
+                            lastLogAt = now
+                            val mbDone = "%.1f".format(downloaded / (1024.0 * 1024.0))
+                            val mbTotal = "%.1f".format(totalBytes / (1024.0 * 1024.0))
+                            onProgress?.invoke(pct, "Downloading ${extension.name} ($mbDone/$mbTotal MB)")
+                        }
+                    }
+                )
             },
             commit = { action -> operations.commit(operation, action) }
         )
@@ -180,38 +214,57 @@ object PreinstalledExtensionInstaller {
 
     private fun download(
         extension: Extension, destination: File,
-        operations: OperationCoordinator, operation: OperationCoordinator.Operation
+        operations: OperationCoordinator, operation: OperationCoordinator.Operation,
+        preferredMirrorPrefix: AtomicReference<String?> = AtomicReference(null),
+        onDownloadProgress: ((Long, Long) -> Unit)? = null
     ) {
+        val rawUrl = extension.archiveUrl
+        val sticky = preferredMirrorPrefix.get()
+        val candidates = buildList {
+            if (sticky != null) add("$sticky$rawUrl")
+            add(rawUrl)
+            for (prefix in mirrorPrefixes) {
+                if (prefix != sticky) add("$prefix$rawUrl")
+            }
+        }
         downloadFromMirrors(
-            listOf(
-                extension.archiveUrl,
-                "https://ghfast.top/${extension.archiveUrl}",
-                "https://gh-proxy.com/${extension.archiveUrl}",
-                "https://ghproxy.net/${extension.archiveUrl}"
-            ),
-            extension.bytes, destination, operations, operation
+            candidates, extension.bytes, destination, operations, operation,
+            expectedSha256 = extension.sha256,
+            onProgress = onDownloadProgress,
+            onSourceSelected = { selectedUrl ->
+                val matched = mirrorPrefixes.firstOrNull { selectedUrl.startsWith(it) }
+                preferredMirrorPrefix.set(matched)
+            }
         )
     }
 
-    /** Try each candidate source in order; the first complete response wins. */
+    /** Try each candidate source in order; the first complete response passing size/hash validation wins. */
     internal fun downloadFromMirrors(
         candidates: List<String>, expectedBytes: Long, destination: File,
-        operations: OperationCoordinator, operation: OperationCoordinator.Operation
+        operations: OperationCoordinator, operation: OperationCoordinator.Operation,
+        expectedSha256: String? = null,
+        onProgress: ((Long, Long) -> Unit)? = null,
+        onSourceSelected: ((String) -> Unit)? = null
     ) {
+        val errors = mutableListOf<String>()
         var lastError: Throwable? = null
         for (urlStr in candidates) {
             operations.ensureCurrent(operation)
+            val isDirectGitHub = urlStr.startsWith("https://codeload.github.com/") || urlStr.startsWith("https://github.com/")
             val connection = URL(urlStr).openConnection() as HttpURLConnection
-            connection.connectTimeout = 20_000
-            connection.readTimeout = 30_000
+            connection.connectTimeout = if (isDirectGitHub) 8_000 else 15_000
+            connection.readTimeout = if (isDirectGitHub) 15_000 else 30_000
             connection.instanceFollowRedirects = true
+            connection.useCaches = false
             connection.setRequestProperty("User-Agent", "SillyClient")
+            connection.setRequestProperty("Accept-Encoding", "identity")
             var succeeded = false
             operations.onCancel(operation) {
                 Thread({ connection.disconnect() }, "SillyClient-cancel-extension").apply { isDaemon = true }.start()
             }.use {
                 try {
                     operations.ensureCurrent(operation)
+                    if (destination.exists()) destination.delete()
                     val code = connection.responseCode
                     if (code in 200..299) {
                         if (connection.contentLengthLong >= 0) check(connection.contentLengthLong <= MAX_ARCHIVE) { "扩展下载超过大小上限" }
@@ -225,21 +278,38 @@ object PreinstalledExtensionInstaller {
                                     total += count
                                     check(total <= MAX_ARCHIVE && total <= expectedBytes) { "扩展下载超过大小上限" }
                                     output.write(buffer, 0, count)
+                                    onProgress?.invoke(total, expectedBytes)
                                 }
                             }
                         }
+                        if (expectedSha256 != null) {
+                            check(destination.length() == expectedBytes) { "扩展压缩包大小校验失败 (${destination.length()} != $expectedBytes)" }
+                            check(sha256(destination) { operations.ensureCurrent(operation) }.equals(expectedSha256, ignoreCase = true)) {
+                                "扩展压缩包 SHA-256 校验失败"
+                            }
+                        }
+                        onSourceSelected?.invoke(urlStr)
                         succeeded = true
                     } else {
-                        lastError = IllegalStateException("扩展下载失败 (HTTP $code): $urlStr")
+                        val msg = "扩展下载失败 (HTTP $code): $urlStr"
+                        errors.add(msg)
+                        lastError = IllegalStateException(msg)
                     }
                 } catch (t: Throwable) {
+                    if (destination.exists()) destination.delete()
                     operations.ensureCurrent(operation)
+                    errors.add("${t.message ?: t.javaClass.simpleName} ($urlStr)")
                     lastError = t
                 } finally { connection.disconnect() }
             }
             if (succeeded) return
         }
-        throw lastError ?: IllegalStateException("扩展下载失败：所有来源均不可用")
+        val summary = if (errors.size > 1) {
+            "扩展下载失败：尝试了 ${errors.size} 个来源均失败 (${errors.joinToString("; ").take(480)})"
+        } else {
+            lastError?.message ?: "扩展下载失败：所有来源均不可用"
+        }
+        throw IllegalStateException(summary, lastError)
     }
 
     internal fun extractVerifiedArchive(
@@ -332,17 +402,37 @@ object PreinstalledExtensionInstaller {
             path.split('/').none { it == ".." || it == "." } && !path.contains(':')) { "扩展文件路径无效" }
     }
 
+    private fun normalizeManifestAssetPath(raw: String): String {
+        var current = raw.trim().replace('\\', '/')
+        while (current.startsWith("./")) current = current.removePrefix("./")
+        return current
+    }
+
+    private fun extractManifestAssets(manifest: JSONObject, key: String): List<String> {
+        val value = manifest.opt(key) ?: return emptyList()
+        return when (value) {
+            is String -> value.takeIf { it.isNotBlank() }?.let { listOf(normalizeManifestAssetPath(it)) } ?: emptyList()
+            is JSONArray -> (0 until value.length()).mapNotNull { idx ->
+                value.optString(idx).takeIf { it.isNotBlank() }?.let(::normalizeManifestAssetPath)
+            }
+            else -> emptyList()
+        }
+    }
+
     private fun validateManifest(directory: File, clientVersion: String) {
         require(ManagedFiles.isUnlinked(directory)) { "Linked extension directory is not supported" }
         val file = safeFile(directory, "manifest.json")
         check(file.isFile && file.length() <= 64 * 1024) { "扩展 manifest.json 缺失或无效" }
         val manifest = JSONObject(file.readText())
         check(manifest.optString("display_name").isNotBlank() && manifest.optString("version").isNotBlank()) { "扩展清单无效" }
+        var hasEntry = false
         for (key in listOf("js", "css")) {
-            val path = manifest.optString(key)
-            if (path.isNotEmpty()) check(safeFile(directory, path).isFile) { "扩展 $key 入口缺失" }
+            for (path in extractManifestAssets(manifest, key)) {
+                check(safeFile(directory, path).isFile) { "扩展 $key 入口缺失" }
+                hasEntry = true
+            }
         }
-        check(manifest.optString("js").isNotEmpty() || manifest.optString("css").isNotEmpty()) { "扩展缺少入口文件" }
+        check(hasEntry) { "扩展缺少入口文件" }
         requireCompatible(clientVersion, manifest.optString("minimum_client_version").takeIf { it.isNotBlank() })
     }
 
@@ -375,6 +465,15 @@ object PreinstalledExtensionInstaller {
         )
         File(gitDir, "refs/heads/main").writeText("${extension.commit}\n")
         File(gitDir, "refs/remotes/origin/main").writeText("${extension.commit}\n")
+        val trackedFiles = directory.walkTopDown()
+            .onEnter { dir -> dir.name != ".git" }
+            .filter { it.isFile }
+            .map { it.relativeTo(directory).invariantSeparatorsPath }
+            .sorted()
+            .toList()
+        File(gitDir, "sillyclient-tree.json").writeText(
+            JSONObject().put("commit", extension.commit).put("files", JSONArray(trackedFiles)).toString()
+        )
     }
 
     private fun sha256(file: File, ensureActive: () -> Unit): String {

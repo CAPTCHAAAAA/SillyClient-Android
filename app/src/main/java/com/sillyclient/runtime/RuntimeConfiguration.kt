@@ -102,20 +102,36 @@ class RuntimeConfiguration(
         """.trimIndent()
         private val EXTENSION_GIT_BRIDGE = """
             try {
+              const fs = require('node:fs');
               const path = require('node:path');
               const { pathToFileURL } = require('node:url');
               const Module = require('node:module');
-              if (typeof Module.register === 'function') {
+              if (!globalThis.__SILLYCLIENT_GIT_BRIDGE_INSTALLED__ && process.env.SILLYCLIENT_DISABLE_GIT_BRIDGE !== '1') {
                 const cwd = process.cwd();
-                const isoGitUrl = pathToFileURL(require.resolve('isomorphic-git', { paths: [cwd] })).href;
-                const isoHttpUrl = pathToFileURL(require.resolve('isomorphic-git/http/node', { paths: [cwd] })).href;
+                const bridgeDir = process.env.SILLYCLIENT_GIT_BRIDGE_DIR || process.env.SILLYTAVERN_GIT_BRIDGE_DIR || '';
+                const resolveIso = (specifier, fallbackFile) => {
+                  try { return require.resolve(specifier, { paths: [cwd] }); }
+                  catch (_) {
+                    if (bridgeDir) {
+                      const candidate = path.join(bridgeDir, fallbackFile);
+                      if (fs.existsSync(candidate)) return candidate;
+                    }
+                    return null;
+                  }
+                };
+                const isoGitPath = resolveIso('isomorphic-git', 'isomorphic-git.cjs');
+                const isoHttpPath = resolveIso('isomorphic-git/http/node', 'isomorphic-git-http-node.cjs');
+                if (isoGitPath && isoHttpPath) {
+                globalThis.__SILLYCLIENT_GIT_BRIDGE_INSTALLED__ = true;
                 const initBridge = function(fs, path, isomorphicGit, origHttp) {
                   const KNOWN_REPOS = {
                     'JS-Slash-Runner': { repo: 'N0VI028/JS-Slash-Runner', version: '4.11.2', commit: '46ec10df770b47e1ce6562de747d72f1bde3549e' },
                     'LittleWhiteBox': { repo: 'RT15548/LittleWhiteBox', version: '3.1.6', commit: '66cb1001e860cdddd77e5a3911c7c47ea325df3a' },
-                    'ST-Prompt-Template': { repo: 'zonde306/ST-Prompt-Template', version: '1.17.9', commit: '38ae8edbe4db3db7ad0feacbfba9b5fb2cfcb84f' },
-                    'Extension-Dice': { repo: 'SillyTavern/Extension-Dice', version: '2.0.0', commit: '154fb3acccfbdef2fbabdc792acdc6f1bd08cef7' },
+                    'ST-Prompt-Template': { repo: 'zonde306/ST-Prompt-Template', version: '1.17.9', commit: 'd6f520d149aba146305b0b781ddd691d449c28d2' },
+                    'Extension-Dice': { repo: 'SillyTavern/Extension-Dice', version: '2.0.0', commit: 'b4047508a1191ba3b32cb20f64ebc5f7877d689b' },
                   };
+                  const DEFAULT_MIRRORS = 'https://gh-proxy.com/,https://gh-proxy.org/,https://v6.gh-proxy.org/,https://ghproxy.vip/';
+                  let preferredMirror = '';
                   function isSha(val) {
                     return typeof val === 'string' && val.length === 40 && /^[0-9a-f]{40}/i.test(val);
                   }
@@ -142,18 +158,27 @@ class RuntimeConfiguration(
                   }
                   const http = {
                     async request(req) {
-                      const mirrors = (process.env.SILLYCLIENT_GIT_MIRRORS ?? 'https://ghfast.top/,https://gh-proxy.com/')
+                      const mirrors = (process.env.SILLYCLIENT_GIT_MIRRORS ?? process.env.SILLYTAVERN_GIT_MIRRORS ?? DEFAULT_MIRRORS)
                         .split(',').map(s => s.trim()).filter(Boolean);
                       const isGitHub = /^https:\/\/github\.com\//i.test(req.url);
-                      const allowMirrors = isGitHub || Boolean(process.env.SILLYCLIENT_GIT_MIRRORS);
-                      const candidates = allowMirrors
-                        ? [req.url, ...mirrors.map(m => (m.endsWith('/') ? m : m + '/') + req.url)]
-                        : [req.url];
+                      const allowMirrors = isGitHub || Boolean(process.env.SILLYCLIENT_GIT_MIRRORS || process.env.SILLYTAVERN_GIT_MIRRORS);
+                      const candidates = [];
+                      if (allowMirrors) {
+                        const sticky = preferredMirror && mirrors.includes(preferredMirror) ? preferredMirror : '';
+                        if (sticky) candidates.push({ prefix: sticky, url: (sticky.endsWith('/') ? sticky : sticky + '/') + req.url });
+                        candidates.push({ prefix: '', url: req.url });
+                        for (const m of mirrors) {
+                          if (m === sticky) continue;
+                          candidates.push({ prefix: m, url: (m.endsWith('/') ? m : m + '/') + req.url });
+                        }
+                      } else {
+                        candidates.push({ prefix: '', url: req.url });
+                      }
                       const bufferedBody = await collectBody(req.body);
                       let lastError;
                       for (let i = 0; i < candidates.length; i++) {
-                        const candidateUrl = candidates[i];
-                        const timeoutMs = i === 0 && isGitHub ? 8000 : 15000;
+                        const { prefix, url: candidateUrl } = candidates[i];
+                        const timeoutMs = !prefix && isGitHub ? 10000 : 45000;
                         try {
                           const res = await withTimeout(
                             origHttp.request({
@@ -165,16 +190,67 @@ class RuntimeConfiguration(
                             timeoutMs
                           );
                           if (res && res.statusCode >= 200 && res.statusCode < 400) {
+                            if (prefix) preferredMirror = prefix;
                             return { ...res, url: req.url };
                           }
+                          if (prefix && preferredMirror === prefix) preferredMirror = '';
                           lastError = new Error('HTTP ' + (res && res.statusCode) + ' from ' + candidateUrl);
                         } catch (err) {
+                          if (prefix && preferredMirror === prefix) preferredMirror = '';
                           lastError = err;
                         }
                       }
                       throw lastError || new Error('Git HTTP request failed: ' + req.url);
                     }
                   };
+                  function readTrackedTreeFile(baseDir) {
+                    try {
+                      const p = path.join(baseDir, '.git/sillyclient-tree.json');
+                      if (!fs.existsSync(p)) return null;
+                      const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+                      return parsed && Array.isArray(parsed.files) ? parsed : null;
+                    } catch (_) { return null; }
+                  }
+                  function writeTrackedTreeFile(baseDir, commit, files) {
+                    try {
+                      const p = path.join(baseDir, '.git/sillyclient-tree.json');
+                      if (!fs.existsSync(path.dirname(p))) return;
+                      fs.writeFileSync(p, JSON.stringify({ commit, files }) + '\n');
+                    } catch (_) {}
+                  }
+                  async function collectTrackedFiles(baseDir, ref) {
+                    if (typeof isomorphicGit.listFiles === 'function') {
+                      try {
+                        const files = await isomorphicGit.listFiles({ fs, dir: baseDir, ref });
+                        if (Array.isArray(files) && files.length > 0) return files;
+                      } catch (_) {}
+                    }
+                    const meta = readTrackedTreeFile(baseDir);
+                    return meta ? meta.files : [];
+                  }
+                  function cleanupStaleFiles(baseDir, previousFiles, nextFiles) {
+                    if (!previousFiles.length || !nextFiles.length || typeof fs.unlinkSync !== 'function') return;
+                    const keep = new Set(nextFiles.map(f => String(f).replace(/\\/g, '/').replace(/^\/+/, '')));
+                    const resolvedBase = path.resolve(baseDir);
+                    for (const rel of previousFiles) {
+                      const norm = String(rel || '').replace(/\\/g, '/').replace(/^\/+/, '');
+                      if (!norm || norm === '.git' || norm.startsWith('.git/') || keep.has(norm)) continue;
+                      const target = path.resolve(resolvedBase, norm);
+                      if (!target.startsWith(resolvedBase + path.sep)) continue;
+                      try {
+                        if (fs.existsSync(target) && fs.statSync(target).isFile()) {
+                          fs.unlinkSync(target);
+                          let dir = path.dirname(target);
+                          while (dir.startsWith(resolvedBase + path.sep) && dir !== resolvedBase) {
+                            if (typeof fs.readdirSync === 'function' && fs.readdirSync(dir).length === 0) {
+                              if (typeof fs.rmdirSync === 'function') fs.rmdirSync(dir);
+                            } else break;
+                            dir = path.dirname(dir);
+                          }
+                        }
+                      } catch (_) {}
+                    }
+                  }
                   function writeGitFiles(baseDir, remoteUrl, branch, commit) {
                     const gitDir = path.join(baseDir, '.git');
                     fs.mkdirSync(path.join(gitDir, 'refs/heads'), { recursive: true });
@@ -348,6 +424,7 @@ class RuntimeConfiguration(
                       async revparse(args) {
                         const arr = Array.isArray(args) ? args : [args];
                         if (arr.includes('--is-shallow-repository')) return 'false';
+                        if (arr.includes('--show-toplevel')) return baseDir;
                         const head = getHeadInfo(baseDir);
                         if (arr.includes('--abbrev-ref')) {
                           if (arr.includes('@{u}')) return 'origin/' + (head.current || 'main');
@@ -363,6 +440,23 @@ class RuntimeConfiguration(
                           return readRef(baseDir, 'refs/remotes/' + target) || head.oid;
                         }
                         return readRef(baseDir, 'refs/heads/' + target) || head.oid;
+                      },
+                      async status() {
+                        const head = getHeadInfo(baseDir);
+                        const branch = head.current || 'main';
+                        return {
+                          isClean: () => true,
+                          modified: [],
+                          not_added: [],
+                          created: [],
+                          deleted: [],
+                          conflicted: [],
+                          files: [],
+                          current: branch,
+                          tracking: 'origin/' + branch,
+                          ahead: 0,
+                          behind: 0,
+                        };
                       },
                       async branch(args) {
                         const arr = Array.isArray(args) ? args : [];
@@ -430,6 +524,8 @@ class RuntimeConfiguration(
                           const targetBranch = branch || head.current || 'main';
                           const url = getOriginUrl(baseDir);
                           if (!url) throw new Error('No origin remote configured');
+                          const hadTrackedTree = Boolean(readTrackedTreeFile(baseDir));
+                          const previousFiles = await collectTrackedFiles(baseDir, 'HEAD');
                           const fetchRes = await isomorphicGit.fetch({
                             fs,
                             http,
@@ -450,6 +546,9 @@ class RuntimeConfiguration(
                           fs.writeFileSync(remoteRefFile, latestOid + '\n');
                           fs.writeFileSync(path.join(baseDir, '.git/HEAD'), 'ref: refs/heads/' + targetBranch + '\n');
                           await isomorphicGit.checkout({ fs, dir: baseDir, ref: targetBranch, force: true });
+                          const nextFiles = await collectTrackedFiles(baseDir, targetBranch);
+                          cleanupStaleFiles(baseDir, previousFiles, nextFiles);
+                          if (hadTrackedTree && nextFiles.length > 0) writeTrackedTreeFile(baseDir, latestOid, nextFiles);
                           return {};
                         } finally { fetchCache.delete(baseDir); }
                       },
@@ -461,6 +560,9 @@ class RuntimeConfiguration(
                         try {
                           const targetBranch = String(branch).replace(/^origin\//, '');
                           const url = getOriginUrl(baseDir);
+                          const hadTrackedTree = Boolean(readTrackedTreeFile(baseDir));
+                          const previousFiles = await collectTrackedFiles(baseDir, 'HEAD');
+                          let latestOid = '';
                           if (url) {
                             const fetchRes = await isomorphicGit.fetch({
                               fs,
@@ -472,15 +574,18 @@ class RuntimeConfiguration(
                               singleBranch: true,
                               tags: false,
                             });
-                            const oid = (fetchRes && fetchRes.fetchHead) || readRef(baseDir, 'refs/remotes/origin/' + targetBranch);
-                            if (oid) {
+                            latestOid = (fetchRes && fetchRes.fetchHead) || readRef(baseDir, 'refs/remotes/origin/' + targetBranch);
+                            if (latestOid) {
                               const localRefFile = path.join(baseDir, '.git/refs/heads', targetBranch);
                               fs.mkdirSync(path.dirname(localRefFile), { recursive: true });
-                              fs.writeFileSync(localRefFile, oid + '\n');
+                              fs.writeFileSync(localRefFile, latestOid + '\n');
                             }
                           }
                           fs.writeFileSync(path.join(baseDir, '.git/HEAD'), 'ref: refs/heads/' + targetBranch + '\n');
                           await isomorphicGit.checkout({ fs, dir: baseDir, ref: targetBranch, force: true });
+                          const nextFiles = await collectTrackedFiles(baseDir, targetBranch);
+                          cleanupStaleFiles(baseDir, previousFiles, nextFiles);
+                          if (hadTrackedTree && nextFiles.length > 0 && latestOid) writeTrackedTreeFile(baseDir, latestOid, nextFiles);
                         } finally { fetchCache.delete(baseDir); }
                       },
                       async checkoutBranch(localBranch, startPoint) {
@@ -488,8 +593,12 @@ class RuntimeConfiguration(
                       },
                       async clone(url, localPath, options) {
                         const arr = Array.isArray(options) ? options : [];
-                        const bIdx = arr.indexOf('-b');
-                        const ref = bIdx >= 0 && arr[bIdx + 1] ? arr[bIdx + 1] : undefined;
+                        const bIdx = arr.indexOf('-b') >= 0 ? arr.indexOf('-b') : arr.indexOf('--branch');
+                        let ref = bIdx >= 0 && arr[bIdx + 1] ? arr[bIdx + 1] : undefined;
+                        if (!ref) {
+                          const eqArg = arr.find(a => typeof a === 'string' && a.startsWith('--branch='));
+                          if (eqArg) ref = eqArg.slice('--branch='.length);
+                        }
                         await isomorphicGit.clone({
                           fs,
                           http,
@@ -508,40 +617,81 @@ class RuntimeConfiguration(
                   return { http, CheckRepoActions, simpleGit };
                 };
                 const bridgeModuleSource = [
-                  'import fs from \x22node:fs\x22;',
-                  'import path from \x22node:path\x22;',
-                  'import isomorphicGit from ' + JSON.stringify(isoGitUrl) + ';',
-                  'import origHttp from ' + JSON.stringify(isoHttpUrl) + ';',
-                  'const bridge = (' + initBridge.toString() + ')(fs, path, isomorphicGit, origHttp);',
-                  'export const http = bridge.http;',
-                  'export const CheckRepoActions = bridge.CheckRepoActions;',
-                  'export const simpleGit = bridge.simpleGit;',
-                  'export default bridge.simpleGit;',
+                  'const b = globalThis.__SILLYCLIENT_GIT_BRIDGE_EXPORTS__.simpleGit;',
+                  'const h = globalThis.__SILLYCLIENT_GIT_BRIDGE_EXPORTS__.http;',
+                  'export const http = h;',
+                  'export const CheckRepoActions = b.CheckRepoActions;',
+                  'export const simpleGit = b.simpleGit;',
+                  'export default b.simpleGit;',
                 ].join('\n');
-                const loaderSource = [
-                  'const BRIDGE_SOURCE = ' + JSON.stringify(bridgeModuleSource) + ';',
-                  'const SIMPLE_GIT_URL = \x22sillyclient://simple-git-bridge.mjs\x22;',
-                  'const HTTP_BRIDGE_URL = \x22sillyclient://git-http-bridge.mjs\x22;',
-                  'export async function resolve(specifier, context, nextResolve) {',
-                  '  if (specifier === \x22simple-git\x22) return { url: SIMPLE_GIT_URL, shortCircuit: true };',
-                  '  if (specifier === \x22isomorphic-git/http/node\x22) return { url: HTTP_BRIDGE_URL, shortCircuit: true };',
-                  '  return nextResolve(specifier, context);',
-                  '}',
-                  'export async function load(url, context, nextLoad) {',
-                  '  if (url === SIMPLE_GIT_URL) return { format: \x22module\x22, source: BRIDGE_SOURCE, shortCircuit: true };',
-                  '  if (url === HTTP_BRIDGE_URL) {',
-                  '    return {',
-                  '      format: \x22module\x22,',
-                  '      source: \x22import { http } from \\\x22\x22 + SIMPLE_GIT_URL + \x22\\\x22; export const request = (req) => http.request(req); export default http;\x22,',
-                  '      shortCircuit: true,',
-                  '    };',
-                  '  }',
-                  '  return nextLoad(url, context);',
-                  '}',
-                ].join('\n');
-                Module.register('data:text/javascript;base64,' + Buffer.from(loaderSource).toString('base64'));
+                const loadedIsoGit = require(isoGitPath);
+                const loadedIsoHttp = require(isoHttpPath);
+                const bridgeInstance = initBridge(fs, path, loadedIsoGit, loadedIsoHttp);
+                const simpleGitExport = Object.assign(
+                  function simpleGitProxy() { return bridgeInstance.simpleGit.apply(null, arguments); },
+                  { simpleGit: bridgeInstance.simpleGit, CheckRepoActions: bridgeInstance.CheckRepoActions, default: bridgeInstance.simpleGit }
+                );
+                const httpExport = { request: (req) => bridgeInstance.http.request(req), default: bridgeInstance.http };
+                globalThis.__SILLYCLIENT_GIT_BRIDGE_EXPORTS__ = {
+                  simpleGit: simpleGitExport,
+                  http: httpExport,
+                  isomorphicGit: loadedIsoGit,
+                };
+                const origLoad = Module._load;
+                let bypassCjs = false;
+                Module._load = function(request, parent, isMain) {
+                  if (!bypassCjs) {
+                    if (request === 'simple-git' || request === 'simple-git/promise') return simpleGitExport;
+                    if (request === 'isomorphic-git/http/node') return httpExport;
+                    if (request === 'isomorphic-git') {
+                      bypassCjs = true;
+                      try { return origLoad.apply(this, arguments); }
+                      catch (_) { return loadedIsoGit; }
+                      finally { bypassCjs = false; }
+                    }
+                  }
+                  return origLoad.apply(this, arguments);
+                };
+                if (typeof Module.register === 'function') {
+                  const isoNamedExports = Object.keys(loadedIsoGit)
+                    .filter(k => /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(k) && k !== 'default')
+                    .map(k => 'export const ' + k + ' = _g[' + JSON.stringify(k) + '];')
+                    .join(' ');
+                  const loaderSource = [
+                    'const BRIDGE_SOURCE = ' + JSON.stringify(bridgeModuleSource) + ';',
+                    'const ISO_FALLBACK_SOURCE = ' + JSON.stringify('const _g = globalThis.__SILLYCLIENT_GIT_BRIDGE_EXPORTS__.isomorphicGit; ' + isoNamedExports + ' export default _g;') + ';',
+                    'const SIMPLE_GIT_URL = \x22sillyclient://simple-git-bridge.mjs\x22;',
+                    'const HTTP_BRIDGE_URL = \x22sillyclient://git-http-bridge.mjs\x22;',
+                    'const ISO_FALLBACK_URL = \x22sillyclient://isomorphic-git-fallback.mjs\x22;',
+                    'export async function resolve(specifier, context, nextResolve) {',
+                    '  if (specifier === \x22simple-git\x22 || specifier === \x22simple-git/promise\x22) return { url: SIMPLE_GIT_URL, shortCircuit: true };',
+                    '  if (specifier === \x22isomorphic-git/http/node\x22) return { url: HTTP_BRIDGE_URL, shortCircuit: true };',
+                    '  if (specifier === \x22isomorphic-git\x22) {',
+                    '    try { return await nextResolve(specifier, context); }',
+                    '    catch (_) { return { url: ISO_FALLBACK_URL, shortCircuit: true }; }',
+                    '  }',
+                    '  return nextResolve(specifier, context);',
+                    '}',
+                    'export async function load(url, context, nextLoad) {',
+                    '  if (url === SIMPLE_GIT_URL) return { format: \x22module\x22, source: BRIDGE_SOURCE, shortCircuit: true };',
+                    '  if (url === HTTP_BRIDGE_URL) {',
+                    '    return {',
+                    '      format: \x22module\x22,',
+                    '      source: \x22import { http } from \\\x22\x22 + SIMPLE_GIT_URL + \x22\\\x22; export const request = (req) => http.request(req); export default http;\x22,',
+                    '      shortCircuit: true,',
+                    '    };',
+                    '  }',
+                    '  if (url === ISO_FALLBACK_URL) return { format: \x22module\x22, source: ISO_FALLBACK_SOURCE, shortCircuit: true };',
+                    '  return nextLoad(url, context);',
+                    '}',
+                  ].join('\n');
+                  Module.register('data:text/javascript;base64,' + Buffer.from(loaderSource).toString('base64'));
+                }
+                }
               }
-            } catch (_) {}
+            } catch (err) {
+              process.stderr.write('[SillyClient] Git bridge init failed: ' + (err && err.message || err) + '\n');
+            }
         """.trimIndent()
         private val SERVER_BOOTSTRAP = WRITE_CONFIG + "\n" + EXTENSION_GIT_BRIDGE + "\n" + """
             process.argv = [process.execPath, require('node:path').resolve('server.js')];

@@ -11,12 +11,20 @@
 - **所属产品仓库**: `SillyClient_Android` (GitHub: `CAPTCHAAAAA/SillyClient-Android`)
 - **当前本地分支**: `lts/android-release-hardening`
 - **跟踪远端分支**: `origin/lts/android-release-hardening`
-- **本轮交付基线**: `adf3acc` -> `1.15.3` / `versionCode=79`；同步 `common-frontend` `v1.15.3` 修复与 Android 原生冷启动超时/删目录残留修复，待用户敲板后快进合入 `main` 发布。
+- **本轮交付基线**: `59886e3` -> `1.15.4` / `versionCode=80`；内置离线纯 JS Git 桥接兜底（修复旧版酒馆 `spawn git ENOENT`）、升级预制拓展插件镜像与循环内 SHA-256 校验，并同步 `common-frontend` `40436b2` 悬停节拍统一。
 - **工作区定位**: Android 平台主力发布加固、SAF 存储访问框架对接、设置面板精简与实例导出重构的唯一主力工作树。
 
 ---
 
 ## 二、 当前现场明细 (Current State)
+
+### 2026-11-27 Android 1.15.4 离线 Git 桥接、预制扩展加固与前端同步正式发布
+
+- **修复与同步内容**：
+  - **离线纯 JS Git 桥接兜底**：随包分发零外部依赖 `app/src/main/assets/bootstrap/git-bridge/`（`isomorphic-git.cjs`、`isomorphic-git-http-node.cjs`、`git-bridge-preload.cjs`、`THIRD_PARTY_NOTICES.txt`），新增 `BundledGitBridge.kt` 并在 `MainActivity.startServer` 注入 `SILLYCLIENT_GIT_BRIDGE_DIR` 与 `NODE_OPTIONS` `--require` 预加载，同时覆盖 ESM、CJS 与 `Worker` 线程；`RuntimeConfiguration.kt` 补齐离线桥接回退、CJS `Module._load` 拦截、修正 `KNOWN_REPOS` 提交哈希（`ST-Prompt-Template` / `Extension-Dice`）、替换为实测可用 Git Smart HTTP 镜像池（`gh-proxy.com`、`gh-proxy.org`、`v6.gh-proxy.org`、`ghproxy.vip` + 会话粘性记源），并在 `pull()`/`checkout()` 基于 `.git/sillyclient-tree.json` 与 `listFiles` 清理上游已删除文件与空目录；
+  - **预制拓展插件下载加固**：`PreinstalledExtensionInstaller.kt` 与 `MainActivity.kt` 移除失效镜像 `ghfast.top`/`ghproxy.net`，换用 5 节点 ZIP 镜像池并记忆批次最快源；新增 `Accept-Encoding: identity`、直连快速超时（8s/15s），将大小与 SHA-256 校验移入镜像循环内并自动清场重试；节流回传 `92–94%` 字节进度至 UI 心跳，兼容 `./` 与数组 `js`/`css` 清单入口，并写入 `.git/sillyclient-tree.json`；
+  - **通用前端同步**：合入 `common-frontend` `40436b2`（`--motion-hover: 500ms` 与控制岛悬停硬切修复），版本升至 `1.15.4` / `versionCode = 80`。
+- **验证与正式 APK 归档**：前端 `tsc --noEmit`、Vite 构建（1957 modules）、`sync-frontend.mjs`、`verify-frontend-assets.mjs`、前端单测（112/112）、`scripts/test-extension-git-bridge.cjs`（22/22）、Gradle 目标单测（`BundledGitBridgeTest` 1/1、`BundledRuntimeTest` 9/9、`RuntimeConfigurationTest` 12/12、`PreinstalledExtensionInstallerTest` 18/19 + 1 optional skip）、`:app:verifyUpgradeSigning`、`:app:lintVitalRelease`、`:app:assembleRelease` 全通过。成品归档至 `Local/artifacts/v1.15.4/SillyClient-Android-v1.15.4.apk`（`200,110,390` 字节，SHA-256 `b81c158656ac2fa91a8212465eb197827b45d729d638e109a3a15bfb697aac14`），`aapt2` 确认 `com.sillyclient` / `versionCode='80'` / `versionName='1.15.4'`，`apksigner` 确认 V2 证书 `97f0958bcce5ab059cb31bed5826303168b6877f22e0385de3058c2a21dbecbf`，28/28 前端资产与 `assets/bootstrap/git-bridge/` 4/4 文件逐字节核验通过。未触碰物理设备（`physicalDeviceTested: false`、`uiInteractionTested: false`）。
 
 ### 2026-11-24 Android 1.15.3 Issue 全量修复与 Release APK 打包就绪（待用户敲板发布）
 

@@ -393,4 +393,93 @@ class RuntimeConfigurationTest {
             assertEquals(listOf("origin/dev", "origin/main"), (0 until branches.length()).map(branches::getString).sorted())
         } finally { process.destroyForcibly() }
     }
+
+    @Test
+    fun serverBuilderFallsBackToBundledGitBridgeWithoutLocalIsomorphicGitAndCleansStaleFilesOnPull() = withConfiguration { directory, configuration, _, _ ->
+        val remoteHead = "e71c990607f6c92127151b1f8dad6c79fa03966e"
+        val bridgeDir = File(directory.parentFile, "git-bridge").apply { mkdirs() }
+        File(bridgeDir, "isomorphic-git-http-node.cjs").writeText(
+            """
+            module.exports = {
+              async request(req) {
+                if (req.url.startsWith('https://github.com/')) throw new Error('Direct blocked');
+                return { url: req.url, statusCode: 200, headers: {}, body: [] };
+              }
+            };
+            """.trimIndent()
+        )
+        File(bridgeDir, "isomorphic-git.cjs").writeText(
+            """
+            const fs = require('node:fs');
+            const path = require('node:path');
+            module.exports = {
+              async fetch({ http, url }) {
+                await http.request({ url: url + '/git-upload-pack', method: 'POST', body: [Buffer.from('want')] });
+                return { fetchHead: '$remoteHead' };
+              },
+              async checkout({ dir }) {
+                fs.writeFileSync(path.join(dir, 'index.js'), 'new');
+              },
+              async listFiles({ ref }) {
+                if (ref === 'HEAD') throw new Error('shallow preinstall without old object');
+                return ['index.js', 'manifest.json'];
+              },
+              async clone({ dir }) {
+                fs.mkdirSync(dir, { recursive: true });
+                fs.writeFileSync(path.join(dir, 'cloned.txt'), 'ok');
+              }
+            };
+            """.trimIndent()
+        )
+        val extDir = File(directory, "data/default-user/extensions/Extension-Dice").apply { mkdirs() }
+        File(extDir, "manifest.json").writeText("""{"display_name":"Dice","version":"2.0.0","js":"index.js"}""")
+        File(extDir, "index.js").writeText("old")
+        File(extDir, "obsolete/old-only.js").apply { parentFile!!.mkdirs(); writeText("remove me") }
+        File(extDir, ".git/refs/heads").mkdirs()
+        File(extDir, ".git/refs/remotes/origin").mkdirs()
+        File(extDir, ".git/HEAD").writeText("ref: refs/heads/main\n")
+        File(extDir, ".git/config").writeText("[remote \"origin\"]\n\turl = https://github.com/SillyTavern/Extension-Dice.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n")
+        File(extDir, ".git/refs/heads/main").writeText("b4047508a1191ba3b32cb20f64ebc5f7877d689b\n")
+        File(extDir, ".git/refs/remotes/origin/main").writeText("b4047508a1191ba3b32cb20f64ebc5f7877d689b\n")
+        File(extDir, ".git/sillyclient-tree.json").writeText("""{"commit":"b4047508a1191ba3b32cb20f64ebc5f7877d689b","files":["index.js","manifest.json","obsolete/old-only.js"]}""")
+
+        File(directory, "package.json").writeText("""{"name":"legacy-tavern","type":"module"}""")
+        File(directory, "config.yaml").writeText("port: 8000\n")
+        File(directory, "server.js").writeText(
+            """
+            import { createRequire } from 'node:module';
+            import simpleGit from 'simple-git';
+            import fs from 'node:fs';
+            import path from 'node:path';
+            const require = createRequire(import.meta.url);
+            const cjsSimpleGit = require('simple-git');
+            const extPath = path.resolve('data/default-user/extensions/Extension-Dice');
+            const clonePath = path.resolve('data/default-user/extensions/NewExt');
+            await cjsSimpleGit(extPath).pull('origin', 'main');
+            await simpleGit().clone('https://github.com/example/NewExt', clonePath, ['--depth', '1']);
+            console.log(JSON.stringify({
+              staleDeleted: !fs.existsSync(path.join(extPath, 'obsolete/old-only.js')),
+              staleDirDeleted: !fs.existsSync(path.join(extPath, 'obsolete')),
+              cloned: fs.existsSync(path.join(clonePath, 'cloned.txt')),
+              head: await simpleGit(extPath).revparse(['HEAD'])
+            }));
+            """.trimIndent()
+        )
+        val builder = configuration.serverBuilder(
+            directory,
+            JSONObject().put("port", 8000).put("browserLaunch.enabled", false)
+        )
+        builder.environment()["SILLYCLIENT_GIT_BRIDGE_DIR"] = bridgeDir.absolutePath
+        val process = builder.start()
+        try {
+            assertTrue("Synthetic server did not exit", process.waitFor(10, TimeUnit.SECONDS))
+            val output = process.inputStream.bufferedReader().use { it.readText() }
+            assertEquals(output, 0, process.exitValue())
+            val observed = JSONObject(output)
+            assertTrue(observed.getBoolean("staleDeleted"))
+            assertTrue(observed.getBoolean("staleDirDeleted"))
+            assertTrue(observed.getBoolean("cloned"))
+            assertEquals(remoteHead, observed.getString("head"))
+        } finally { process.destroyForcibly() }
+    }
 }

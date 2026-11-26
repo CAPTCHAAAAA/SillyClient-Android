@@ -97,6 +97,10 @@ class PreinstalledExtensionInstallerTest {
         assertEquals(commit, File(target, ".git/refs/heads/main").readText().trim())
         assertEquals(commit, File(target, ".git/refs/remotes/origin/main").readText().trim())
         assertTrue(File(target, ".git/config").readText().contains("https://github.com/N0VI028/JS-Slash-Runner.git"))
+        val treeMeta = JSONObject(File(target, ".git/sillyclient-tree.json").readText())
+        assertEquals(commit, treeMeta.getString("commit"))
+        val tracked = (0 until treeMeta.getJSONArray("files").length()).map { treeMeta.getJSONArray("files").getString(it) }
+        assertTrue(tracked.containsAll(listOf("LICENSE", "dist/index.js", "manifest.json", "style.css")))
         transaction.commit()
         assertTrue(target.listFiles().orEmpty().none { it.name.endsWith(".owned") })
         assertTrue(File(server, "data/default-user").listFiles().orEmpty().none { it.name.startsWith(".sillyclient-preinstall-") })
@@ -390,6 +394,59 @@ class PreinstalledExtensionInstallerTest {
         } finally {
             http.stop(0)
         }
+    }
+
+    @Test
+    fun mirrorDownloadFallsBackWhenHttp200PayloadFailsSha256Verification() = withServer { server ->
+        val corrupt = ByteArray(4_096) { 9 }
+        val expected = ByteArray(4_096) { 5 }
+        val hits = CopyOnWriteArrayList<String>()
+        val encodings = CopyOnWriteArrayList<String>()
+        val http = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        http.createContext("/corrupt") { exchange ->
+            hits.add("corrupt")
+            encodings.add(exchange.requestHeaders.getFirst("Accept-Encoding").orEmpty())
+            exchange.sendResponseHeaders(200, corrupt.size.toLong())
+            exchange.responseBody.use { it.write(corrupt) }
+        }
+        http.createContext("/good") { exchange ->
+            hits.add("good")
+            encodings.add(exchange.requestHeaders.getFirst("Accept-Encoding").orEmpty())
+            exchange.sendResponseHeaders(200, expected.size.toLong())
+            exchange.responseBody.use { it.write(expected) }
+        }
+        http.start()
+        try {
+            val base = "http://127.0.0.1:${http.address.port}"
+            OperationCoordinator().use { operations ->
+                val operation = operations.begin("test")
+                val destination = File(server, "mirror.zip")
+                var selectedSource: String? = null
+                PreinstalledExtensionInstaller.downloadFromMirrors(
+                    listOf("$base/corrupt", "$base/good"),
+                    expected.size.toLong(), destination, operations, operation,
+                    expectedSha256 = sha(expected),
+                    onSourceSelected = { selectedSource = it }
+                )
+                assertEquals(listOf("corrupt", "good"), hits)
+                assertEquals(listOf("identity", "identity"), encodings)
+                assertEquals("$base/good", selectedSource)
+                assertTrue(expected.contentEquals(destination.readBytes()))
+            }
+        } finally {
+            http.stop(0)
+        }
+    }
+
+    @Test
+    fun acceptsRelativeDotSlashAndArrayManifestEntries() = withServer { server ->
+        val bytes = archive(
+            manifest = """{"display_name":"Example","version":"1.0.0","js":["./dist/index.js"],"css":"./style.css"}"""
+        )
+        val transaction = install(server, catalog(record("example", "Example", bytes)), listOf("example"), mapOf("example" to bytes))
+        val target = File(server, "data/default-user/extensions/JS-Slash-Runner")
+        assertTrue(File(target, "dist/index.js").isFile)
+        transaction.commit()
     }
 
     private fun sha(bytes: ByteArray): String =

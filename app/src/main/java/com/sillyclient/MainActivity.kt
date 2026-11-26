@@ -72,6 +72,7 @@ import com.sillyclient.runtime.InstanceRelocation
 import com.sillyclient.runtime.InstanceRename
 import com.sillyclient.runtime.SourceDownloader
 import com.sillyclient.runtime.BundledDependencyArchives
+import com.sillyclient.runtime.BundledGitBridge
 import com.sillyclient.runtime.BundledRuntime
 import com.sillyclient.runtime.BundledTavernSource
 import com.sillyclient.runtime.LogService
@@ -1137,7 +1138,9 @@ class MainActivity : BridgeActivity() {
                     updateProgress(92, "Installing selected extensions")
                     extensionsTransaction = PreinstalledExtensionInstaller.install(
                         this, targetServerDir, preinstall, operations, operation, ::appendLog
-                    )
+                    ) { pct, message ->
+                        updateProgress(pct.coerceIn(92, 94), message)
+                    }
                 }
                 if (companionPreset != null) {
                     updateProgress(94, "Applying theme preset")
@@ -2116,7 +2119,12 @@ body:has(.popup[opening]) #chat {
             // V8 bytecode cache: repeat launches skip re-parsing thousands of CJS
             // modules, which dominates SillyTavern cold-start time on Android.
             env["NODE_COMPILE_CACHE"] = File(paths.tarvenHome, "node-compile-cache").apply { mkdirs() }.absolutePath
-            // 实例自持：模块全部由实例目录内的 node_modules 解析，无需任何桥接。
+            runCatching {
+                BundledGitBridge.ensurePrepared(paths.bootstrapDir) { asset -> assets.open(asset) }
+            }.getOrNull()?.let { bridgeDir ->
+                BundledGitBridge.applyEnvironment(env, bridgeDir)
+            }
+            // 实例自持：模块全部由实例目录内的 node_modules 解析；仅在运行时级缺失 git 时提供纯 JS 桥接兜底。
             return operations.commit(operation) {
                 processSupervisor.track(pb.start(), operation.instanceId, operation).also { process ->
                     serverProcess = process
